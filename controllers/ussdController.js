@@ -43,54 +43,62 @@ const handleUssd = async (req, res) => {
             if (pMenu === "1" || pMenu === "2") {
                 const isPhone = pMenu === "1";
                 if (parts.length === 2) {
-                    return res.status(200).send(`CON Enter Driver ${isPhone ? "Phone Number" : "Merchant Code"}:`);
+                    return res.status(200).send("CON Enter Your MoMo Phone Number:");
                 }
                 if (parts.length === 3) {
-                    return res.status(200).send("CON Enter amount to pay (RWF):");
+                    return res.status(200).send(`CON Enter Pilot ${isPhone ? "Phone Number" : "Merchant Code"}:`);
+                }
+                if (parts.length === 4) {
+                    return res.status(200).send("CON Enter amount (RWF):");
                 }
 
-                const targetId = parts[2];
-                const amount = parseInt(parts[3]);
+                const passengerPhone = normalizePhone(parts[2]);
+                const targetId = parts[3];
+                const amount = parseInt(parts[4]);
 
                 if (isNaN(amount) || amount <= 0) {
                     return res.status(200).send("END Invalid amount.");
                 }
 
-                // Verify the driver exists
-                const targetDriver = isPhone 
+                // Verify the pilot (driver) exists
+                const targetDriver = isPhone
                     ? await User.findOne({ phone: normalizePhone(targetId), role: "driver" })
                     : await User.findOne({ _id: targetId, role: "driver" }).catch(() => null);
 
                 if (!targetDriver) {
-                    return res.status(200).send(`END Error: Driver with ${isPhone ? 'phone' : 'code'} ${targetId} is not registered.`);
+                    return res.status(200).send(`END Error: Pilot with ${isPhone ? 'phone' : 'code'} ${targetId} is not registered.`);
                 }
 
-                // Initiate Paypack Momo push to client
+                // Initiate Paypack Momo push to provided passenger phone
                 const result = await paymentService.requestCashIn(
-                    formattedPhone,
+                    passengerPhone,
                     amount,
                     process.env.PAYPACK_ENV || "development"
                 );
 
                 if (result.success) {
                     await Transaction.create({
-                        driverId: targetDriver._id, // Set the driverId to ensure webhook credits them
+                        driverId: targetDriver._id,
                         amount,
                         type: "ride_payment",
                         status: "pending",
                         paypackRef: result.data?.ref,
-                        description: `USSD Client Ride Payment to ${isPhone ? 'phone' : 'code'} ${targetId} from ${formattedPhone}`,
+                        description: `USSD Client Ride Payment to ${isPhone ? 'phone' : 'code'} ${targetId} from ${passengerPhone}`,
                     });
-                    return res.status(200).send(`END Payment Initiated!\nPlease wait for the MoMo prompt to authorize ${amount} RWF.\nIf it doesn't appear, dial *182*7*1#`);
+                    return res.status(200).send(`END Payment Initiated!\nPlease wait for the MoMo prompt on ${passengerPhone} to authorize ${amount} RWF.\nDial *182*7*1# if it doesn't appear.`);
                 } else {
                     return res.status(200).send("END Payment gateway error. Could not initiate payment.");
                 }
             }
             if (pMenu === "3") {
-                const txs = await Transaction.find({ description: { $regex: formattedPhone } }).sort({ createdAt: -1 }).limit(3);
-                if (txs.length === 0) return res.status(200).send("END No recent transactions found for your number.");
+                if (parts.length === 2) {
+                    return res.status(200).send("CON Enter Phone Number to check history:");
+                }
+                const checkPhone = normalizePhone(parts[2]);
+                const txs = await Transaction.find({ description: { $regex: checkPhone } }).sort({ createdAt: -1 }).limit(3);
+                if (txs.length === 0) return res.status(200).send(`END No recent transactions found for ${checkPhone}.`);
                 const list = txs.map(t => `${t.type}: ${t.amount} RWF (${t.status})`).join("\n");
-                return res.status(200).send(`END Your Recent Transactions:\n${list}`);
+                return res.status(200).send(`END Recent Transactions for ${checkPhone}:\n${list}`);
             }
             if (pMenu === "0") {
                 return res.status(200).send("END Thank you for using MOTA.");
