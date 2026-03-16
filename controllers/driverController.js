@@ -2,9 +2,16 @@ const mongoose = require("mongoose");
 const DriverProfile = require("../models/DriverProfile");
 const User = require("../models/User");
 const Ride = require("../models/Ride");
+const Fine = require("../models/Fine");
 const { getStreakInfo, DAILY_TARGET } = require("../services/streakService");
 const { getTierInfo } = require("../services/tierService");
 const Referral = require("../models/Referral");
+const walletService = require("../services/walletService");
+const { sendEmail } = require("../services/notificationService");
+const { sendSMS } = require("../services/smsService");
+const configService = require("../services/configService");
+
+const DEFAULT_FINE_INTEREST_RATE = 0.05; // 5%
 
 /**
  * Create driver profile
@@ -192,10 +199,68 @@ const getRideHistory = async (req, res) => {
     }
 };
 
+/**
+ * Pay driver fine
+ * POST /api/driver/pay-fine
+ */
+const payFineApi = async (req, res) => {
+    try {
+        const driverId = req.user.id;
+        const { fineId } = req.body;
+
+        const fine = await Fine.findById(fineId);
+        if (!fine) return res.status(404).json({ message: "Fine not found" });
+        if (fine.status === "paid") return res.status(400).json({ message: "Fine is already paid" });
+        if (fine.driverId.toString() !== driverId.toString()) {
+            return res.status(403).json({ message: "Unauthorized to pay this fine" });
+        }
+
+        // Apply a dynamic interest fee to the fine amount
+        const interestRate = await configService.getConfig("fine_interest_rate", DEFAULT_FINE_INTEREST_RATE);
+        const interest = Math.round(fine.amount * interestRate);
+        const totalAmount = fine.amount + interest;
+
+        // Provide custom wrapper logic since payFine in walletService might do its own SMS
+        // We will do debitWallet directly here to manage custom msg
+        const wallet = await walletService.debitWallet(driverId.toString(), totalAmount, "fine_payment", {
+            description: `Fine payment inclusive of ${interestRate * 100}% interest. Fine ID: ${fine.fineId}`,
+        });
+
+        fine.status = "paid";
+        await fine.save();
+
+        const user = await User.findById(driverId);
+        if (user) {
+            const smsText = `MOTA: Fine ${fine.fineId} paid. Original: ${fine.amount} RWF, Interest: ${interest} RWF. Total: ${totalAmount} RWF.`;
+            await sendSMS(user.phone, smsText, "fine_payment");
+
+            if (user.email) {
+                const html = `<h2>MOTA Fine Paid</h2>
+                              <p>Your fine (ID: ${fine.fineId}) was successfully paid off.</p>
+                              <ul>
+                                <li>Original Amount: ${fine.amount} RWF</li>
+                                <li>Interest (${interestRate * 100}%): ${interest} RWF</li>
+                                <li><b>Total Deducted: ${totalAmount} RWF</b></li>
+                              </ul>
+                              <p>Your current wallet balance is: ${wallet.balance} RWF.</p>`;
+                await sendEmail(user.email, "MOTA Fine Payment Receipt", smsText, html);
+            }
+        }
+
+        res.status(200).json({ message: "Fine paid successfully", totalAmount, interest, fine });
+    } catch (error) {
+        if (error.message.includes("Insufficient wallet balance")) {
+            return res.status(400).json({ message: error.message });
+        }
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
 module.exports = {
     createProfile,
     getDashboard,
     getProfile,
     updateProfile,
     getRideHistory,
+    payFine: payFineApi,
 };

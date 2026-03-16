@@ -7,11 +7,26 @@ const rideSchema = new mongoose.Schema({
         required: true,
         index: true,
     },
+    passengerPhone: {
+        type: String,
+        trim: true,
+    },
     fare: { type: Number, required: true, min: 0 },
+    commissionRate: { type: Number, default: 0.10 }, // 10%
+    driverEarning: { type: Number },                 // fare after commission
+    commissionAmount: { type: Number },              // platform cut
     paymentMethod: {
         type: String,
-        enum: ["cash", "momo"],
+        enum: ["cash", "momo", "ussd", "wallet"],
         required: true,
+    },
+    paymentStatus: {
+        type: String,
+        enum: ["pending", "completed", "failed"],
+        default: "pending",
+    },
+    paypackRef: {
+        type: String,
     },
     pickupLocation: { type: String },
     dropoffLocation: { type: String },

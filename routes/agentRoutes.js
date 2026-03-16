@@ -4,9 +4,10 @@ const crypto = require("crypto");
 const User = require("../models/User");
 const DriverProfile = require("../models/DriverProfile");
 const Referral = require("../models/Referral");
-const authMiddleware = require("../middleware/authMiddleware");
+const { protect: authMiddleware } = require("../middleware/authMiddleware");
 const roleMiddleware = require("../middleware/roleMiddleware");
 const { sendSMS } = require("../services/smsService");
+const walletService = require("../services/walletService");
 
 /**
  * @swagger
@@ -264,6 +265,77 @@ router.get("/stats", async (req, res) => {
             completedReferrals,
             pendingReferrals,
             totalRewards: rewardAgg[0]?.total || 0,
+        });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+});
+
+/**
+ * @swagger
+ * /api/agent/cash-in:
+ *   post:
+ *     summary: Agent records physical cash deposit into driver wallet
+ *     tags: [Agent]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - driverPhone
+ *               - amount
+ *             properties:
+ *               driverPhone:
+ *                 type: string
+ *                 example: "+250788123456"
+ *               amount:
+ *                 type: number
+ *                 example: 5000
+ *     responses:
+ *       200:
+ *         description: Driver wallet credited successfully
+ *       400:
+ *         description: Missing fields or invalid amount
+ *       404:
+ *         description: Driver not found
+ *       500:
+ *         description: Server error
+ */
+router.post("/cash-in", async (req, res) => {
+    try {
+        const agentId = req.user.id;
+        const { driverPhone, amount } = req.body;
+
+        if (!driverPhone || !amount || amount <= 0) {
+            return res.status(400).json({ message: "driverPhone and a positive amount are required" });
+        }
+
+        // Find driver by phone (normalize)
+        let formattedPhone = driverPhone;
+        if (formattedPhone.startsWith("0")) formattedPhone = "+250" + formattedPhone.substring(1);
+        else if (formattedPhone.startsWith("250")) formattedPhone = "+" + formattedPhone;
+
+        const driver = await User.findOne({
+            $or: [{ phone: formattedPhone }, { phone: driverPhone }],
+            role: "driver",
+        });
+
+        if (!driver) {
+            return res.status(404).json({ message: "Driver not found with this phone number" });
+        }
+
+        const wallet = await walletService.agentCashIn(agentId, driver._id.toString(), amount);
+
+        res.status(200).json({
+            message: "Cash-in recorded successfully",
+            driverId: driver._id,
+            driverName: `${driver.firstName} ${driver.lastName}`,
+            amount,
+            newBalance: wallet.balance,
         });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });

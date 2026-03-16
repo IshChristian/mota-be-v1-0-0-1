@@ -12,6 +12,10 @@ const smsLogSchema = new mongoose.Schema({
             "tier_promotion",
             "referral_reward",
             "system_alert",
+            "cash_in",
+            "cash_out",
+            "admin_credit",
+            "fine_payment",
         ],
     },
     status: {

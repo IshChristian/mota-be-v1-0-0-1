@@ -39,19 +39,37 @@ app.get("/api-docs/swagger.json", (req, res) => {
 
 // ─── Route Imports ──────────────────────────────────────
 const authRoutes = require("./routes/authRoutes");
+const userRoutes = require("./routes/userRoutes");
+const roleRoutes = require("./routes/roleRoutes");
+const adminRoutes = require("./routes/adminRoutes");
+const settingRoutes = require("./routes/settingRoutes");
+const searchRoutes = require("./routes/searchRoutes");
+const uploadRoutes = require("./routes/uploadRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
 const driverRoutes = require("./routes/driverRoutes");
 const rideRoutes = require("./routes/rideRoutes");
-const adminRoutes = require("./routes/adminRoutes");
+
 const agentRoutes = require("./routes/agentRoutes");
 const ussdRoutes = require("./routes/ussdRoutes");
+const walletRoutes = require("./routes/walletRoutes");
+const paymentRoutes = require("./routes/paymentRoutes");
 
 // ─── API Routes ─────────────────────────────────────────
+// (Auth moved to new module below)
 app.use("/api/auth", authRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/roles", roleRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/settings", settingRoutes);
+app.use("/api/search", searchRoutes);
+app.use("/api/uploads", uploadRoutes);
+app.use("/api/notifications", notificationRoutes);
 app.use("/api/driver", driverRoutes);
 app.use("/api/ride", rideRoutes);
-app.use("/api/admin", adminRoutes);
 app.use("/api/agent", agentRoutes);
 app.use("/api/ussd", ussdRoutes);
+app.use("/api/wallet", walletRoutes);
+app.use("/api/payment", paymentRoutes);
 
 // ─── Root Endpoint ──────────────────────────────────────
 app.get("/", (req, res) => {
@@ -65,6 +83,15 @@ app.get("/", (req, res) => {
       ride: "/api/ride",
       admin: "/api/admin",
       agent: "/api/agent",
+      wallet: "/api/wallet",
+      payment: "/api/payment",
+      ussd: "/api/ussd",
+      uploads: "/api/uploads",
+      notifications: "/api/notifications",
+      users: "/api/users",
+      roles: "/api/roles",
+      settings: "/api/settings",
+      search: "/api/search",
     },
   });
 });

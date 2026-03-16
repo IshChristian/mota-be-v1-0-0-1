@@ -3,7 +3,7 @@ const router = express.Router();
 const driverController = require("../controllers/driverController");
 const rideController = require("../controllers/rideController");
 const tierController = require("../controllers/tierController");
-const authMiddleware = require("../middleware/authMiddleware");
+const { protect: authMiddleware } = require("../middleware/authMiddleware");
 const roleMiddleware = require("../middleware/roleMiddleware");
 
 /**
@@ -327,5 +327,34 @@ router.get("/tier", authMiddleware, roleMiddleware("driver"), tierController.get
  *         description: Server error
  */
 router.get("/leaderboard", authMiddleware, tierController.getLeaderboard);
+
+/**
+ * @swagger
+ * /api/driver/pay-fine:
+ *   post:
+ *     summary: Pay driver fine
+ *     tags: [Driver]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - fineId
+ *             properties:
+ *               fineId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Fine paid successfully
+ *       400:
+ *         description: Bad request or insufficient funds
+ *       404:
+ *         description: Fine not found
+ */
+router.post("/pay-fine", authMiddleware, roleMiddleware("driver"), driverController.payFine);
 
 module.exports = router;

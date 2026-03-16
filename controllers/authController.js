@@ -1,258 +1,297 @@
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const User = require("../models/User");
-const { generateToken, generateOTPToken } = require("../utils/jwt");
-const { sendSMS } = require("../services/smsService");
-const Referral = require("../models/Referral");
 const crypto = require("crypto");
+const User = require("../models/User");
+const Referral = require("../models/Referral");
+const { sendSMS } = require("../services/smsService");
+const authService = require("../services/authService");
+const { generateOTPToken } = require("../utils/jwt");
+const paymentService = require("../services/paymentService");
+const Transaction = require("../models/Transaction");
+const configService = require("../services/configService");
 
-/**
- * Register a new user
- * POST /api/auth/register
- */
+// ─── Registration & verification ──────────────────────────────────────────
+
 const register = async (req, res) => {
     try {
-        const { firstName, lastName, phone, nationalId, role, referralCode } = req.body;
+        const { firstName, lastName, phone, nationalId, email, role, referralCode, password } = req.body;
 
         if (!firstName || !lastName || !phone || !nationalId) {
             return res.status(400).json({ message: "firstName, lastName, phone, and nationalId are required" });
         }
 
-        // Check for existing user
-        const existingUser = await User.findOne({
-            $or: [{ phone }, { nationalId }],
-        });
+        const existingUser = await User.findOne({ $or: [{ phone }, { nationalId }, { email: email || "ignore" }] });
         if (existingUser) {
-            return res.status(400).json({ message: "User with this phone number or national ID already exists" });
+            return res.status(400).json({ message: "User with this phone, email, or national ID already exists" });
         }
 
-        // Generate unique referral code for this user
         const userReferralCode = `MOTA-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
 
-        const newUser = new User({
+        let hashedPassword = null;
+        if (password) {
+            hashedPassword = await bcrypt.hash(password, 10);
+        }
+
+        const newUser = await User.create({
             firstName,
             lastName,
             phone,
+            email,
             nationalId,
-            role: role || "driver",
+            role: role || "user", // Default to user if not specified
             referralCode: userReferralCode,
+            password: hashedPassword,
+            isActive: false, // Inactive until registration fee is paid
         });
 
-        const savedUser = await newUser.save();
+        // If rider/driver, trigger MoMo payment for 5,000 RWF registration fee
+        let paymentInfo = null;
+        if (newUser.role === "driver") {
+            const regFee = await configService.getConfig("registration_fee", 5000);
+            const result = await paymentService.requestCashIn(phone, regFee, process.env.PAYPACK_ENV || "development");
+            if (result.success) {
+                newUser.registrationPaypackRef = result.data?.ref;
+                await newUser.save();
+                paymentInfo = {
+                    message: `Registration fee of ${regFee} RWF initiated. Please approve MoMo prompt to activate account.`,
+                    ref: result.data?.ref
+                };
+            }
+        }
 
-        // Handle referral if referralCode was provided
+        // Referral logic
         if (referralCode) {
             const referrer = await User.findOne({ referralCode });
             if (referrer) {
-                await Referral.create({
-                    referrerId: referrer._id,
-                    referredUserId: savedUser._id,
-                    reward: 500,
-                    status: "pending",
-                });
-
-                await sendSMS(
-                    referrer.phone,
-                    `${firstName} ${lastName} just signed up using your referral code! You'll receive your reward once they complete verification.`,
-                    "referral_reward"
-                );
+                await Referral.create({ referrerId: referrer._id, referredUserId: newUser._id, reward: 500, status: "pending" });
+                await sendSMS(referrer.phone, `${firstName} signed up using your code! Reward pending.`, "referral_reward");
             }
         }
 
-        // Generate OTP and send via SMS
+        // SMS Verification
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        const otpToken = generateOTPToken(savedUser._id, otp);
+        newUser.otpToken = generateOTPToken(newUser._id, otp);
+        newUser.otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
+        await newUser.save();
 
-        savedUser.otpToken = otpToken;
-        savedUser.otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
-        await savedUser.save();
+        await sendSMS(phone, `Welcome to MOTA! Your code: ${otp}.`, "registration");
 
-        await sendSMS(
-            phone,
-            `Welcome to MOTA, ${firstName}! Your verification code is: ${otp}. Valid for 5 minutes.`,
-            "registration"
-        );
+        // Email Verification trigger if email exists
+        if (email) {
+            await authService.sendVerificationEmail(newUser);
+        }
 
         res.status(201).json({
-            message: "User registered successfully. OTP sent via SMS.",
-            userId: savedUser._id,
-            referralCode: userReferralCode,
+            message: "Registered successful. Complete payment & verification to activate.",
+            userId: newUser._id,
+            payment: paymentInfo
         });
     } catch (error) {
-        console.error("Register Error:", error);
         res.status(500).json({ message: "Server error", error: error.message });
     }
 };
 
-/**
- * Verify OTP
- * POST /api/auth/verify-otp
- */
-const verifyOTP = async (req, res) => {
+const login = async (req, res) => {
     try {
-        const { userId, otp } = req.body;
+        const { phone, email, password } = req.body;
 
-        if (!userId || !otp) {
-            return res.status(400).json({ message: "userId and otp are required" });
+        if (!password || (!phone && !email)) {
+            return res.status(400).json({ message: "Credentials missing" });
         }
 
+        const query = phone ? { phone } : { email };
+        const user = await User.findOne(query);
+
+        if (!user || (!user.password && !user.googleId)) {
+            return res.status(401).json({ message: "Invalid credentials" });
+        }
+
+        if (user.password) {
+            const isMatch = await bcrypt.compare(password, user.password);
+            if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
+        }
+
+        if (!user.isActive) return res.status(403).json({ message: "Account disabled" });
+
+        // Check if 2FA is active
+        if (user.twoFactorEnabled) {
+            return res.status(200).json({
+                message: "2FA required",
+                require2FA: true,
+                userId: user._id
+            });
+        }
+
+        const token = authService.generateToken(user);
+        res.status(200).json({ message: "Login success", token, user: { id: user._id, role: user.role } });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+const logout = async (req, res) => {
+    // In stateless JWT, we simply tell client to clear token.
+    res.status(200).json({ message: "Logged out successfully. Clear your token." });
+};
+
+const refreshToken = async (req, res) => {
+    // Basic rotation assuming valid current token
+    const token = authService.generateToken(req.user);
+    res.status(200).json({ token });
+};
+
+// ─── Email flows ──────────────────────────────────────────────────────────
+
+const verifyEmail = async (req, res) => {
+    try {
+        const { token } = req.query;
+        if (!token) return res.status(400).json({ message: "Missing token" });
+
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        if (decoded.action !== "verify_email") throw new Error("Invalid action");
+
+        const user = await User.findById(decoded.id);
+        if (!user) return res.status(404).json({ message: "User not found" });
+
+        user.isEmailVerified = true;
+        await user.save();
+
+        res.status(200).json({ message: "Email verified successfully" });
+    } catch (error) {
+        res.status(400).json({ message: "Invalid or expired token", error: error.message });
+    }
+};
+
+const forgotPassword = async (req, res) => {
+    try {
+        const { email } = req.body;
+        const user = await User.findOne({ email });
+
+        if (!user) return res.status(404).json({ message: "Account not found" });
+
+        await authService.sendPasswordResetEmail(user);
+        res.status(200).json({ message: "Password reset email sent" });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+const resetPassword = async (req, res) => {
+    try {
+        const { token, newPassword } = req.body;
+
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        if (decoded.action !== "reset_password") throw new Error("Invalid token");
+
+        const user = await User.findById(decoded.id);
+        user.password = await bcrypt.hash(newPassword, 10);
+        await user.save();
+
+        res.status(200).json({ message: "Password successfully reset" });
+    } catch (error) {
+        res.status(400).json({ message: "Invalid or expired request", error: error.message });
+    }
+};
+
+// ─── 2FA flows ────────────────────────────────────────────────────────────
+
+const setup2FA = async (req, res) => {
+    try {
+        const data = await authService.setup2FA(req.user.id);
+        res.status(200).json({ message: "2FA setup initiated", data });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+const verify2FA = async (req, res) => {
+    try {
+        const { token, userId } = req.body;
+
+        // If coming from login, we might not have req.user yet, so we pass userId
+        const targetUserId = req.user ? req.user.id : userId;
+        const user = await User.findById(targetUserId);
+
+        const isValid = authService.verify2FA(user.twoFactorSecret, token);
+        if (!isValid) return res.status(401).json({ message: "Invalid 2FA code" });
+
+        if (!user.twoFactorEnabled) {
+            user.twoFactorEnabled = true;
+            await user.save();
+        }
+
+        const jwtToken = authService.generateToken(user);
+        res.status(200).json({ message: "2FA verified", token: jwtToken });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+// Expose legacy OTP
+const verifyOTP = async (req, res) => {
+    // ... Copy legacy logic easily or import existing 
+    const { userId, otp } = req.body;
+    const user = await User.findById(userId);
+    if (!user || !user.otpToken) return res.status(400).json({ message: "Invalid state" });
+
+    try {
+        const decoded = jwt.verify(user.otpToken, process.env.JWT_SECRET);
+        if (decoded.otp !== otp) return res.status(400).json({ message: "Invalid OTP" });
+
+        user.isVerified = true;
+        user.otpToken = null;
+        user.otpExpiry = null;
+        await user.save();
+        res.status(200).json({ message: "Phone verified" });
+    } catch (err) {
+        res.status(400).json({ message: "Code expired" });
+    }
+};
+
+/**
+ * Check if registration fee was paid and activate account
+ */
+const checkRegistrationPayment = async (req, res) => {
+    try {
+        const { userId } = req.body;
         const user = await User.findById(userId);
-        if (!user) {
-            return res.status(404).json({ message: "User not found" });
+        if (!user) return res.status(404).json({ message: "User not found" });
+        if (user.registrationPaid) return res.status(200).json({ message: "Already paid and active", active: true });
+
+        if (!user.registrationPaypackRef) {
+            return res.status(400).json({ message: "No registration payment found for this user." });
         }
 
-        if (!user.otpToken) {
-            return res.status(400).json({ message: "No OTP request found. Request a new one." });
-        }
-
-        try {
-            const decoded = jwt.verify(user.otpToken, process.env.JWT_SECRET);
-            if (decoded.otp !== otp) {
-                return res.status(400).json({ message: "Invalid OTP" });
-            }
-
-            user.isVerified = true;
-            user.otpToken = null;
-            user.otpExpiry = null;
+        // Check Paypack status
+        const result = await paymentService.checkTransaction(user.registrationPaypackRef);
+        if (result.success && result.data.status === "successful") {
+            user.registrationPaid = true;
+            user.isActive = true;
             await user.save();
 
-            // Complete referral if exists
+            // Reward referrer with Fuel Voucher if exists
             const referral = await Referral.findOne({ referredUserId: user._id, status: "pending" });
             if (referral) {
-                referral.status = "completed";
-                await referral.save();
-
                 const referrer = await User.findById(referral.referrerId);
                 if (referrer) {
-                    await sendSMS(
-                        referrer.phone,
-                        `Your referral reward of ${referral.reward} RWF has been credited! ${user.firstName} ${user.lastName} has been verified.`,
-                        "referral_reward"
-                    );
+                    const voucherCode = `FUEL-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+                    referrer.fuelVouchers.push({
+                        code: voucherCode,
+                        amount: 2000, // Example voucher value
+                    });
+                    await referrer.save();
+
+                    referral.status = "completed";
+                    await referral.save();
+
+                    await sendSMS(referrer.phone, `MOTA: Your recruit ${user.firstName} is active! You earned a Fuel Voucher: ${voucherCode}.`, "reward");
                 }
             }
 
-            res.status(200).json({ message: "Phone number verified successfully" });
-        } catch (tokenError) {
-            return res.status(400).json({ message: "OTP expired. Request a new one." });
+            return res.status(200).json({ message: "Payment successful. Account activated!", active: true });
+        } else {
+            return res.status(200).json({ message: "Payment pending or failed.", active: false, status: result.data?.status });
         }
-    } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
-    }
-};
-
-/**
- * Create password for user
- * POST /api/auth/create-password
- */
-const createPassword = async (req, res) => {
-    try {
-        const { userId, password } = req.body;
-
-        if (!userId || !password) {
-            return res.status(400).json({ message: "userId and password are required" });
-        }
-
-        if (password.length < 6) {
-            return res.status(400).json({ message: "Password must be at least 6 characters" });
-        }
-
-        const user = await User.findById(userId);
-        if (!user) {
-            return res.status(404).json({ message: "User not found" });
-        }
-
-        const hashedPassword = await bcrypt.hash(password, 10);
-        user.password = hashedPassword;
-        await user.save();
-
-        res.status(200).json({ message: "Password created successfully" });
-    } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
-    }
-};
-
-/**
- * Login user
- * POST /api/auth/login
- */
-const login = async (req, res) => {
-    try {
-        const { phone, password } = req.body;
-
-        if (!phone || !password) {
-            return res.status(400).json({ message: "Phone and password are required" });
-        }
-
-        const user = await User.findOne({ phone });
-        if (!user) {
-            return res.status(404).json({ message: "User not found" });
-        }
-
-        if (!user.password) {
-            return res.status(400).json({ message: "Password not set. Please create a password first." });
-        }
-
-        if (!user.isActive) {
-            return res.status(403).json({ message: "Account is deactivated. Contact admin." });
-        }
-
-        const isPasswordValid = await bcrypt.compare(password, user.password);
-        if (!isPasswordValid) {
-            return res.status(401).json({ message: "Invalid password" });
-        }
-
-        const token = generateToken(user);
-
-        res.status(200).json({
-            message: "Login successful",
-            token,
-            user: {
-                id: user._id,
-                firstName: user.firstName,
-                lastName: user.lastName,
-                phone: user.phone,
-                role: user.role,
-                isVerified: user.isVerified,
-                kycLevel: user.kycLevel,
-            },
-        });
-    } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
-    }
-};
-
-/**
- * Resend OTP
- * POST /api/auth/resend-otp
- */
-const resendOTP = async (req, res) => {
-    try {
-        const { userId } = req.body;
-
-        if (!userId) {
-            return res.status(400).json({ message: "userId is required" });
-        }
-
-        const user = await User.findById(userId);
-        if (!user) {
-            return res.status(404).json({ message: "User not found" });
-        }
-
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        const otpToken = generateOTPToken(user._id, otp);
-
-        user.otpToken = otpToken;
-        user.otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
-        await user.save();
-
-        await sendSMS(
-            user.phone,
-            `Your MOTA verification code is: ${otp}. Valid for 5 minutes.`,
-            "otp"
-        );
-
-        res.status(200).json({ message: "OTP sent successfully" });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
     }
@@ -260,8 +299,14 @@ const resendOTP = async (req, res) => {
 
 module.exports = {
     register,
-    verifyOTP,
-    createPassword,
     login,
-    resendOTP,
+    logout,
+    refreshToken,
+    verifyEmail,
+    forgotPassword,
+    resetPassword,
+    setup2FA,
+    verify2FA,
+    verifyOTP,
+    checkRegistrationPayment,
 };
