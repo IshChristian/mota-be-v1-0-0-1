@@ -5,6 +5,7 @@ const User = require("../models/User");
 const walletService = require("../services/walletService");
 const paymentService = require("../services/paymentService");
 const { sendSMS } = require("../services/smsService");
+const { sendEmail } = require("../services/notificationService");
 
 /**
  * POST /api/payment/request
@@ -87,23 +88,73 @@ const handleWebhook = async (req, res) => {
             tx.status = "completed";
             await tx.save();
 
-            // Unified Cash In handler — ride-based or pure wallet deposit
-            if (tx.type === "cash_in" && tx.driverId) {
-                if (tx.rideId) {
-                    // Ride log treated as Cash In → apply 10% commission
-                    await walletService.creditRidePayment(
+            // Unified Cash In handler — ride-based, pure wallet deposit or USSD ride payment
+            if (tx.driverId) {
+                const user = await User.findById(tx.driverId);
+                const isRidePayment = tx.type === "ride_payment" || (tx.type === "cash_in" && tx.rideId);
+
+                if (isRidePayment) {
+                    // Ride-related payment (triggered by driver log or USSD passenger pay)
+                    // Calculate commission (logic inside creditRidePayment or manually here)
+                    const { commission, driverEarning } = await walletService.calculateCommission(amount);
+
+                    // Credit the rider's wallet
+                    await walletService.creditWallet(
                         tx.driverId.toString(),
-                        tx.rideId.toString(),
-                        Math.abs(amount)
+                        driverEarning,
+                        "ride_payment",
+                        { paypackRef: ref, description: tx.description || `Ride payment received: ${amount} RWF` }
                     );
-                    await Ride.findByIdAndUpdate(tx.rideId, { paymentStatus: "completed" });
-                    
-                    // Update streak and tier now that the ride is officially successfully paid
+
+                    // If it was a logged ride, update ride status
+                    if (tx.rideId) {
+                        await Ride.findByIdAndUpdate(tx.rideId, { paymentStatus: "completed" });
+                    }
+
+                    const wallet = await Wallet.findOne({ driverId: tx.driverId });
+                    const newBalance = wallet ? wallet.balance : 0;
+
+                    // 1. Send SMS to rider
+                    if (user) {
+                        await sendSMS(
+                            user.phone,
+                            `MOTA Payment\nYou received ${amount} RWF from passenger.\nEarnings: ${driverEarning} RWF\nBalance: ${newBalance} RWF`,
+                            "payment_received"
+                        );
+
+                        // 2. Send Email to rider
+                        if (user.email) {
+                            const riderHtml = `<h3>Payment Received</h3>
+                                <p>Hello ${user.firstName},</p>
+                                <p>You have received a ride payment via MOTA.</p>
+                                <ul>
+                                    <li><b>Base Amount:</b> ${amount} RWF</li>
+                                    <li><b>Your Earnings (after comm.):</b> ${driverEarning} RWF</li>
+                                    <li><b>Updated Wallet Balance:</b> ${newBalance} RWF</li>
+                                </ul>`;
+                            await sendEmail(user.email, "MOTA: Payment Received", "", riderHtml);
+                        }
+                    }
+
+                    // 3. Send Email to Admin
+                    const adminEmail = process.env.ADMIN_EMAIL || "admin@mota.rw";
+                    const adminHtml = `<h3>New Ride Payment Confirmation</h3>
+                        <p>A ride payment has been successfully processed.</p>
+                        <ul>
+                            <li><b>Driver:</b> ${user ? `${user.firstName} ${user.lastName} (${user.phone})` : tx.driverId}</li>
+                            <li><b>Amount Paid:</b> ${amount} RWF</li>
+                            <li><b>Commission:</b> ${commission} RWF</li>
+                            <li><b>Paid via:</b> Paypack (Ref: ${ref})</li>
+                        </ul>`;
+                    await sendEmail(adminEmail, "MOTA Admin: Ride Payment Alert", "", adminHtml);
+
+                    // Update performance stats
                     const { updateStreak } = require("../services/streakService");
                     const { updateTier } = require("../services/tierService");
                     await updateStreak(tx.driverId.toString());
                     await updateTier(tx.driverId.toString());
-                } else {
+
+                } else if (tx.type === "cash_in") {
                     // Pure wallet deposit → credit full amount
                     await walletService.creditWallet(
                         tx.driverId.toString(),
@@ -111,7 +162,6 @@ const handleWebhook = async (req, res) => {
                         "cash_in",
                         { paypackRef: ref, description: `Wallet Cash-in via Paypack. ${amount} RWF` }
                     );
-                    const user = await User.findById(tx.driverId);
                     const wallet = await Wallet.findOne({ driverId: tx.driverId });
                     if (user) {
                         await sendSMS(

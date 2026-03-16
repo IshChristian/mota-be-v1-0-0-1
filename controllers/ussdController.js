@@ -36,23 +36,33 @@ const handleUssd = async (req, res) => {
         // ==============================================================
         if (userType === "2") {
             if (parts.length === 1) {
-                return res.status(200).send("CON MOTA Client Services\n\n1 Pay Ride (by Driver Phone)\n2 Pay Ride (by Code)\n3 Request Transaction Info\n0 Exit");
+                return res.status(200).send("CON MOTA Client Services\n\n1 Pay Ride (by Driver Phone)\n2 Pay Ride (by Merchant Code)\n3 Request Transaction Info\n0 Exit");
             }
             const pMenu = parts[1];
 
             if (pMenu === "1" || pMenu === "2") {
                 const isPhone = pMenu === "1";
                 if (parts.length === 2) {
-                    return res.status(200).send(`CON Enter Driver ${isPhone ? "Phone Number" : "Code"}:`);
+                    return res.status(200).send(`CON Enter Driver ${isPhone ? "Phone Number" : "Merchant Code"}:`);
                 }
                 if (parts.length === 3) {
                     return res.status(200).send("CON Enter amount to pay (RWF):");
                 }
+
                 const targetId = parts[2];
                 const amount = parseInt(parts[3]);
 
                 if (isNaN(amount) || amount <= 0) {
                     return res.status(200).send("END Invalid amount.");
+                }
+
+                // Verify the driver exists
+                const targetDriver = isPhone 
+                    ? await User.findOne({ phone: normalizePhone(targetId), role: "driver" })
+                    : await User.findOne({ _id: targetId, role: "driver" }).catch(() => null);
+
+                if (!targetDriver) {
+                    return res.status(200).send(`END Error: Driver with ${isPhone ? 'phone' : 'code'} ${targetId} is not registered.`);
                 }
 
                 // Initiate Paypack Momo push to client
@@ -64,13 +74,14 @@ const handleUssd = async (req, res) => {
 
                 if (result.success) {
                     await Transaction.create({
+                        driverId: targetDriver._id, // Set the driverId to ensure webhook credits them
                         amount,
                         type: "ride_payment",
                         status: "pending",
                         paypackRef: result.data?.ref,
                         description: `USSD Client Ride Payment to ${isPhone ? 'phone' : 'code'} ${targetId} from ${formattedPhone}`,
                     });
-                    return res.status(200).send(`END Payment Initiated!\nPlease authorize payment of ${amount} RWF on your phone. Driver will be credited immediately.`);
+                    return res.status(200).send(`END Payment Initiated!\nPlease wait for the MoMo prompt to authorize ${amount} RWF.\nIf it doesn't appear, dial *182*7*1#`);
                 } else {
                     return res.status(200).send("END Payment gateway error. Could not initiate payment.");
                 }
