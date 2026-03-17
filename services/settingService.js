@@ -1,4 +1,4 @@
-const Setting = require("../models/Setting");
+const Setting = require("../models/Setting"); // UserSetting model
 
 const getSettingsByUserId = async (userId) => {
     let settings = await Setting.findOne({ userId });

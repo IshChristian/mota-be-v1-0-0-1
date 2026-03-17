@@ -2,6 +2,7 @@ const adminService = require("../services/adminService");
 const userService = require("../services/userService");
 const configService = require("../services/configService");
 const SystemConfig = require("../models/SystemConfig");
+const User = require("../models/User");
 
 const getUsersList = async (req, res) => {
     try {
@@ -142,20 +143,96 @@ const getAgentsRegistrations = async (req, res) => {
 
 const approveFine = async (req, res) => {
     try {
-        const { id, status } = req.body; // id = fine _id, status = 'approved' or 'rejected'
+        const { id, status, amount } = req.body; // id = fine _id, status = 'approved' or 'rejected'
         const Fine = require("../models/Fine");
-        const fine = await Fine.findByIdAndUpdate(id, {
-            status,
-            reviewedBy: req.user.id,
-            reviewedAt: Date.now()
-        }, { new: true });
 
+        const fine = await Fine.findById(id);
         if (!fine) return res.status(404).json({ message: "Fine not found" });
 
-        // If approved, you might want to automate something, 
-        // but user only asked for approving endpoint.
+        if (status === "approved") {
+            const finalAmount = amount || fine.amount;
+            if (finalAmount <= 0) return res.status(400).json({ message: "Amount must be greater than 0 for approval" });
+
+            const interestRate = await configService.getConfig("fine_interest_rate", 0.05);
+            const totalWithInterest = Math.round(finalAmount * (1 + interestRate));
+
+            fine.status = "approved";
+            fine.amount = finalAmount;
+            fine.interestRate = interestRate;
+            fine.totalAmountWithInterest = totalWithInterest;
+            fine.reviewedBy = req.user.id;
+            fine.reviewedAt = Date.now();
+            await fine.save();
+        } else {
+            fine.status = status;
+            fine.reviewedBy = req.user.id;
+            fine.reviewedAt = Date.now();
+            await fine.save();
+        }
 
         res.status(200).json({ message: `Fine ${status}`, data: fine });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+const updateFinancialSettings = async (req, res) => {
+    try {
+        const {
+            registration_fee, agent_registration_fee, ride_commission_percentage,
+            cash_out_fee_percentage, agent_cash_in_fee_percentage,
+            referral_reward_amount, fine_loan_interest_rate,
+            fine_loan_max_amount, fine_loan_auto_repayment_percentage,
+            fine_loan_max_duration_days,
+            tier_bronze_rides, tier_silver_rides, tier_gold_rides,
+            tier_platinum_rides, tier_gorilla_rides
+        } = req.body;
+        const updates = [];
+
+        // Financial settings
+        if (registration_fee !== undefined) updates.push(configService.setConfig("registration_fee", registration_fee, "Driver registration fee", req.user.id));
+        if (agent_registration_fee !== undefined) updates.push(configService.setConfig("agent_registration_fee", agent_registration_fee, "Agent registration fee", req.user.id));
+        if (ride_commission_percentage !== undefined) updates.push(configService.setConfig("ride_commission_percentage", ride_commission_percentage, "Ride commission %", req.user.id));
+        if (cash_out_fee_percentage !== undefined) updates.push(configService.setConfig("cash_out_fee_percentage", cash_out_fee_percentage, "Cash-out fee %", req.user.id));
+        if (agent_cash_in_fee_percentage !== undefined) updates.push(configService.setConfig("agent_cash_in_fee_percentage", agent_cash_in_fee_percentage, "Agent cash-in fee %", req.user.id));
+        if (referral_reward_amount !== undefined) updates.push(configService.setConfig("referral_reward_amount", referral_reward_amount, "Referral reward amount", req.user.id));
+
+        // Loan settings
+        if (fine_loan_interest_rate !== undefined) updates.push(configService.setConfig("fine_loan_interest_rate", fine_loan_interest_rate, "Fine loan interest rate %", req.user.id));
+        if (fine_loan_max_amount !== undefined) updates.push(configService.setConfig("fine_loan_max_amount", fine_loan_max_amount, "Max loan amount", req.user.id));
+        if (fine_loan_auto_repayment_percentage !== undefined) updates.push(configService.setConfig("fine_loan_auto_repayment_percentage", fine_loan_auto_repayment_percentage, "Loan auto-repayment %", req.user.id));
+        if (fine_loan_max_duration_days !== undefined) updates.push(configService.setConfig("fine_loan_max_duration_days", fine_loan_max_duration_days, "Max loan duration days", req.user.id));
+
+        // Tier thresholds
+        if (tier_bronze_rides !== undefined) updates.push(configService.setConfig("tier_bronze_rides", tier_bronze_rides, "Bronze tier rides required (lifetime)", req.user.id));
+        if (tier_silver_rides !== undefined) updates.push(configService.setConfig("tier_silver_rides", tier_silver_rides, "Silver tier rides required (lifetime)", req.user.id));
+        if (tier_gold_rides !== undefined) updates.push(configService.setConfig("tier_gold_rides", tier_gold_rides, "Gold tier rides required (lifetime)", req.user.id));
+        if (tier_platinum_rides !== undefined) updates.push(configService.setConfig("tier_platinum_rides", tier_platinum_rides, "Platinum tier rides required (lifetime)", req.user.id));
+        if (tier_gorilla_rides !== undefined) updates.push(configService.setConfig("tier_gorilla_rides", tier_gorilla_rides, "Gorilla tier rides required (lifetime)", req.user.id));
+
+        if (updates.length === 0) {
+            return res.status(400).json({ message: "No valid settings provided" });
+        }
+
+        await Promise.all(updates);
+        res.status(200).json({ message: `${updates.length} financial settings updated successfully` });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+const updateGeneralSettings = async (req, res) => {
+    try {
+        const { app_name, support_phone, support_email, maintenance_mode } = req.body;
+        const updates = [];
+
+        if (app_name !== undefined) updates.push(configService.setConfig("app_name", app_name, "Platform name", req.user.id));
+        if (support_phone !== undefined) updates.push(configService.setConfig("support_phone", support_phone, "Support telephone number", req.user.id));
+        if (support_email !== undefined) updates.push(configService.setConfig("support_email", support_email, "Support email address", req.user.id));
+        if (maintenance_mode !== undefined) updates.push(configService.setConfig("maintenance_mode", maintenance_mode, "System maintenance status", req.user.id));
+
+        await Promise.all(updates);
+        res.status(200).json({ message: "General settings updated successfully" });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
     }
@@ -176,4 +253,6 @@ module.exports = {
     unbanUserAccount,
     updateSystemConfig,
     getSystemConfigs,
+    updateFinancialSettings,
+    updateGeneralSettings,
 };

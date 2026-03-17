@@ -8,6 +8,7 @@ const { protect: authMiddleware } = require("../middleware/authMiddleware");
 const roleMiddleware = require("../middleware/roleMiddleware");
 const { sendSMS } = require("../services/smsService");
 const walletService = require("../services/walletService");
+const agentController = require("../controllers/agentController");
 
 /**
  * @swagger
@@ -341,5 +342,36 @@ router.post("/cash-in", async (req, res) => {
         res.status(500).json({ message: "Server error", error: error.message });
     }
 });
+
+/**
+ * @swagger
+ * /api/agent/pay-fine:
+ *   post:
+ *     summary: Agent pays a driver's fine using agent wallet balance
+ *     tags: [Agent]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - driverId
+ *               - fineId
+ *               - amount
+ *             properties:
+ *               driverId:
+ *                 type: string
+ *               fineId:
+ *                 type: string
+ *               amount:
+ *                 type: number
+ *     responses:
+ *       200:
+ *         description: Fine payment processed
+ */
+router.post("/pay-fine", agentController.payFineForDriver);
 
 module.exports = router;

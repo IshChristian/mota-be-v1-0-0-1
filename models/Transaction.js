@@ -1,6 +1,10 @@
 const mongoose = require("mongoose");
 
 const transactionSchema = new mongoose.Schema({
+    userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+    },
     driverId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: "User",
@@ -18,18 +22,30 @@ const transactionSchema = new mongoose.Schema({
         type: Number,
         required: true,
     },
+    feeAmount: {
+        type: Number,
+        default: 0,
+    },
     type: {
         type: String,
         required: true,
         enum: [
             "ride_payment",
+            "platform_commission",
             "cash_in",
             "cash_out",
+            "cash_out_fee",
             "agent_cash_in",
             "fine_payment",
+            "fine_loan_issued",
+            "fine_loan_repayment",
             "referral_reward",
             "admin_credit",
             "commission",
+            "agent_registration_fee",
+            "agent_pay_fine",
+            "cash_out_refund",
+            "transaction_fee",
         ],
     },
     status: {
@@ -38,7 +54,7 @@ const transactionSchema = new mongoose.Schema({
         default: "pending",
     },
     reference: {
-        type: String,     // Paypack transaction reference
+        type: String,
         trim: true,
     },
     description: {
@@ -46,7 +62,7 @@ const transactionSchema = new mongoose.Schema({
         trim: true,
     },
     paypackRef: {
-        type: String,     // Paypack ref for cashout tracking
+        type: String,
         trim: true,
     },
     createdAt: {
@@ -61,3 +77,4 @@ transactionSchema.index({ driverId: 1, createdAt: -1 });
 const Transaction = mongoose.model("Transaction", transactionSchema);
 
 module.exports = Transaction;
+

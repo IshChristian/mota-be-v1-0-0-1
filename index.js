@@ -5,6 +5,7 @@ const morgan = require("morgan");
 const swaggerUi = require("swagger-ui-express");
 const swaggerSpec = require("./swagger");
 const connectDB = require("./config/database");
+const { seedDefaults } = require("./services/systemSettingService");
 
 // Load environment variables
 dotenv.config();
@@ -17,7 +18,13 @@ app.use(express.json());
 app.use(morgan("dev"));
 
 // ─── Database Connection ────────────────────────────────
-connectDB();
+connectDB().then(async () => {
+  try {
+    await seedDefaults();
+  } catch (err) {
+    console.error("Failed to seed defaults:", err.message);
+  }
+});
 
 // ─── Swagger Documentation ─────────────────────────────
 app.use(
@@ -53,6 +60,8 @@ const agentRoutes = require("./routes/agentRoutes");
 const ussdRoutes = require("./routes/ussdRoutes");
 const walletRoutes = require("./routes/walletRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
+const systemSettingRoutes = require("./routes/systemSettingRoutes");
+const loanRoutes = require("./routes/loanRoutes");
 
 // ─── API Routes ─────────────────────────────────────────
 // (Auth moved to new module below)
@@ -70,6 +79,8 @@ app.use("/api/agent", agentRoutes);
 app.use("/api/ussd", ussdRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/payment", paymentRoutes);
+app.use("/api/system-settings", systemSettingRoutes);
+app.use("/api/loans", loanRoutes);
 
 // ─── Root Endpoint ──────────────────────────────────────
 app.get("/", (req, res) => {
@@ -92,6 +103,8 @@ app.get("/", (req, res) => {
       roles: "/api/roles",
       settings: "/api/settings",
       search: "/api/search",
+      systemSettings: "/api/system-settings",
+      loans: "/api/loans",
     },
   });
 });

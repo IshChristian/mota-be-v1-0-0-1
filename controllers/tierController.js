@@ -1,5 +1,5 @@
 const Tier = require("../models/Tier");
-const { getTierInfo, TIER_THRESHOLDS } = require("../services/tierService");
+const { getTierInfo, getThresholds } = require("../services/tierService");
 
 /**
  * Get tier info for authenticated driver
@@ -9,13 +9,14 @@ const getMyTier = async (req, res) => {
     try {
         const driverId = req.user.id;
         const tierInfo = await getTierInfo(driverId);
+        const thresholds = await getThresholds();
 
         res.status(200).json({
             tier: tierInfo.tier,
             totalRides: tierInfo.totalRides,
             monthlyRides: tierInfo.monthlyRides,
             multiplier: tierInfo.multiplier,
-            thresholds: TIER_THRESHOLDS,
+            thresholds,
         });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
@@ -31,7 +32,7 @@ const getLeaderboard = async (req, res) => {
         const limit = parseInt(req.query.limit) || 10;
 
         const leaderboard = await Tier.find()
-            .sort({ monthlyRides: -1 })
+            .sort({ totalRides: -1 })
             .limit(limit)
             .populate("driverId", "firstName lastName phone");
 

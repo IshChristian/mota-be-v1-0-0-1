@@ -20,9 +20,14 @@ const register = async (req, res) => {
             return res.status(400).json({ message: "firstName, lastName, phone, and nationalId are required" });
         }
 
-        const existingUser = await User.findOne({ $or: [{ phone }, { nationalId }, { email: email || "ignore" }] });
+        const orQuery = [{ phone }, { nationalId }];
+        if (email) orQuery.push({ email });
+
+        const existingUser = await User.findOne({ $or: orQuery });
         if (existingUser) {
-            return res.status(400).json({ message: "User with this phone, email, or national ID already exists" });
+            let conflict = "phone or national ID";
+            if (email && existingUser.email === email) conflict = "email";
+            return res.status(400).json({ message: `User with this ${conflict} already exists` });
         }
 
         const userReferralCode = `MOTA-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
@@ -44,10 +49,14 @@ const register = async (req, res) => {
             isActive: false, // Inactive until registration fee is paid
         });
 
-        // If rider/driver, trigger MoMo payment for 5,000 RWF registration fee
+        // If rider/driver or agent, trigger MoMo payment for registration fee
         let paymentInfo = null;
-        if (newUser.role === "driver") {
-            const regFee = await configService.getConfig("registration_fee", 5000);
+        if (newUser.role === "driver" || newUser.role === "agent") {
+            const isAgent = newUser.role === "agent";
+            const configKey = isAgent ? "agent_registration_fee" : "registration_fee";
+            const defaultFee = isAgent ? 10000 : 5000;
+            const regFee = await configService.getConfig(configKey, defaultFee);
+
             const result = await paymentService.requestCashIn(phone, regFee, process.env.PAYPACK_ENV || "development");
             if (result.success) {
                 newUser.registrationPaypackRef = result.data?.ref;
@@ -93,13 +102,18 @@ const register = async (req, res) => {
 
 const login = async (req, res) => {
     try {
-        const { phone, email, password } = req.body;
+        const { identifier, password } = req.body;
 
-        if (!password || (!phone && !email)) {
-            return res.status(400).json({ message: "Credentials missing" });
+        if (!identifier || !password) {
+            return res.status(400).json({ message: "identifier (phone or email) and password are required." });
         }
 
-        const query = phone ? { phone } : { email };
+        // Auto-detect: if identifier contains '@' treat as email, otherwise as phone
+        const isEmail = identifier.includes("@");
+        const query = isEmail
+            ? { email: identifier }
+            : { phone: identifier };
+
         const user = await User.findOne(query);
 
         if (!user || (!user.password && !user.googleId)) {
@@ -267,6 +281,9 @@ const checkRegistrationPayment = async (req, res) => {
         if (result.success && result.data.status === "successful") {
             user.registrationPaid = true;
             user.isActive = true;
+            if (user.role === "agent") {
+                user.kycLevel = "full";
+            }
             await user.save();
 
             // Reward referrer with Fuel Voucher if exists

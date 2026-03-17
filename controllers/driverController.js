@@ -206,48 +206,60 @@ const getRideHistory = async (req, res) => {
 const payFineApi = async (req, res) => {
     try {
         const driverId = req.user.id;
-        const { fineId } = req.body;
+        const { fineId, paymentAmount } = req.body;
 
         const fine = await Fine.findById(fineId);
         if (!fine) return res.status(404).json({ message: "Fine not found" });
-        if (fine.status === "paid") return res.status(400).json({ message: "Fine is already paid" });
+        if (fine.status === "paid") return res.status(400).json({ message: "Fine is already fully paid" });
         if (fine.driverId.toString() !== driverId.toString()) {
             return res.status(403).json({ message: "Unauthorized to pay this fine" });
         }
 
-        // Apply a dynamic interest fee to the fine amount
-        const interestRate = await configService.getConfig("fine_interest_rate", DEFAULT_FINE_INTEREST_RATE);
-        const interest = Math.round(fine.amount * interestRate);
-        const totalAmount = fine.amount + interest;
+        // Logic for partial payment
+        const remainingBalance = fine.totalAmountWithInterest - fine.paidAmount;
+        const amountToPay = paymentAmount || remainingBalance;
 
-        // Provide custom wrapper logic since payFine in walletService might do its own SMS
-        // We will do debitWallet directly here to manage custom msg
-        const wallet = await walletService.debitWallet(driverId.toString(), totalAmount, "fine_payment", {
-            description: `Fine payment inclusive of ${interestRate * 100}% interest. Fine ID: ${fine.fineId}`,
+        if (amountToPay <= 0) return res.status(400).json({ message: "Invalid payment amount" });
+        if (amountToPay > remainingBalance) return res.status(400).json({ message: `Payment exceeds remaining balance of ${remainingBalance} RWF` });
+
+        // Debit wallet
+        const wallet = await walletService.debitWallet(driverId.toString(), amountToPay, "fine_payment", {
+            description: `Fine payment for ID: ${fine.fineId}. Part of ${fine.totalAmountWithInterest} RWF total.`,
         });
 
-        fine.status = "paid";
+        fine.paidAmount += amountToPay;
+        if (fine.paidAmount >= fine.totalAmountWithInterest) {
+            fine.status = "paid";
+        } else {
+            fine.status = "partially_paid";
+        }
         await fine.save();
 
         const user = await User.findById(driverId);
         if (user) {
-            const smsText = `MOTA: Fine ${fine.fineId} paid. Original: ${fine.amount} RWF, Interest: ${interest} RWF. Total: ${totalAmount} RWF.`;
+            const smsText = `MOTA: Fine ${fine.fineId} payment of ${amountToPay} RWF successful. Remaining: ${fine.totalAmountWithInterest - fine.paidAmount} RWF.`;
             await sendSMS(user.phone, smsText, "fine_payment");
 
             if (user.email) {
-                const html = `<h2>MOTA Fine Paid</h2>
-                              <p>Your fine (ID: ${fine.fineId}) was successfully paid off.</p>
+                const html = `<h2>MOTA Fine Payment</h2>
+                              <p>A payment of ${amountToPay} RWF was made against your fine (ID: ${fine.fineId}).</p>
                               <ul>
-                                <li>Original Amount: ${fine.amount} RWF</li>
-                                <li>Interest (${interestRate * 100}%): ${interest} RWF</li>
-                                <li><b>Total Deducted: ${totalAmount} RWF</b></li>
+                                <li>Total with Interest: ${fine.totalAmountWithInterest} RWF</li>
+                                <li>Paid Today: ${amountToPay} RWF</li>
+                                <li>Total Paid: ${fine.paidAmount} RWF</li>
+                                <li><b>Remaining Balance: ${fine.totalAmountWithInterest - fine.paidAmount} RWF</b></li>
                               </ul>
                               <p>Your current wallet balance is: ${wallet.balance} RWF.</p>`;
                 await sendEmail(user.email, "MOTA Fine Payment Receipt", smsText, html);
             }
         }
 
-        res.status(200).json({ message: "Fine paid successfully", totalAmount, interest, fine });
+        res.status(200).json({
+            message: fine.status === "paid" ? "Fine fully paid" : "Partial payment successful",
+            amountToPay,
+            remaining: fine.totalAmountWithInterest - fine.paidAmount,
+            fine
+        });
     } catch (error) {
         if (error.message.includes("Insufficient wallet balance")) {
             return res.status(400).json({ message: error.message });

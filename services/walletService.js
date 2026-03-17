@@ -4,13 +4,8 @@ const { sendSMS } = require("./smsService");
 const User = require("../models/User");
 const configService = require("./configService");
 
-const DEFAULT_COMMISSION_RATE = 0.10; // 10%
-const DEFAULT_TRANSACTION_FEE_RATE = 0.01; // 1%
-
 /**
- * Get or create wallet for a driver
- * @param {string} driverId
- * @returns {Object} wallet document
+ * Get or create wallet for a user (driver/agent)
  */
 const getOrCreateWallet = async (driverId) => {
     let wallet = await Wallet.findOne({ driverId });
@@ -22,8 +17,6 @@ const getOrCreateWallet = async (driverId) => {
 
 /**
  * Get wallet balance
- * @param {string} driverId
- * @returns {number} balance
  */
 const getBalance = async (driverId) => {
     const wallet = await getOrCreateWallet(driverId);
@@ -31,28 +24,21 @@ const getBalance = async (driverId) => {
 };
 
 /**
- * Credit wallet (add funds)
- * @param {string} driverId
- * @param {number} amount
- * @param {string} type - transaction type
- * @param {Object} meta - {rideId, agentId, reference, description, paypackRef}
+ * Credit wallet (add funds) — no automatic fee deduction
  */
 const creditWallet = async (driverId, amount, type, meta = {}) => {
     if (amount <= 0) throw new Error("Credit amount must be positive");
 
-    const feeRate = await configService.getConfig("transaction_fee_rate", DEFAULT_TRANSACTION_FEE_RATE);
-    const fee = Math.round(amount * feeRate);
-    const netAmount = amount - fee;
-
     const wallet = await getOrCreateWallet(driverId);
-    wallet.balance += netAmount;
+    wallet.balance += amount;
     await wallet.save();
 
     await Transaction.create({
         driverId,
         agentId: meta.agentId || null,
         rideId: meta.rideId || null,
-        amount: netAmount,
+        amount,
+        feeAmount: meta.feeAmount || 0,
         type,
         status: "completed",
         reference: meta.reference || null,
@@ -60,40 +46,21 @@ const creditWallet = async (driverId, amount, type, meta = {}) => {
         paypackRef: meta.paypackRef || null,
     });
 
-    if (fee > 0) {
-        await Transaction.create({
-            driverId,
-            amount: fee,
-            type: "transaction_fee",
-            status: "completed",
-            description: `MOTA ${feeRate * 100}% Transaction Fee (Credit Deduction)`,
-            rideId: meta.rideId || null,
-        });
-    }
-
     return wallet;
 };
 
 /**
- * Debit wallet (deduct funds)
- * @param {string} driverId
- * @param {number} amount
- * @param {string} type
- * @param {Object} meta
+ * Debit wallet (deduct funds) — no automatic fee deduction
  */
 const debitWallet = async (driverId, amount, type, meta = {}) => {
     if (amount <= 0) throw new Error("Debit amount must be positive");
 
-    const feeRate = await configService.getConfig("transaction_fee_rate", DEFAULT_TRANSACTION_FEE_RATE);
-    const fee = Math.round(amount * feeRate);
-    const totalDeduction = amount + fee;
-
     const wallet = await getOrCreateWallet(driverId);
-    if (wallet.balance < totalDeduction) {
-        throw new Error(`Insufficient wallet balance. Require ${totalDeduction} RWF (incl. ${feeRate * 100}% fee)`);
+    if (wallet.balance < amount) {
+        throw new Error(`Insufficient wallet balance. Required: ${amount} RWF, Available: ${wallet.balance} RWF`);
     }
 
-    wallet.balance -= totalDeduction;
+    wallet.balance -= amount;
     await wallet.save();
 
     await Transaction.create({
@@ -101,6 +68,7 @@ const debitWallet = async (driverId, amount, type, meta = {}) => {
         agentId: meta.agentId || null,
         rideId: meta.rideId || null,
         amount: -amount,
+        feeAmount: meta.feeAmount || 0,
         type,
         status: "completed",
         reference: meta.reference || null,
@@ -108,45 +76,43 @@ const debitWallet = async (driverId, amount, type, meta = {}) => {
         paypackRef: meta.paypackRef || null,
     });
 
-    if (fee > 0) {
-        await Transaction.create({
-            driverId,
-            amount: -fee,
-            type: "transaction_fee",
-            status: "completed",
-            description: `MOTA ${feeRate * 100}% Transaction Fee (Debit Fee)`,
-        });
-    }
-
     return wallet;
 };
 
 /**
- * Calculate commission and driver earning
- * @param {number} fare
- * @returns {Promise<{ commission, driverEarning }>}
+ * Calculate ride commission from system settings
+ * ride_commission_percentage stored as percentage (e.g. 10 means 10%)
  */
 const calculateCommission = async (fare) => {
-    const commissionRate = await configService.getConfig("ride_commission_rate", DEFAULT_COMMISSION_RATE);
-    const commission = Math.round(fare * commissionRate);
+    const commissionPercentage = await configService.getConfig("ride_commission_percentage", 10);
+    const commission = Math.round(fare * (commissionPercentage / 100));
     const driverEarning = fare - commission;
-    return { commission, driverEarning };
+    return { commission, driverEarning, commissionRate: commissionPercentage / 100 };
 };
 
 /**
- * Credit driver wallet after ride payment
- * @param {string} driverId
- * @param {string} rideId
- * @param {number} fare
+ * Credit driver wallet after ride payment (with commission deduction)
  */
 const creditRidePayment = async (driverId, rideId, fare) => {
     const { commission, driverEarning } = await calculateCommission(fare);
 
-    // Credit driver
-    const wallet = await creditWallet(driverId, driverEarning, "cash_in", {
+    // Credit driver with earnings (after commission)
+    const wallet = await creditWallet(driverId, driverEarning, "ride_payment", {
         rideId,
-        description: `Cash in (Ride). Amount: ${fare} RWF. Commission: ${commission} RWF.`,
+        description: `Ride payment. Fare: ${fare} RWF. Commission: ${commission} RWF.`,
     });
+
+    // Record platform commission transaction
+    if (commission > 0) {
+        await Transaction.create({
+            driverId,
+            rideId,
+            amount: commission,
+            type: "platform_commission",
+            status: "completed",
+            description: `Platform commission from ride. ${commission} RWF.`,
+        });
+    }
 
     // SMS to driver
     const user = await User.findById(driverId);
@@ -163,21 +129,24 @@ const creditRidePayment = async (driverId, rideId, fare) => {
 
 /**
  * Agent cash-in: credit driver wallet with physical cash via agent
- * @param {string} agentId
- * @param {string} driverId
- * @param {number} amount
+ * Uses agent_cash_in_fee_percentage from settings
  */
 const agentCashIn = async (agentId, driverId, amount) => {
-    const wallet = await creditWallet(driverId, amount, "agent_cash_in", {
+    const feePercentage = await configService.getConfig("agent_cash_in_fee_percentage", 0);
+    const fee = Math.round(amount * (feePercentage / 100));
+    const netAmount = amount - fee;
+
+    const wallet = await creditWallet(driverId, netAmount, "agent_cash_in", {
         agentId,
-        description: `Agent cash-in. Amount: ${amount} RWF`,
+        feeAmount: fee,
+        description: `Agent cash-in. Amount: ${amount} RWF${fee > 0 ? `. Fee: ${fee} RWF` : ""}.`,
     });
 
     const user = await User.findById(driverId);
     if (user) {
         await sendSMS(
             user.phone,
-            `MOTA Wallet\nCash deposit confirmed.\nAmount: ${amount} RWF\nWallet Balance: ${wallet.balance} RWF`,
+            `MOTA Wallet\nCash deposit confirmed.\nAmount: ${netAmount} RWF\nWallet Balance: ${wallet.balance} RWF`,
             "cash_in"
         );
     }
@@ -186,11 +155,48 @@ const agentCashIn = async (agentId, driverId, amount) => {
 };
 
 /**
+ * Cash-out with fee deduction from settings
+ * Uses cash_out_fee_percentage from settings
+ */
+const processCashOut = async (driverId, amount) => {
+    const feePercentage = await configService.getConfig("cash_out_fee_percentage", 2);
+    const fee = Math.round(amount * (feePercentage / 100));
+    const totalDeduction = amount + fee;
+
+    const wallet = await getOrCreateWallet(driverId);
+    if (wallet.balance < totalDeduction) {
+        throw new Error(`Insufficient balance. Need ${totalDeduction} RWF (incl. ${feePercentage}% fee). Available: ${wallet.balance} RWF`);
+    }
+
+    wallet.balance -= totalDeduction;
+    await wallet.save();
+
+    // Record cash-out transaction
+    await Transaction.create({
+        driverId,
+        amount: -amount,
+        type: "cash_out",
+        status: "completed",
+        description: `Cash-out withdrawal. Amount: ${amount} RWF.`,
+    });
+
+    // Record fee transaction
+    if (fee > 0) {
+        await Transaction.create({
+            driverId,
+            amount: -fee,
+            feeAmount: fee,
+            type: "cash_out_fee",
+            status: "completed",
+            description: `Cash-out fee (${feePercentage}%). Fee: ${fee} RWF.`,
+        });
+    }
+
+    return { wallet, fee, totalDeduction };
+};
+
+/**
  * Admin credit: manually send money to driver wallet
- * @param {string} adminId
- * @param {string} driverId
- * @param {number} amount
- * @param {string} reason
  */
 const adminCreditWallet = async (adminId, driverId, amount, reason) => {
     const wallet = await creditWallet(driverId, amount, "admin_credit", {
@@ -210,10 +216,7 @@ const adminCreditWallet = async (adminId, driverId, amount, reason) => {
 };
 
 /**
- * Pay fine: deduct from wallet, mark fine paid
- * @param {string} driverId
- * @param {string} fineId  (Mongo _id of Fine doc)
- * @param {number} amount
+ * Pay fine: deduct from wallet
  */
 const payFine = async (driverId, fineId, amount) => {
     const wallet = await debitWallet(driverId, amount, "fine_payment", {
@@ -234,19 +237,21 @@ const payFine = async (driverId, fineId, amount) => {
 
 /**
  * Referral reward: credit wallet with referral bonus
- * @param {string} driverId
- * @param {number} amount
+ * Amount comes from system settings
  */
 const rewardReferral = async (driverId, amount) => {
-    const wallet = await creditWallet(driverId, amount, "referral_reward", {
-        description: `Referral reward. Amount: ${amount} RWF`,
+    // If amount not passed, get from settings
+    const rewardAmount = amount || await configService.getConfig("referral_reward_amount", 5000);
+
+    const wallet = await creditWallet(driverId, rewardAmount, "referral_reward", {
+        description: `Referral reward. Amount: ${rewardAmount} RWF`,
     });
 
     const user = await User.findById(driverId);
     if (user) {
         await sendSMS(
             user.phone,
-            `MOTA Referral\nCongratulations! You earned a referral reward of ${amount} RWF.\nWallet Balance: ${wallet.balance} RWF`,
+            `MOTA Referral\nCongratulations! You earned a referral reward of ${rewardAmount} RWF.\nWallet Balance: ${wallet.balance} RWF`,
             "referral_reward"
         );
     }
@@ -262,8 +267,9 @@ module.exports = {
     calculateCommission,
     creditRidePayment,
     agentCashIn,
+    processCashOut,
     adminCreditWallet,
     payFine,
     rewardReferral,
-    COMMISSION_RATE: DEFAULT_COMMISSION_RATE,
+    COMMISSION_RATE: 0.10, // backward compat reference
 };

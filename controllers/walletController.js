@@ -87,21 +87,18 @@ const requestCashOut = async (req, res) => {
             return res.status(400).json({ message: "Valid amount is required" });
         }
 
-        const wallet = await walletService.getOrCreateWallet(driverId);
-        if (wallet.balance < amount) {
-            return res.status(400).json({
-                message: "Insufficient balance",
-                balance: wallet.balance,
-            });
-        }
-
         const user = await User.findById(driverId);
         if (!user || !user.phone) {
             return res.status(400).json({ message: "Driver phone number not found." });
         }
 
-        // Instantly debit wallet since no approval needed
-        await walletService.debitWallet(driverId.toString(), amount, "cash_out", { description: "API Instant Cash-Out" });
+        // Process cash-out with fee deduction
+        let cashOutResult;
+        try {
+            cashOutResult = await walletService.processCashOut(driverId.toString(), amount);
+        } catch (err) {
+            return res.status(400).json({ message: err.message });
+        }
 
         // Paypack Cash Out to driver's phone
         const result = await paymentService.requestCashOut(
@@ -111,23 +108,18 @@ const requestCashOut = async (req, res) => {
         );
 
         if (result.success) {
-            const tx = await Transaction.create({
-                driverId,
-                amount,
-                type: "cash_out",
-                status: "completed",
-                paypackRef: result.data?.ref,
-                description: `API Instant Cash-Out to ${user.phone}. Amount: ${amount} RWF`,
-            });
-
             return res.status(200).json({
-                message: `Success! ${amount} RWF has been successfully sent to your MoMo account (${user.phone}).`,
-                transactionId: tx._id,
+                message: `Success! ${amount} RWF has been sent to your MoMo account (${user.phone}). Fee: ${cashOutResult.fee} RWF.`,
                 amount,
+                fee: cashOutResult.fee,
+                totalDeducted: cashOutResult.totalDeduction,
+                newBalance: cashOutResult.wallet.balance,
             });
         } else {
             // Rollback on failure
-            await walletService.creditWallet(driverId.toString(), amount, "cash_out_refund", { description: "Refund for failed cash-out" });
+            await walletService.creditWallet(driverId.toString(), cashOutResult.totalDeduction, "cash_out_refund", {
+                description: "Refund for failed cash-out (includes fee)"
+            });
             return res.status(502).json({ message: "Gateway error. Cash-out failed. Your balance is restored." });
         }
     } catch (error) {

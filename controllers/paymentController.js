@@ -4,6 +4,7 @@ const Wallet = require("../models/Wallet");
 const User = require("../models/User");
 const walletService = require("../services/walletService");
 const paymentService = require("../services/paymentService");
+const loanService = require("../services/loanService");
 const { sendSMS } = require("../services/smsService");
 const { sendEmail } = require("../services/notificationService");
 
@@ -153,6 +154,21 @@ const handleWebhook = async (req, res) => {
                     const { updateTier } = require("../services/tierService");
                     await updateStreak(tx.driverId.toString());
                     await updateTier(tx.driverId.toString());
+
+                    // Auto-deduct loan repayment from ride earnings
+                    try {
+                        const loanDeducted = await loanService.autoDeductFromRide(tx.driverId.toString(), driverEarning);
+                        if (loanDeducted > 0 && user) {
+                            const updatedWallet = await Wallet.findOne({ driverId: tx.driverId });
+                            await sendSMS(
+                                user.phone,
+                                `MOTA Loan\nAuto-repayment of ${loanDeducted} RWF deducted from ride earnings.\nWallet Balance: ${updatedWallet?.balance || 0} RWF`,
+                                "fine_loan_repayment"
+                            );
+                        }
+                    } catch (loanErr) {
+                        console.error("Loan auto-deduction error:", loanErr.message);
+                    }
 
                 } else if (tx.type === "cash_in") {
                     // Pure wallet deposit → credit full amount

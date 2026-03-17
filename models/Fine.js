@@ -18,8 +18,20 @@ const fineSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ["pending", "approved", "rejected"],
+        enum: ["pending", "approved", "rejected", "partially_paid", "paid"],
         default: "pending",
+    },
+    totalAmountWithInterest: {
+        type: Number,
+        default: 0,
+    },
+    paidAmount: {
+        type: Number,
+        default: 0,
+    },
+    interestRate: {
+        type: Number,
+        default: 0,
     },
     requestedAt: {
         type: Date,

@@ -145,6 +145,67 @@ router.post("/configs", authorize("settings:update"), adminController.updateSyst
 
 /**
  * @swagger
+ * /api/admin/configs/financial:
+ *   patch:
+ *     summary: Update financial and loan system settings
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               registration_fee: { type: number, description: "Driver registration fee (RWF)" }
+ *               agent_registration_fee: { type: number, description: "Agent registration fee (RWF)" }
+ *               ride_commission_percentage: { type: number, description: "Ride commission %" }
+ *               cash_out_fee_percentage: { type: number, description: "Cash-out fee %" }
+ *               agent_cash_in_fee_percentage: { type: number, description: "Agent cash-in fee %" }
+ *               referral_reward_amount: { type: number, description: "Referral reward (RWF)" }
+ *               fine_loan_interest_rate: { type: number, description: "Loan interest rate %" }
+ *               fine_loan_max_amount: { type: number, description: "Max loan amount (RWF)" }
+ *               fine_loan_auto_repayment_percentage: { type: number, description: "Auto-repayment % from rides" }
+ *               fine_loan_max_duration_days: { type: number, description: "Max loan duration (days)" }
+ *               tier_bronze_rides: { type: number, description: "Bronze tier total rides" }
+ *               tier_silver_rides: { type: number, description: "Silver tier total rides" }
+ *               tier_gold_rides: { type: number, description: "Gold tier total rides" }
+ *               tier_platinum_rides: { type: number, description: "Platinum tier total rides" }
+ *               tier_gorilla_rides: { type: number, description: "Gorilla tier total rides" }
+ *     responses:
+ *       200:
+ *         description: Financial and tier settings updated
+ */
+router.patch("/configs/financial", authorize("settings:financial"), adminController.updateFinancialSettings);
+
+/**
+ * @swagger
+ * /api/admin/configs/general:
+ *   patch:
+ *     summary: Update general platform settings
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               app_name: { type: string }
+ *               support_phone: { type: string }
+ *               support_email: { type: string }
+ *               maintenance_mode: { type: boolean }
+ *     responses:
+ *       200:
+ *         description: General settings updated
+ */
+router.patch("/configs/general", authorize("settings:general"), adminController.updateGeneralSettings);
+
+/**
+ * @swagger
  * /api/admin/drivers:
  *   get:
  *     summary: Get all drivers (paginated, searchable)
@@ -304,6 +365,7 @@ router.get("/agents", authorize("user:view"), adminController.getAgentsRegistrat
  *             properties:
  *               id: { type: string }
  *               status: { type: string, enum: [approved, rejected] }
+ *               amount: { type: number, description: "Set or override fine amount (RWF)" }
  *     responses:
  *       200:
  *         description: Fine status updated

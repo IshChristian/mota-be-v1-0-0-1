@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 
-const settingSchema = new mongoose.Schema(
+const userSettingSchema = new mongoose.Schema(
     {
         userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, unique: true },
         profile: {
@@ -24,7 +24,8 @@ const settingSchema = new mongoose.Schema(
             theme: { type: String, enum: ["light", "dark", "system"], default: "system" },
         },
     },
-    { timestamps: true }
+    { timestamps: true, collection: "settings" }
 );
 
-module.exports = mongoose.model("Setting", settingSchema);
+module.exports = mongoose.model("UserSetting", userSettingSchema);
+

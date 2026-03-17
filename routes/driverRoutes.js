@@ -347,9 +347,12 @@ router.get("/leaderboard", authMiddleware, tierController.getLeaderboard);
  *             properties:
  *               fineId:
  *                 type: string
+ *               paymentAmount:
+ *                 type: number
+ *                 description: Optional amount to pay (defaults to full balance)
  *     responses:
  *       200:
- *         description: Fine paid successfully
+ *         description: Fine paid successful (fully or partially)
  *       400:
  *         description: Bad request or insufficient funds
  *       404:

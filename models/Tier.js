@@ -11,8 +11,8 @@ const tierSchema = new mongoose.Schema({
     monthlyRides: { type: Number, default: 0 },
     tier: {
         type: String,
-        enum: ["bronze", "silver", "gold", "platinum"],
-        default: "bronze",
+        enum: ["starter", "bronze", "silver", "gold", "platinum", "gorilla"],
+        default: "starter",
     },
     multiplier: { type: Number, default: 1.0 },
     month: { type: Number },

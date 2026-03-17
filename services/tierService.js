@@ -1,35 +1,43 @@
 const Tier = require("../models/Tier");
 const Ride = require("../models/Ride");
-const { sendSMS } = require("./smsService");
 const User = require("../models/User");
-
-// Tier thresholds (monthly rides)
-const TIER_THRESHOLDS = {
-    bronze: 0,
-    silver: 400,
-    gold: 600,
-    platinum: 800,
-};
+const { sendSMS } = require("./smsService");
+const { getSetting } = require("./systemSettingService");
 
 const TIER_MULTIPLIERS = {
-    bronze: 1.0,
+    starter: 1.0,
+    bronze: 1.1,
     silver: 1.2,
     gold: 1.5,
     platinum: 2.0,
+    gorilla: 3.0,
+};
+
+const getThresholds = async () => {
+    return {
+        starter: 0,
+        bronze: await getSetting("tier_bronze_rides", 600),
+        silver: await getSetting("tier_silver_rides", 1500),
+        gold: await getSetting("tier_gold_rides", 5000),
+        platinum: await getSetting("tier_platinum_rides", 100000),
+        gorilla: await getSetting("tier_gorilla_rides", 1000000),
+    };
 };
 
 /**
- * Determine tier based on monthly ride count
- * @param {number} monthlyRides - Number of rides this month
+ * Determine tier based on total (lifetime) ride count
+ * @param {number} totalRides - Total lifetime rides
  * @returns {string} Tier name
  */
-function determineTier(monthlyRides) {
-    if (monthlyRides >= 1000) return "platinum";
-    if (monthlyRides >= 800) return "platinum";
-    if (monthlyRides >= 600) return "gold";
-    if (monthlyRides >= 400) return "silver";
-    return "bronze";
-}
+const determineTier = async (totalRides) => {
+    const thresholds = await getThresholds();
+    if (totalRides >= thresholds.gorilla) return "gorilla";
+    if (totalRides >= thresholds.platinum) return "platinum";
+    if (totalRides >= thresholds.gold) return "gold";
+    if (totalRides >= thresholds.silver) return "silver";
+    if (totalRides >= thresholds.bronze) return "bronze";
+    return "starter";
+};
 
 /**
  * Update tier for a driver after a ride is logged
@@ -51,10 +59,9 @@ const updateTier = async (driverId) => {
             createdAt: { $gte: startOfMonth, $lte: endOfMonth },
         });
 
-        // Get total rides all time
         const totalRideCount = await Ride.countDocuments({ driverId, paymentStatus: "completed" });
 
-        const newTier = determineTier(monthlyRideCount);
+        const newTier = await determineTier(totalRideCount);
         const multiplier = TIER_MULTIPLIERS[newTier];
 
         // Find or create tier record
@@ -83,7 +90,7 @@ const updateTier = async (driverId) => {
 
             // Send SMS on tier promotion
             if (previousTier !== newTier) {
-                const tierOrder = ["bronze", "silver", "gold", "platinum"];
+                const tierOrder = ["starter", "bronze", "silver", "gold", "platinum", "gorilla"];
                 if (tierOrder.indexOf(newTier) > tierOrder.indexOf(previousTier)) {
                     const user = await User.findById(driverId);
                     if (user) {
@@ -117,7 +124,7 @@ const getTierInfo = async (driverId) => {
             driverId,
             totalRides: 0,
             monthlyRides: 0,
-            tier: "bronze",
+            tier: "starter",
             multiplier: 1.0,
             month: new Date().getMonth() + 1,
             year: new Date().getFullYear(),
@@ -131,6 +138,6 @@ module.exports = {
     updateTier,
     getTierInfo,
     determineTier,
-    TIER_THRESHOLDS,
+    getThresholds,
     TIER_MULTIPLIERS,
 };
