@@ -45,6 +45,17 @@ const userSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: Date.now },
 });
 
+// Convert empty strings to undefined for sparse-unique fields.
+// MongoDB sparse indexes only skip null/undefined — NOT empty strings.
+// Without this, two users with email: "" would throw a duplicate key error.
+userSchema.pre("validate", function () {
+    if (this.email === "") this.email = undefined;
+    if (this.nationalId === "") this.nationalId = undefined;
+    if (this.googleId === "") this.googleId = undefined;
+    if (this.githubId === "") this.githubId = undefined;
+    if (this.referralCode === "") this.referralCode = undefined;
+});
+
 userSchema.pre("save", function () {
     this.updatedAt = Date.now();
 });

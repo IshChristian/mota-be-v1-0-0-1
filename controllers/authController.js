@@ -16,17 +16,29 @@ const register = async (req, res) => {
     try {
         const { firstName, lastName, phone, nationalId, email, role, referralCode, password } = req.body;
 
-        if (!firstName || !lastName || !phone || !nationalId) {
+        // Sanitize inputs — trim and convert empty strings to undefined
+        const cleanPhone = phone?.trim() || null;
+        const cleanNationalId = nationalId?.trim() || null;
+        const cleanEmail = email?.trim() || null;
+
+        if (!firstName || !lastName || !cleanPhone || !cleanNationalId) {
             return res.status(400).json({ message: "firstName, lastName, phone, and nationalId are required" });
         }
 
-        const orQuery = [{ phone }, { nationalId }];
-        if (email) orQuery.push({ email });
+        // Only include fields in the $or query when they actually have a value
+        // This prevents empty-string from causing false-positive unique index matches
+        const orQuery = [
+            { phone: cleanPhone },
+            { nationalId: cleanNationalId },
+        ];
+        if (cleanEmail) orQuery.push({ email: cleanEmail });
 
         const existingUser = await User.findOne({ $or: orQuery });
         if (existingUser) {
             let conflict = "phone or national ID";
-            if (email && existingUser.email === email) conflict = "email";
+            if (cleanEmail && existingUser.email === cleanEmail) conflict = "email";
+            else if (existingUser.phone === cleanPhone) conflict = "phone";
+            else if (existingUser.nationalId === cleanNationalId) conflict = "national ID";
             return res.status(400).json({ message: `User with this ${conflict} already exists` });
         }
 
@@ -38,12 +50,12 @@ const register = async (req, res) => {
         }
 
         const newUser = await User.create({
-            firstName,
-            lastName,
-            phone,
-            email,
-            nationalId,
-            role: role || "user", // Default to user if not specified
+            firstName: firstName.trim(),
+            lastName: lastName.trim(),
+            phone: cleanPhone,
+            email: cleanEmail || undefined,   // store undefined so sparse index skips it
+            nationalId: cleanNationalId,
+            role: role || "user",
             referralCode: userReferralCode,
             password: hashedPassword,
             isActive: false, // Inactive until registration fee is paid
@@ -57,7 +69,7 @@ const register = async (req, res) => {
             const defaultFee = isAgent ? 10000 : 5000;
             const regFee = await configService.getConfig(configKey, defaultFee);
 
-            const result = await paymentService.requestCashIn(phone, regFee, process.env.PAYPACK_ENV || "development");
+            const result = await paymentService.requestCashIn(cleanPhone, regFee, process.env.PAYPACK_ENV || "development");
             if (result.success) {
                 newUser.registrationPaypackRef = result.data?.ref;
                 await newUser.save();
@@ -73,7 +85,7 @@ const register = async (req, res) => {
             const referrer = await User.findOne({ referralCode });
             if (referrer) {
                 await Referral.create({ referrerId: referrer._id, referredUserId: newUser._id, reward: 500, status: "pending" });
-                await sendSMS(referrer.phone, `${firstName} signed up using your code! Reward pending.`, "referral_reward");
+                await sendSMS(referrer.phone, `${firstName.trim()} signed up using your code! Reward pending.`, "referral_reward");
             }
         }
 
@@ -83,10 +95,10 @@ const register = async (req, res) => {
         newUser.otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
         await newUser.save();
 
-        await sendSMS(phone, `Welcome to MOTA! Your code: ${otp}.`, "registration");
+        await sendSMS(cleanPhone, `Welcome to MOTA! Your code: ${otp}.`, "registration");
 
         // Email Verification trigger if email exists
-        if (email) {
+        if (cleanEmail) {
             await authService.sendVerificationEmail(newUser);
         }
 
