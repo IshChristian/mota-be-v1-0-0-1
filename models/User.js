@@ -53,6 +53,6 @@ userSchema.pre("findOneAndUpdate", function () {
     this.set({ updatedAt: Date.now() });
 });
 
-const User = mongoose.model("User", userSchema);
+const User = mongoose.model("Users", userSchema);
 
 module.exports = User;
