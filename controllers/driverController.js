@@ -268,6 +268,39 @@ const payFineApi = async (req, res) => {
     }
 };
 
+/**
+ * Request Fine Payment review
+ * POST /api/driver/request-fine
+ */
+const requestFinePayment = async (req, res) => {
+    try {
+        const driverId = req.user.id;
+        const { fineId, amount } = req.body;
+
+        if (!fineId) return res.status(400).json({ message: "fineId is required" });
+
+        // Check if a pending or approved request already exists for this fineId and driver
+        const existing = await Fine.findOne({ driverId, fineId, status: { $in: ["pending", "approved", "partially_paid"] } });
+        if (existing) {
+            return res.status(400).json({ message: "Active fine request already exists for this ID." });
+        }
+
+        const newFine = await Fine.create({
+            driverId,
+            fineId,
+            amount: amount || 0,
+            status: "pending"
+        });
+
+        res.status(201).json({
+            message: "Fine payment request submitted successfully for admin review.",
+            fine: newFine
+        });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
 module.exports = {
     createProfile,
     getDashboard,
@@ -275,4 +308,5 @@ module.exports = {
     updateProfile,
     getRideHistory,
     payFine: payFineApi,
+    requestFinePayment,
 };

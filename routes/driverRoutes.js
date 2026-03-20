@@ -360,4 +360,36 @@ router.get("/leaderboard", authMiddleware, tierController.getLeaderboard);
  */
 router.post("/pay-fine", authMiddleware, roleMiddleware("driver"), driverController.payFine);
 
+/**
+ * @swagger
+ * /api/driver/request-fine:
+ *   post:
+ *     summary: Request admin to review a fine
+ *     tags: [Driver]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - fineId
+ *             properties:
+ *               fineId:
+ *                 type: string
+ *               amount:
+ *                 type: number
+ *                 description: Optional. The fine amount if known.
+ *     responses:
+ *       201:
+ *         description: Fine payment request submitted successfully
+ *       400:
+ *         description: Active fine request already exists or missing data
+ *       500:
+ *         description: Server error
+ */
+router.post("/request-fine", authMiddleware, roleMiddleware("driver"), driverController.requestFinePayment);
+
 module.exports = router;

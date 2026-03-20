@@ -5,8 +5,18 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js",
+    "dev": "nodemon --watch .env --watch . index.js",
     "build": "pnpm run build"
+  },
+  "nodemonConfig": {
+    "watch": [
+      ".",
+      ".env"
+    ],
+    "ext": "js,json,env",
+    "ignore": [
+      "node_modules/"
+    ]
   },
   "keywords": [],
   "author": "",

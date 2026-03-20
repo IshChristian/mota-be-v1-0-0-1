@@ -36,10 +36,12 @@ const register = async (req, res) => {
         const existingUser = await User.findOne({ $or: orQuery });
         if (existingUser) {
             let conflict = "phone or national ID";
-            if (cleanEmail && existingUser.email === cleanEmail) conflict = "email";
-            else if (existingUser.phone === cleanPhone) conflict = "phone";
-            else if (existingUser.nationalId === cleanNationalId) conflict = "national ID";
-            return res.status(400).json({ message: `User with this ${conflict} already exists` });
+            let conflictValue = "";
+            if (cleanEmail && existingUser.email === cleanEmail) { conflict = "email"; conflictValue = cleanEmail; }
+            else if (existingUser.phone === cleanPhone) { conflict = "phone"; conflictValue = cleanPhone; }
+            else if (existingUser.nationalId === cleanNationalId) { conflict = "national ID"; conflictValue = cleanNationalId; }
+            console.warn(`[register] Duplicate conflict on '${conflict}': ${conflictValue}`);
+            return res.status(400).json({ message: `User with this ${conflict} already exists`, conflict, value: conflictValue });
         }
 
         const userReferralCode = `MOTA-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
@@ -326,6 +328,69 @@ const checkRegistrationPayment = async (req, res) => {
     }
 };
 
+/**
+ * Resend OTP for phone verification
+ */
+const resendOTP = async (req, res) => {
+    try {
+        const { phone } = req.body;
+        if (!phone) return res.status(400).json({ message: "Phone number is required." });
+
+        const user = await User.findOne({ phone });
+        if (!user) return res.status(404).json({ message: "User not found." });
+        if (user.isVerified) return res.status(400).json({ message: "User is already verified." });
+
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        user.otpToken = generateOTPToken(user._id, otp);
+        user.otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
+        await user.save();
+
+        await sendSMS(phone, `MOTA: Your new verification code is ${otp}.`, "registration");
+
+        res.status(200).json({ message: "New OTP sent successfully." });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+/**
+ * Initiate registration fee payment manually
+ */
+const payRegistration = async (req, res) => {
+    try {
+        const { phone } = req.body;
+        if (!phone) return res.status(400).json({ message: "Phone number is required." });
+
+        const user = await User.findOne({ phone });
+        if (!user) return res.status(404).json({ message: "User not found." });
+        if (user.registrationPaid) return res.status(400).json({ message: "Account is already active." });
+
+        if (user.role !== "driver" && user.role !== "agent") {
+            return res.status(400).json({ message: "Payment only applies to driver or agent roles." });
+        }
+
+        const isAgent = user.role === "agent";
+        const configKey = isAgent ? "agent_registration_fee" : "registration_fee";
+        const defaultFee = isAgent ? 10000 : 5000;
+        const regFee = await configService.getConfig(configKey, defaultFee);
+
+        const result = await paymentService.requestCashIn(user.phone, regFee, process.env.PAYPACK_ENV || "development");
+
+        if (result.success) {
+            user.registrationPaypackRef = result.data?.ref;
+            await user.save();
+            return res.status(200).json({
+                message: `Payment request of ${regFee} RWF initiated. Please approve MoMo prompt to activate account.`,
+                ref: result.data?.ref
+            });
+        } else {
+            return res.status(500).json({ message: "Payment gateway error. Could not initiate payment." });
+        }
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
 module.exports = {
     register,
     login,
@@ -338,4 +403,6 @@ module.exports = {
     verify2FA,
     verifyOTP,
     checkRegistrationPayment,
+    resendOTP,
+    payRegistration,
 };

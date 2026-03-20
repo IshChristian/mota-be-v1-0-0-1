@@ -350,6 +350,22 @@ router.get("/agents", authorize("user:view"), adminController.getAgentsRegistrat
 
 /**
  * @swagger
+ * /api/admin/fines/pending:
+ *   get:
+ *     summary: Get all pending fine requests
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of pending fines
+ *       500:
+ *         description: Server error
+ */
+router.get("/fines/pending", authorize("fines:view"), adminController.getPendingFineRequests);
+
+/**
+ * @swagger
  * /api/admin/fines/approve:
  *   post:
  *     summary: Approve or Reject a fine

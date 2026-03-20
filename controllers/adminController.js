@@ -145,9 +145,13 @@ const approveFine = async (req, res) => {
     try {
         const { id, status, amount } = req.body; // id = fine _id, status = 'approved' or 'rejected'
         const Fine = require("../models/Fine");
+        const User = require("../models/User");
+        const { sendSMS } = require("../services/smsService");
 
         const fine = await Fine.findById(id);
         if (!fine) return res.status(404).json({ message: "Fine not found" });
+
+        let smsMessage = "";
 
         if (status === "approved") {
             const finalAmount = amount || fine.amount;
@@ -163,14 +167,34 @@ const approveFine = async (req, res) => {
             fine.reviewedBy = req.user.id;
             fine.reviewedAt = Date.now();
             await fine.save();
+            smsMessage = `MOTA: Fine ${fine.fineId} approved. Amount: ${finalAmount} RWF. Total with interest: ${totalWithInterest} RWF.`;
         } else {
             fine.status = status;
             fine.reviewedBy = req.user.id;
             fine.reviewedAt = Date.now();
             await fine.save();
+            smsMessage = `MOTA: Your fine request ${fine.fineId} was rejected by admin.`;
+        }
+
+        const driverUser = await User.findById(fine.driverId);
+        if (driverUser && driverUser.phone) {
+            await sendSMS(driverUser.phone, smsMessage, "fine_review");
         }
 
         res.status(200).json({ message: `Fine ${status}`, data: fine });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+const getPendingFineRequests = async (req, res) => {
+    try {
+        const Fine = require("../models/Fine");
+        const pendingFines = await Fine.find({ status: "pending" })
+            .populate("driverId", "firstName lastName phone nationalId")
+            .sort({ createdAt: -1 });
+
+        res.status(200).json({ data: pendingFines });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
     }
@@ -255,4 +279,5 @@ module.exports = {
     getSystemConfigs,
     updateFinancialSettings,
     updateGeneralSettings,
+    getPendingFineRequests,
 };

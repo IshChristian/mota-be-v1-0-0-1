@@ -64,6 +64,8 @@ userSchema.pre("findOneAndUpdate", function () {
     this.set({ updatedAt: Date.now() });
 });
 
-const User = mongoose.model("Users", userSchema);
+// Register model as "User" so `ref: "User"` works in other schemas. 
+// Mongoose will automatically use the "users" collection.
+const User = mongoose.model("User", userSchema);
 
 module.exports = User;

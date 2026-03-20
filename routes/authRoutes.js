@@ -92,6 +92,54 @@ router.post("/login", authController.login);
  */
 router.post("/verify-otp", authController.verifyOTP);
 
+/**
+ * @swagger
+ * /api/auth/resend-otp:
+ *   post:
+ *     summary: Resend OTP for phone verification
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               phone: { type: string }
+ *     responses:
+ *       200:
+ *         description: New OTP sent successfully
+ *       400:
+ *         description: User already verified or missing phone
+ *       404:
+ *         description: User not found
+ */
+router.post("/resend-otp", authController.resendOTP);
+
+/**
+ * @swagger
+ * /api/auth/pay-registration:
+ *   post:
+ *     summary: Initiate registration fee payment manually via MoMo
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               phone: { type: string }
+ *     responses:
+ *       200:
+ *         description: Payment successfully initiated
+ *       400:
+ *         description: Already active or role does not require payment
+ *       404:
+ *         description: User not found
+ */
+router.post("/pay-registration", authController.payRegistration);
+
 router.post("/forgot-password", authController.forgotPassword);
 router.post("/reset-password", authController.resetPassword);
 
