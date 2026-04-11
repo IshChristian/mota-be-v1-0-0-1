@@ -16,7 +16,10 @@ const options = {
       {
         url: "http://localhost:" + (process.env.PORT || 5000),
         description: "Development server",
-      },
+      },{
+	url: "https://mota-be-v1-0-0-1.onrender.com/api",
+        description: "Production server",
+	}
     ],
     components: {
       securitySchemes: {
