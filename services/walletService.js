@@ -1,8 +1,10 @@
 const Wallet = require("../models/Wallet");
 const Transaction = require("../models/Transaction");
+const Fine = require("../models/Fine");
 const { sendSMS } = require("./smsService");
 const User = require("../models/User");
 const configService = require("./configService");
+const mongoose = require("mongoose");
 
 /**
  * Get or create wallet for a user (driver/agent)
@@ -21,6 +23,256 @@ const getOrCreateWallet = async (driverId) => {
 const getBalance = async (driverId) => {
     const wallet = await getOrCreateWallet(driverId);
     return wallet.balance;
+};
+
+/**
+ * Get a comprehensive wallet summary with all computed amounts:
+ * - balance (current wallet balance)
+ * - today: income, expenses, net, per-type breakdown
+ * - fines: total fines, pending, approved/unpaid, paid, remaining
+ * - allTime: total income, total expenses, total fees paid
+ * - thisWeek / thisMonth snapshots
+ * - recentTransactions (last 20)
+ */
+const getWalletSummary = async (driverId) => {
+    const wallet = await getOrCreateWallet(driverId);
+    const objectId = typeof driverId === "string"
+        ? mongoose.Types.ObjectId.createFromHexString(driverId)
+        : driverId;
+
+    // ── Time boundaries ─────────────────────────────────────────────
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
+    startOfWeek.setHours(0, 0, 0, 0);
+
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    // ── Parallel queries ────────────────────────────────────────────
+    const [
+        todayBreakdown,
+        weekAgg,
+        monthAgg,
+        allTimeAgg,
+        fines,
+        fineAgg,
+        recentTransactions,
+    ] = await Promise.all([
+        // Today's transactions grouped by type
+        Transaction.aggregate([
+            {
+                $match: {
+                    driverId: objectId,
+                    status: "completed",
+                    createdAt: { $gte: startOfToday, $lte: endOfToday },
+                },
+            },
+            {
+                $group: {
+                    _id: "$type",
+                    total: { $sum: "$amount" },
+                    count: { $sum: 1 },
+                    totalFees: { $sum: "$feeAmount" },
+                },
+            },
+        ]),
+
+        // This week totals
+        Transaction.aggregate([
+            {
+                $match: {
+                    driverId: objectId,
+                    status: "completed",
+                    createdAt: { $gte: startOfWeek },
+                },
+            },
+            {
+                $group: {
+                    _id: null,
+                    income: {
+                        $sum: { $cond: [{ $gt: ["$amount", 0] }, "$amount", 0] },
+                    },
+                    expenses: {
+                        $sum: { $cond: [{ $lt: ["$amount", 0] }, { $abs: "$amount" }, 0] },
+                    },
+                    totalFees: { $sum: "$feeAmount" },
+                    count: { $sum: 1 },
+                },
+            },
+        ]),
+
+        // This month totals
+        Transaction.aggregate([
+            {
+                $match: {
+                    driverId: objectId,
+                    status: "completed",
+                    createdAt: { $gte: startOfMonth },
+                },
+            },
+            {
+                $group: {
+                    _id: null,
+                    income: {
+                        $sum: { $cond: [{ $gt: ["$amount", 0] }, "$amount", 0] },
+                    },
+                    expenses: {
+                        $sum: { $cond: [{ $lt: ["$amount", 0] }, { $abs: "$amount" }, 0] },
+                    },
+                    totalFees: { $sum: "$feeAmount" },
+                    count: { $sum: 1 },
+                },
+            },
+        ]),
+
+        // All-time totals
+        Transaction.aggregate([
+            {
+                $match: {
+                    driverId: objectId,
+                    status: "completed",
+                },
+            },
+            {
+                $group: {
+                    _id: null,
+                    income: {
+                        $sum: { $cond: [{ $gt: ["$amount", 0] }, "$amount", 0] },
+                    },
+                    expenses: {
+                        $sum: { $cond: [{ $lt: ["$amount", 0] }, { $abs: "$amount" }, 0] },
+                    },
+                    totalFees: { $sum: "$feeAmount" },
+                    count: { $sum: 1 },
+                },
+            },
+        ]),
+
+        // All fines for this driver
+        Fine.find({ driverId: objectId }).sort({ createdAt: -1 }),
+
+        // Fines aggregation by status
+        Fine.aggregate([
+            { $match: { driverId: objectId } },
+            {
+                $group: {
+                    _id: "$status",
+                    count: { $sum: 1 },
+                    totalAmount: { $sum: "$amount" },
+                    totalWithInterest: { $sum: "$totalAmountWithInterest" },
+                    totalPaid: { $sum: "$paidAmount" },
+                },
+            },
+        ]),
+
+        // Recent transactions
+        Transaction.find({ driverId: objectId })
+            .sort({ createdAt: -1 })
+            .limit(20),
+    ]);
+
+    // ── Build today breakdown ───────────────────────────────────────
+    let todayIncome = 0;
+    let todayExpenses = 0;
+    let todayFees = 0;
+    const todayByType = {};
+
+    for (const row of todayBreakdown) {
+        todayByType[row._id] = {
+            total: row.total,
+            count: row.count,
+            fees: row.totalFees,
+        };
+        if (row.total > 0) {
+            todayIncome += row.total;
+        } else {
+            todayExpenses += Math.abs(row.total);
+        }
+        todayFees += row.totalFees;
+    }
+
+    // ── Build fines summary ─────────────────────────────────────────
+    let finesTotalAmount = 0;
+    let finesTotalWithInterest = 0;
+    let finesTotalPaid = 0;
+    const finesByStatus = {};
+
+    for (const row of fineAgg) {
+        finesByStatus[row._id] = {
+            count: row.count,
+            totalAmount: row.totalAmount,
+            totalWithInterest: row.totalWithInterest,
+            totalPaid: row.totalPaid,
+        };
+        finesTotalAmount += row.totalAmount;
+        finesTotalWithInterest += row.totalWithInterest;
+        finesTotalPaid += row.totalPaid;
+    }
+
+    const finesRemaining = finesTotalWithInterest - finesTotalPaid;
+
+    // ── Helpers ─────────────────────────────────────────────────────
+    const weekData = weekAgg[0] || { income: 0, expenses: 0, totalFees: 0, count: 0 };
+    const monthData = monthAgg[0] || { income: 0, expenses: 0, totalFees: 0, count: 0 };
+    const allTimeData = allTimeAgg[0] || { income: 0, expenses: 0, totalFees: 0, count: 0 };
+
+    return {
+        // ── Core balance ────────────────────────────────────────────
+        balance: wallet.balance,
+        fuelCredits: wallet.fuelCredits || 0,
+
+        // ── Today ───────────────────────────────────────────────────
+        today: {
+            income: todayIncome,
+            expenses: todayExpenses,
+            net: todayIncome - todayExpenses,
+            fees: todayFees,
+            breakdown: todayByType,
+        },
+
+        // ── This week ───────────────────────────────────────────────
+        thisWeek: {
+            income: weekData.income,
+            expenses: weekData.expenses,
+            net: weekData.income - weekData.expenses,
+            fees: weekData.totalFees,
+            transactionCount: weekData.count,
+        },
+
+        // ── This month ──────────────────────────────────────────────
+        thisMonth: {
+            income: monthData.income,
+            expenses: monthData.expenses,
+            net: monthData.income - monthData.expenses,
+            fees: monthData.totalFees,
+            transactionCount: monthData.count,
+        },
+
+        // ── All time ────────────────────────────────────────────────
+        allTime: {
+            totalIncome: allTimeData.income,
+            totalExpenses: allTimeData.expenses,
+            totalFees: allTimeData.totalFees,
+            totalTransactions: allTimeData.count,
+        },
+
+        // ── Fines ───────────────────────────────────────────────────
+        fines: {
+            totalFines: fines.length,
+            totalAmount: finesTotalAmount,
+            totalWithInterest: finesTotalWithInterest,
+            totalPaid: finesTotalPaid,
+            remaining: finesRemaining,
+            byStatus: finesByStatus,
+            list: fines,
+        },
+
+        // ── Recent transactions ─────────────────────────────────────
+        recentTransactions,
+    };
 };
 
 /**
@@ -262,6 +514,7 @@ const rewardReferral = async (driverId, amount) => {
 module.exports = {
     getOrCreateWallet,
     getBalance,
+    getWalletSummary,
     creditWallet,
     debitWallet,
     calculateCommission,

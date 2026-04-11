@@ -7,21 +7,31 @@ const { sendSMS } = require("../services/smsService");
 
 /**
  * GET /api/wallet/balance
- * Get driver's wallet balance and recent transactions
+ * Get driver's full wallet summary: balance, today, fines, all-time, recent transactions
  */
 const getBalance = async (req, res) => {
     try {
         const driverId = req.user.id;
-        const wallet = await walletService.getOrCreateWallet(driverId);
+        const summary = await walletService.getWalletSummary(driverId);
 
-        const transactions = await Transaction.find({ driverId })
-            .sort({ createdAt: -1 })
-            .limit(20);
+        res.status(200).json(summary);
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+/**
+ * GET /api/wallet/summary
+ * Alias — full wallet summary with all calculated amounts
+ */
+const getSummary = async (req, res) => {
+    try {
+        const driverId = req.user.id;
+        const summary = await walletService.getWalletSummary(driverId);
 
         res.status(200).json({
-            balance: wallet.balance,
-            fuelCredits: wallet.fuelCredits || 0,
-            transactions,
+            message: "Wallet summary retrieved",
+            data: summary,
         });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
@@ -129,7 +139,7 @@ const requestCashOut = async (req, res) => {
 
 /**
  * GET /api/wallet/transactions
- * Driver transaction history (paginated)
+ * Driver transaction history (paginated, with optional type filter)
  */
 const getTransactions = async (req, res) => {
     try {
@@ -137,13 +147,19 @@ const getTransactions = async (req, res) => {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 20;
         const skip = (page - 1) * limit;
+        const typeFilter = req.query.type; // optional filter by transaction type
 
-        const transactions = await Transaction.find({ driverId })
+        const query = { driverId };
+        if (typeFilter) {
+            query.type = typeFilter;
+        }
+
+        const transactions = await Transaction.find(query)
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(limit);
 
-        const total = await Transaction.countDocuments({ driverId });
+        const total = await Transaction.countDocuments(query);
 
         res.status(200).json({
             transactions,
@@ -156,7 +172,9 @@ const getTransactions = async (req, res) => {
 
 module.exports = {
     getBalance,
+    getSummary,
     cashIn,
     requestCashOut,
     getTransactions,
 };
+

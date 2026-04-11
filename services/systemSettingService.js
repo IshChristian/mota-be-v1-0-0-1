@@ -12,6 +12,8 @@ const DEFAULT_SETTINGS = [
     { key: "referral_reward_amount", value: 5000, category: "financial", dataType: "number", description: "Referral reward amount in RWF" },
     { key: "agent_registration_fee", value: 10000, category: "financial", dataType: "number", description: "Agent registration fee in RWF" },
     { key: "registration_fee", value: 5000, category: "financial", dataType: "number", description: "Driver registration fee in RWF" },
+    { key: "transfer_fee_percentage", value: 1, category: "financial", dataType: "percentage", description: "Fee % charged on P2P wallet transfers" },
+    { key: "fine_interest_rate", value: 5, category: "financial", dataType: "percentage", description: "Interest % applied to approved fines" },
 
     // Loan
     { key: "fine_loan_interest_rate", value: 5, category: "loan", dataType: "percentage", description: "Interest rate % applied to fine loans" },

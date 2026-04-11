@@ -6,6 +6,7 @@ const swaggerUi = require("swagger-ui-express");
 const swaggerSpec = require("./swagger");
 const connectDB = require("./config/database");
 const { seedDefaults } = require("./services/systemSettingService");
+const { startScheduler } = require("./utils/scheduler");
 
 // Load environment variables
 dotenv.config();
@@ -21,6 +22,8 @@ app.use(morgan("dev"));
 connectDB().then(async () => {
   try {
     await seedDefaults();
+    // Start MOTA Algorithm Engine scheduler
+    startScheduler();
   } catch (err) {
     console.error("Failed to seed defaults:", err.message);
   }
@@ -62,6 +65,11 @@ const walletRoutes = require("./routes/walletRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const systemSettingRoutes = require("./routes/systemSettingRoutes");
 const loanRoutes = require("./routes/loanRoutes");
+const lookupRoutes = require("./routes/lookupRoutes");
+const transferRoutes = require("./routes/transferRoutes");
+const fineRequestRoutes = require("./routes/fineRequestRoutes");
+const algorithmRoutes = require("./routes/algorithmRoutes");
+const platformRoutes = require("./routes/platformRoutes");
 
 // ─── API Routes ─────────────────────────────────────────
 // (Auth moved to new module below)
@@ -81,6 +89,12 @@ app.use("/api/wallet", walletRoutes);
 app.use("/api/payment", paymentRoutes);
 app.use("/api/system-settings", systemSettingRoutes);
 app.use("/api/loans", loanRoutes);
+app.use("/api/lookup", lookupRoutes);
+app.use("/api/transfer", transferRoutes);
+app.use("/api/fine-requests", fineRequestRoutes);
+app.use("/api/ride", algorithmRoutes);  // POST /api/ride/complete
+app.use("/api/rider", algorithmRoutes); // GET /api/rider/status, /api/rider/earnings
+app.use("/api/platform", platformRoutes);
 
 // ─── Root Endpoint ──────────────────────────────────────
 app.get("/", (req, res) => {
@@ -105,6 +119,11 @@ app.get("/", (req, res) => {
       search: "/api/search",
       systemSettings: "/api/system-settings",
       loans: "/api/loans",
+      lookup: "/api/lookup",
+      transfer: "/api/transfer",
+      fineRequests: "/api/fine-requests",
+      rider: "/api/rider",
+      platform: "/api/platform",
     },
   });
 });

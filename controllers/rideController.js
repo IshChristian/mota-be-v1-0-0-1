@@ -2,6 +2,7 @@ const Ride = require("../models/Ride");
 const { updateStreak } = require("../services/streakService");
 const { updateTier } = require("../services/tierService");
 const walletService = require("../services/walletService");
+const algorithmService = require("../services/algorithmService");
 
 /**
  * Log a ride
@@ -78,6 +79,14 @@ const logRide = async (req, res) => {
         const streakResult = await updateStreak(driverId);
         const tierResult = await updateTier(driverId);
 
+        // Process through MOTA Algorithm Engine
+        let algorithmResult = null;
+        try {
+            algorithmResult = await algorithmService.processRide(driverId);
+        } catch (algoErr) {
+            console.error("Algorithm engine error (non-blocking):", algoErr.message);
+        }
+
         res.status(201).json({
             message: paymentMethod === "cash" ? "Cash In recorded successfully" : "Cash In initiated via MoMo. Complete on phone.",
             ride,
@@ -89,6 +98,15 @@ const logRide = async (req, res) => {
             target: 20,
             currentStreak: streakResult.currentStreak,
             tier: tierResult.tier,
+            algorithm: algorithmResult ? {
+                daily_rides: algorithmResult.daily_rides,
+                monthly_rides: algorithmResult.monthly_rides,
+                current_tier: algorithmResult.current_tier,
+                streak_days: algorithmResult.streak_days,
+                trophies: algorithmResult.trophies,
+                features_unlocked: algorithmResult.features_unlocked,
+                daily_earnings: algorithmResult.daily_earnings,
+            } : null,
         });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });

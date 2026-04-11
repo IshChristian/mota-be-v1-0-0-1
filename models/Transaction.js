@@ -46,6 +46,9 @@ const transactionSchema = new mongoose.Schema({
             "agent_pay_fine",
             "cash_out_refund",
             "transaction_fee",
+            "p2p_transfer_sent",
+            "p2p_transfer_received",
+            "p2p_transfer_fee",
         ],
     },
     status: {
