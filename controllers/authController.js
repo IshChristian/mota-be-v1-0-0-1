@@ -71,14 +71,33 @@ const register = async (req, res) => {
             const defaultFee = isAgent ? 10000 : 5000;
             const regFee = await configService.getConfig(configKey, defaultFee);
 
-            const result = await paymentService.requestCashIn(cleanPhone, regFee, process.env.PAYPACK_ENV || "development");
-            if (result.success) {
-                newUser.registrationPaypackRef = result.data?.ref;
+            // Format phone for Paypack (e.g., convert +250 or 250 to 07...)
+            const paypackPhone = cleanPhone.replace(/^\+?250/, '0');
+
+            if (regFee > 0 && regFee < 100) {
+                paymentInfo = { message: "Payment setup error: Fee configured below Paypack minimum (100 RWF)." };
+            } else if (regFee >= 100) {
+                const result = await paymentService.requestCashIn(paypackPhone, regFee, process.env.PAYPACK_ENV || "development");
+                if (result.success) {
+                    newUser.registrationPaypackRef = result.data?.ref;
+                    await newUser.save();
+                    paymentInfo = {
+                        message: `Registration fee of ${regFee} RWF initiated. Please approve MoMo prompt to activate account.`,
+                        ref: result.data?.ref
+                    };
+                } else {
+                    console.error("Paypack gateway error during registration:", result.error);
+                    paymentInfo = {
+                        message: "Registration successful but payment gateway failed. Please retry payment later.",
+                        error: result.error
+                    };
+                }
+            } else {
+                // If regFee is 0, registration is free.
+                newUser.registrationPaid = true;
+                newUser.registrationStatus = "pending";
                 await newUser.save();
-                paymentInfo = {
-                    message: `Registration fee of ${regFee} RWF initiated. Please approve MoMo prompt to activate account.`,
-                    ref: result.data?.ref
-                };
+                paymentInfo = { message: "Registration is free. Account pending admin approval." };
             }
         }
 
@@ -101,7 +120,11 @@ const register = async (req, res) => {
 
         // Email Verification trigger if email exists
         if (cleanEmail) {
-            await authService.sendVerificationEmail(newUser);
+            const emailOtp = Math.floor(100000 + Math.random() * 900000).toString();
+            newUser.emailOtpToken = generateOTPToken(newUser._id, emailOtp);
+            newUser.emailOtpExpiry = new Date(Date.now() + 5 * 60 * 1000); // 5 min
+            await newUser.save();
+            await authService.sendVerificationEmail(newUser, emailOtp);
         }
 
         res.status(201).json({
@@ -172,21 +195,53 @@ const refreshToken = async (req, res) => {
 
 const verifyEmail = async (req, res) => {
     try {
-        const { token } = req.query;
-        if (!token) return res.status(400).json({ message: "Missing token" });
+        const { userId, email, otp } = req.body;
+        if (!otp || (!userId && !email)) {
+            return res.status(400).json({ message: "userId (or email) and otp are required" });
+        }
 
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        if (decoded.action !== "verify_email") throw new Error("Invalid action");
+        const query = userId ? { _id: userId } : { email };
+        const user = await User.findOne(query);
 
-        const user = await User.findById(decoded.id);
-        if (!user) return res.status(404).json({ message: "User not found" });
+        if (!user || !user.emailOtpToken) {
+            return res.status(400).json({ message: "Invalid state or OTP previously verified" });
+        }
+
+        const decoded = jwt.verify(user.emailOtpToken, process.env.JWT_SECRET);
+        if (decoded.otp !== otp) {
+            return res.status(400).json({ message: "Invalid OTP" });
+        }
 
         user.isEmailVerified = true;
+        user.emailOtpToken = undefined;
+        user.emailOtpExpiry = undefined;
         await user.save();
 
         res.status(200).json({ message: "Email verified successfully" });
     } catch (error) {
-        res.status(400).json({ message: "Invalid or expired token", error: error.message });
+        res.status(400).json({ message: "Invalid or expired code", error: error.message });
+    }
+};
+
+const resendEmailOTP = async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email) return res.status(400).json({ message: "Email is required." });
+
+        const user = await User.findOne({ email });
+        if (!user) return res.status(404).json({ message: "User not found." });
+        if (user.isEmailVerified) return res.status(400).json({ message: "Email is already verified." });
+
+        const emailOtp = Math.floor(100000 + Math.random() * 900000).toString();
+        user.emailOtpToken = generateOTPToken(user._id, emailOtp);
+        user.emailOtpExpiry = new Date(Date.now() + 5 * 60 * 1000);
+        await user.save();
+
+        await authService.sendVerificationEmail(user, emailOtp);
+
+        res.status(200).json({ message: "New email OTP sent successfully." });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
     }
 };
 
@@ -294,32 +349,15 @@ const checkRegistrationPayment = async (req, res) => {
         const result = await paymentService.checkTransaction(user.registrationPaypackRef);
         if (result.success && result.data.status === "successful") {
             user.registrationPaid = true;
-            user.isActive = true;
+            // Removed: user.isActive = true;
+            // Now we mark it as pending for admin approval
+            user.registrationStatus = "pending";
             if (user.role === "agent") {
                 user.kycLevel = "full";
             }
             await user.save();
 
-            // Reward referrer with Fuel Voucher if exists
-            const referral = await Referral.findOne({ referredUserId: user._id, status: "pending" });
-            if (referral) {
-                const referrer = await User.findById(referral.referrerId);
-                if (referrer) {
-                    const voucherCode = `FUEL-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
-                    referrer.fuelVouchers.push({
-                        code: voucherCode,
-                        amount: 2000, // Example voucher value
-                    });
-                    await referrer.save();
-
-                    referral.status = "completed";
-                    await referral.save();
-
-                    await sendSMS(referrer.phone, `MOTA: Your recruit ${user.firstName} is active! You earned a Fuel Voucher: ${voucherCode}.`, "reward");
-                }
-            }
-
-            return res.status(200).json({ message: "Payment successful. Account activated!", active: true });
+            return res.status(200).json({ message: "Payment successful. Account pending admin approval.", active: false, status: user.registrationStatus });
         } else {
             return res.status(200).json({ message: "Payment pending or failed.", active: false, status: result.data?.status });
         }
@@ -374,7 +412,19 @@ const payRegistration = async (req, res) => {
         const defaultFee = isAgent ? 10000 : 5000;
         const regFee = await configService.getConfig(configKey, defaultFee);
 
-        const result = await paymentService.requestCashIn(user.phone, regFee, process.env.PAYPACK_ENV || "development");
+        // Format phone for Paypack (e.g., convert +250 or 250 to 07...)
+        const paypackPhone = user.phone.replace(/^\+?250/, '0');
+
+        if (regFee > 0 && regFee < 100) {
+            return res.status(400).json({ message: "System configuration error: Registration fee is below the minimum allowed by the gateway (100 RWF)." });
+        } else if (regFee === 0) {
+            user.registrationPaid = true;
+            user.registrationStatus = "pending";
+            await user.save();
+            return res.status(200).json({ message: "Registration is currently free. Account is now pending admin approval." });
+        }
+
+        const result = await paymentService.requestCashIn(paypackPhone, regFee, process.env.PAYPACK_ENV || "development");
 
         if (result.success) {
             user.registrationPaypackRef = result.data?.ref;
@@ -384,7 +434,7 @@ const payRegistration = async (req, res) => {
                 ref: result.data?.ref
             });
         } else {
-            return res.status(500).json({ message: "Payment gateway error. Could not initiate payment." });
+            return res.status(500).json({ message: "Payment gateway error. Could not initiate payment.", error: result.error });
         }
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
@@ -405,4 +455,5 @@ module.exports = {
     checkRegistrationPayment,
     resendOTP,
     payRegistration,
+    resendEmailOTP,
 };

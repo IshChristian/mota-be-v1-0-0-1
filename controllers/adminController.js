@@ -262,6 +262,97 @@ const updateGeneralSettings = async (req, res) => {
     }
 };
 
+const getPendingRegistrations = async (req, res) => {
+    try {
+        const { page = 1, limit = 20, status = "pending" } = req.query;
+        const skip = (parseInt(page) - 1) * parseInt(limit);
+
+        const users = await User.find({ registrationStatus: status, role: { $in: ["driver", "agent"] } })
+            .skip(skip)
+            .limit(parseInt(limit))
+            .sort({ createdAt: -1 });
+
+        const total = await User.countDocuments({ registrationStatus: status, role: { $in: ["driver", "agent"] } });
+
+        res.status(200).json({
+            data: users,
+            pagination: {
+                total,
+                page: parseInt(page),
+                pages: Math.ceil(total / parseInt(limit))
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+const getRegistrationDetails = async (req, res) => {
+    try {
+        const user = await User.findById(req.params.id);
+        if (!user) return res.status(404).json({ message: "User not found" });
+
+        const DriverProfile = require("../models/DriverProfile");
+        const profile = await DriverProfile.findOne({ driverId: user._id });
+
+        res.status(200).json({
+            user,
+            profile: profile || null
+        });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+const reviewRegistration = async (req, res) => {
+    try {
+        const { status, remarks } = req.body;
+        const validStatuses = ["pending", "correction", "approved"];
+
+        if (!validStatuses.includes(status)) {
+            return res.status(400).json({ message: "Invalid status" });
+        }
+
+        const user = await User.findById(req.params.id);
+        if (!user) return res.status(404).json({ message: "User not found" });
+
+        user.registrationStatus = status;
+
+        if (status === "approved") {
+            user.isActive = true;
+
+            // Trigger referral reward (3000 RWF to wallet)
+            const Referral = require("../models/Referral");
+            const walletService = require("../services/walletService");
+            const pendingReferral = await Referral.findOne({ referredUserId: user._id, status: "pending" });
+            
+            if (pendingReferral) {
+                // Reward referrer visually 3000 RWF in their wallet
+                await walletService.rewardReferral(pendingReferral.referrerId, 3000);
+                pendingReferral.status = "completed";
+                await pendingReferral.save();
+            }
+
+        } else {
+            user.isActive = false; // suspend/pending if not approved
+        }
+
+        await user.save();
+
+        // Optionally send sms to driver using notificationService
+        const { sendSMS } = require("../services/smsService");
+        if (status === "approved") {
+            await sendSMS(user.phone, `MOTA: Your account has been approved! You can now start using the platform.`, "registration_review");
+        } else if (status === "correction") {
+            await sendSMS(user.phone, `MOTA: Your registration needs correction. Remarks: ${remarks || 'Please check your app.'}`, "registration_review");
+        }
+
+        res.status(200).json({ message: `Registration status updated to ${status}`, data: user });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
 module.exports = {
     getUsersList,
     getDriversList,
@@ -280,4 +371,7 @@ module.exports = {
     updateFinancialSettings,
     updateGeneralSettings,
     getPendingFineRequests,
+    getPendingRegistrations,
+    getRegistrationDetails,
+    reviewRegistration,
 };

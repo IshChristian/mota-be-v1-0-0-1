@@ -18,9 +18,16 @@ const userSchema = new mongoose.Schema({
     password: { type: String },
     otpToken: { type: String },
     otpExpiry: { type: Date },
+    emailOtpToken: { type: String },
+    emailOtpExpiry: { type: Date },
     isVerified: { type: Boolean, default: false }, // Phone verified
     isEmailVerified: { type: Boolean, default: false },
-    isActive: { type: Boolean, default: true },
+    isActive: { type: Boolean, default: false }, // Default to false until admin approves
+    registrationStatus: { 
+        type: String, 
+        enum: ["pending", "correction", "approved"], 
+        default: "pending" 
+    },
     // 2FA Fields
     twoFactorEnabled: { type: Boolean, default: false },
     twoFactorSecret: { type: String },

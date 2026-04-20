@@ -7,6 +7,7 @@ const swaggerSpec = require("./swagger");
 const connectDB = require("./config/database");
 const { seedDefaults } = require("./services/systemSettingService");
 const { startScheduler } = require("./utils/scheduler");
+const { initCron } = require("./services/cronService");
 
 // Load environment variables
 dotenv.config();
@@ -24,6 +25,8 @@ connectDB().then(async () => {
     await seedDefaults();
     // Start MOTA Algorithm Engine scheduler
     startScheduler();
+    // Initialize Daily Tasks Cron (Fuel vouchers etc)
+    initCron();
   } catch (err) {
     console.error("Failed to seed defaults:", err.message);
   }

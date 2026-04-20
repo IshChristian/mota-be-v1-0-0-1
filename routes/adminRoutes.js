@@ -388,4 +388,79 @@ router.get("/fines/pending", authorize("fines:view"), adminController.getPending
  */
 router.post("/fines/approve", authorize("fines:update"), adminController.approveFine);
 
+/**
+ * @swagger
+ * /api/admin/registrations/pending:
+ *   get:
+ *     summary: Get all pending user registrations (drivers, agents)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 20 }
+ *       - in: query
+ *         name: status
+ *         schema: { type: string, default: "pending" }
+ *     responses:
+ *       200:
+ *         description: List of pending registrations
+ *       500:
+ *         description: Server error
+ */
+router.get("/registrations/pending", authorize("user:view"), adminController.getPendingRegistrations);
+
+/**
+ * @swagger
+ * /api/admin/registrations/{id}:
+ *   get:
+ *     summary: Get full details of a specific registration by user ID
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Full registration details including User and DriverProfile
+ *       404:
+ *         description: User not found
+ */
+router.get("/registrations/:id", authorize("user:view"), adminController.getRegistrationDetails);
+
+/**
+ * @swagger
+ * /api/admin/registrations/{id}/status:
+ *   put:
+ *     summary: Review a registration to update its status
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               status: { type: string, enum: [pending, correction, approved] }
+ *               remarks: { type: string }
+ *     responses:
+ *       200:
+ *         description: Registration status updated
+ */
+router.put("/registrations/:id/status", authorize("user:update"), adminController.reviewRegistration);
+
 module.exports = router;

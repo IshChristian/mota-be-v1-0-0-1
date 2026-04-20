@@ -146,20 +146,44 @@ router.post("/reset-password", authController.resetPassword);
 /**
  * @swagger
  * /api/auth/verify-email:
- *   get:
- *     summary: Verify email address via link
+ *   post:
+ *     summary: Verify email address via OTP
  *     tags: [Auth]
- *     parameters:
- *       - in: query
- *         name: token
- *         required: true
- *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               userId: { type: string }
+ *               email: { type: string }
+ *               otp: { type: string }
  *     responses:
  *       200:
  *         description: Email verified
  */
-router.get("/verify-email", authController.verifyEmail);
 router.post("/verify-email", authController.verifyEmail);
+
+/**
+ * @swagger
+ * /api/auth/resend-email-otp:
+ *   post:
+ *     summary: Resend OTP for email verification
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               email: { type: string }
+ *     responses:
+ *       200:
+ *         description: New OTP sent successfully
+ */
+router.post("/resend-email-otp", authController.resendEmailOTP);
 
 /**
  * @swagger

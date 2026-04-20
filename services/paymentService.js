@@ -11,9 +11,14 @@ const { creditRidePayment } = require("./walletService");
  */
 const requestCashIn = async (phone, amount, environment = "development") => {
     try {
+        const numAmount = Number(amount);
+        if (isNaN(numAmount) || numAmount < 100) {
+            return { success: false, error: "Amount must be a number greater than or equal to 100 RWF" };
+        }
+        
         const response = await paypack.cashin({
             number: phone,
-            amount,
+            amount: numAmount,
             environment,
         });
         return { success: true, data: response.data };
@@ -32,9 +37,14 @@ const requestCashIn = async (phone, amount, environment = "development") => {
  */
 const requestCashOut = async (phone, amount, environment = "development") => {
     try {
+        const numAmount = Number(amount);
+        if (isNaN(numAmount) || numAmount < 100) {
+            return { success: false, error: "Amount must be a number greater than or equal to 100 RWF" };
+        }
+
         const response = await paypack.cashout({
             number: phone,
-            amount,
+            amount: numAmount,
             environment,
         });
         return { success: true, data: response.data };

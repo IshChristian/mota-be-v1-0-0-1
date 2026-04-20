@@ -13,18 +13,15 @@ const generateToken = (user) => {
     );
 };
 
-const sendVerificationEmail = async (user) => {
+const sendVerificationEmail = async (user, otp) => {
     if (!user.email) return false;
-
-    // Create token
-    const token = jwt.sign({ id: user._id, action: "verify_email" }, process.env.JWT_SECRET, { expiresIn: "1h" });
-    const verifyUrl = `${process.env.FRONTEND_URL || 'http://localhost:5000'}/api/auth/verify-email?token=${token}`;
 
     const html = `
         <h2>Welcome to MOTA</h2>
         <p>Hi ${user.firstName},</p>
-        <p>Please verify your email clicking the link below:</p>
-        <a href="${verifyUrl}" style="padding: 10px 20px; background: #007bff; color: white; text-decoration: none; border-radius: 5px;">Verify Email</a>
+        <p>Thank you for registering. Please use the following 6-digit code to verify your email address:</p>
+        <h3 style="font-size: 24px; letter-spacing: 2px; padding: 10px; background: #f0f0f0; display: inline-block;">${otp}</h3>
+        <p>This code will expire in 5 minutes.</p>
     `;
 
     return await sendEmail(user.email, "Verify Your MOTA Account", "Verify your email", html);
