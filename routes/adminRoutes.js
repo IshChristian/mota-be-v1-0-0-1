@@ -465,6 +465,36 @@ router.put("/registrations/:id/status", authorize("user:update"), adminControlle
 
 /**
  * @swagger
+ * /api/admin/paypack/transactions:
+ *   get:
+ *     summary: Fetch all transactions directly from Paypack
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: kind
+ *         schema: { type: string }
+ *         description: "CASHIN or CASHOUT"
+ *       - in: query
+ *         name: client
+ *         schema: { type: string }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 20 }
+ *       - in: query
+ *         name: offset
+ *         schema: { type: integer, default: 0 }
+ *     responses:
+ *       200:
+ *         description: List of Paypack transactions
+ *       500:
+ *         description: Server error
+ */
+router.get("/paypack/transactions", authorize("user:view"), adminController.getPaypackTransactions);
+
+/**
+ * @swagger
  * /api/admin/paypack/events:
  *   get:
  *     summary: Fetch all transaction events from Paypack

@@ -366,6 +366,19 @@ const getPaypackEvents = async (req, res) => {
     }
 };
 
+const getPaypackTransactions = async (req, res) => {
+    try {
+        const paymentService = require("../services/paymentService");
+        const result = await paymentService.getTransactions(req.query);
+        if (!result.success) {
+            return res.status(500).json({ message: "Paypack API error", error: result.error });
+        }
+        res.status(200).json(result.data);
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
 const syncTransactionsWithPaypack = async (req, res) => {
     try {
         const { ref } = req.body;
@@ -459,5 +472,6 @@ module.exports = {
     getRegistrationDetails,
     reviewRegistration,
     getPaypackEvents,
+    getPaypackTransactions,
     syncTransactionsWithPaypack,
 };
