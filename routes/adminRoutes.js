@@ -463,4 +463,65 @@ router.get("/registrations/:id", authorize("user:view"), adminController.getRegi
  */
 router.put("/registrations/:id/status", authorize("user:update"), adminController.reviewRegistration);
 
+/**
+ * @swagger
+ * /api/admin/paypack/events:
+ *   get:
+ *     summary: Fetch all transaction events from Paypack
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema: { type: string }
+ *       - in: query
+ *         name: client
+ *         schema: { type: string }
+ *       - in: query
+ *         name: ref
+ *         schema: { type: string }
+ *       - in: query
+ *         name: kind
+ *         schema: { type: string }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 20 }
+ *       - in: query
+ *         name: offset
+ *         schema: { type: integer, default: 0 }
+ *     responses:
+ *       200:
+ *         description: List of Paypack events
+ *       500:
+ *         description: Server error
+ */
+router.get("/paypack/events", authorize("user:view"), adminController.getPaypackEvents);
+
+/**
+ * @swagger
+ * /api/admin/paypack/sync:
+ *   post:
+ *     summary: Sync pending transactions with Paypack and trigger wallet updates
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               ref: 
+ *                 type: string
+ *                 description: Optional specific transaction reference to sync. If omitted, syncs all pending transactions.
+ *     responses:
+ *       200:
+ *         description: Sync results
+ *       500:
+ *         description: Server error
+ */
+router.post("/paypack/sync", authorize("user:update"), adminController.syncTransactionsWithPaypack);
+
 module.exports = router;

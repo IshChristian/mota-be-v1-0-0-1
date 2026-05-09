@@ -353,6 +353,90 @@ const reviewRegistration = async (req, res) => {
     }
 };
 
+const getPaypackEvents = async (req, res) => {
+    try {
+        const paymentService = require("../services/paymentService");
+        const result = await paymentService.getEvents(req.query);
+        if (!result.success) {
+            return res.status(500).json({ message: "Paypack API error", error: result.error });
+        }
+        res.status(200).json(result.data);
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+const syncTransactionsWithPaypack = async (req, res) => {
+    try {
+        const { ref } = req.body;
+        const Transaction = require("../models/Transaction");
+        const User = require("../models/User");
+        const paymentService = require("../services/paymentService");
+        const paymentController = require("./paymentController");
+
+        let pendingRefs = [];
+        
+        if (ref) {
+            const tx = await Transaction.findOne({ paypackRef: ref });
+            const user = await User.findOne({ registrationPaypackRef: ref });
+            if (!tx && !user) return res.status(404).json({ message: "Transaction/Registration not found locally." });
+            
+            if (tx) pendingRefs.push({ ref: tx.paypackRef, status: tx.status });
+            if (user && !user.registrationPaid) pendingRefs.push({ ref: user.registrationPaypackRef, status: "pending" });
+        } else {
+            // Find all pending wallet transactions
+            const pendingTxs = await Transaction.find({ status: "pending", paypackRef: { $ne: null } });
+            for (const t of pendingTxs) pendingRefs.push({ ref: t.paypackRef, status: t.status });
+
+            // Find all pending registration payments
+            const pendingUsers = await User.find({ registrationPaid: false, registrationPaypackRef: { $ne: null } });
+            for (const u of pendingUsers) pendingRefs.push({ ref: u.registrationPaypackRef, status: "pending" });
+        }
+
+        let syncedCount = 0;
+        const results = [];
+
+        for (const item of pendingRefs) {
+            const ppStatusResult = await paymentService.getTransactionStatus(item.ref);
+            
+            if (ppStatusResult.success && ppStatusResult.data) {
+                const realStatus = ppStatusResult.data.status;
+                
+                // If Paypack status is terminal (successful or failed) and local is still pending
+                if (item.status !== realStatus && (realStatus === "successful" || realStatus === "failed")) {
+                    const fakeEvent = {
+                        ref: ppStatusResult.data.ref,
+                        status: realStatus,
+                        amount: ppStatusResult.data.amount,
+                        kind: ppStatusResult.data.kind
+                    };
+                    
+                    const fakeReq = { body: fakeEvent };
+                    const fakeRes = { status: () => ({ json: () => {} }) };
+                    
+                    // Route it through the official webhook handler so wallet/streak/registration updates run identically
+                    await paymentController.handleWebhook(fakeReq, fakeRes);
+                    syncedCount++;
+                    results.push({ ref: item.ref, previous: item.status, new: realStatus });
+                } else {
+                    results.push({ ref: item.ref, status: "in_sync" });
+                }
+            } else {
+                results.push({ ref: item.ref, status: "paypack_fetch_error" });
+            }
+        }
+
+        res.status(200).json({ 
+            message: `Synchronization complete. Updated ${syncedCount} out-of-sync transactions.`,
+            syncedCount,
+            results 
+        });
+
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
 module.exports = {
     getUsersList,
     getDriversList,
@@ -374,4 +458,6 @@ module.exports = {
     getPendingRegistrations,
     getRegistrationDetails,
     reviewRegistration,
+    getPaypackEvents,
+    syncTransactionsWithPaypack,
 };

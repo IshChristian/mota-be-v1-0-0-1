@@ -1,103 +1,167 @@
 const Ride = require("../models/Ride");
+const Transaction = require("../models/Transaction");
+const walletService = require("../services/walletService");
+const paymentService = require("../services/paymentService");
 const { updateStreak } = require("../services/streakService");
 const { updateTier } = require("../services/tierService");
-const walletService = require("../services/walletService");
 const algorithmService = require("../services/algorithmService");
+
+// ── Phone normalisation helper ────────────────────────────────────────────────
+/**
+ * Ensure phone starts with +250.
+ * Accepts: +2507xxxxxxxx  |  07xxxxxxxx  |  7xxxxxxxx
+ * Returns the normalised number or null if the format is invalid.
+ */
+function normalisePhone(raw) {
+    if (!raw) return null;
+    const trimmed = raw.trim();
+    if (/^\+250\d{9}$/.test(trimmed)) return trimmed;          // already correct
+    if (/^07\d{8}$/.test(trimmed))    return `+250${trimmed.slice(1)}`; // 07xxxxxxxx
+    if (/^7\d{8}$/.test(trimmed))     return `+250${trimmed}`;           // 7xxxxxxxx
+    return null; // unrecognised format
+}
 
 /**
  * Log a ride
  * POST /api/driver/log-ride  (also aliased: POST /api/ride/log)
+ *
+ * Required body fields:
+ *   - fare           {number}  — trip amount in RWF
+ *   - passengerPhone {string}  — Rwandan number (+250 / 07 / 7 prefix)
+ *
+ * Optional:
+ *   - paymentMethod  {string}  — "momo" (default) or "wallet"
+ *   - date           {string}  — ISO date string (defaults to now)
  */
 const logRide = async (req, res) => {
     try {
         const driverId = req.user.id;
-        const { fare, passengerPhone, paymentMethod, pickupLocation, dropoffLocation, distance } = req.body;
+        const { fare, passengerPhone, paymentMethod, date } = req.body;
 
-        // Default to momo if not specified to follow 'direct Cash-in' requirement
+        // Default to momo; only momo is accepted for cash-in
         const finalPaymentMethod = paymentMethod || "momo";
-
         if (!["momo", "wallet"].includes(finalPaymentMethod)) {
-            // Deprecating/Removing direct cash rides for now as requested by 'direct Cash-in'
-            return res.status(400).json({ message: "Only digital payments (momo) are supported for logging rides at this time." });
+            return res.status(400).json({ message: "Only 'momo' or 'wallet' payment methods are supported." });
         }
 
-        const { commission, driverEarning } = await walletService.calculateCommission(fare);
-        const commissionRate = (commission / fare).toFixed(2);
+        // ── Validation ────────────────────────────────────────────────────────
+        if (!fare || isNaN(Number(fare)) || Number(fare) <= 0) {
+            return res.status(400).json({ message: "A valid fare amount (in RWF) is required." });
+        }
 
-        // Create ride
+        if (!passengerPhone) {
+            return res.status(400).json({ message: "Passenger phone number is required." });
+        }
+
+        const normalisedPhone = normalisePhone(passengerPhone);
+        if (!normalisedPhone) {
+            return res.status(400).json({
+                message:
+                    "Invalid phone number. Must be a valid Rwandan number (e.g. +2507XXXXXXXX, 07XXXXXXXX, or 7XXXXXXXX).",
+            });
+        }
+
+        const rideDate = date ? new Date(date) : new Date();
+        if (isNaN(rideDate.getTime())) {
+            return res.status(400).json({ message: "Invalid date format." });
+        }
+
+        // ── Commission calculation ────────────────────────────────────────────
+        const numericFare = Number(fare);
+        const { commission, driverEarning } = await walletService.calculateCommission(numericFare);
+        const commissionRate = (commission / numericFare).toFixed(2);
+
+        // ── Create ride (pending until Paypack webhook confirms) ─────────────
         const ride = await Ride.create({
             driverId,
-            passengerPhone,
-            fare,
+            passengerPhone: normalisedPhone,
+            fare: numericFare,
             commissionRate: Number(commissionRate),
             commissionAmount: commission,
             driverEarning,
             paymentMethod: finalPaymentMethod,
-            paymentStatus: "pending", // Always pending for digital cash-in flow
-            pickupLocation,
-            dropoffLocation,
-            distance,
+            paymentStatus: "pending",
+            createdAt: rideDate,
         });
 
-        // Removed local Cash logic - forcing 'momo' direct initiation
-        let walletBalance = null;
-        let paypackResponse = null;
+        // ── Trigger Paypack Cash-in ───────────────────────────────────────────
+        let paypackRef = null;
+        let paypackStatus = "not_initiated";
 
-        if (finalPaymentMethod === "momo") {
-            // Trigger Paypack Cashin
-            const phoneToCharge = passengerPhone || req.user.phone; // Default to driver if no passenger phone
-            const paymentService = require("../services/paymentService");
-            const Transaction = require("../models/Transaction");
-
+        try {
             const result = await paymentService.requestCashIn(
-                phoneToCharge,
-                fare,
+                normalisedPhone,
+                numericFare,
                 process.env.PAYPACK_ENV || "development"
             );
 
             if (result.success) {
-                paypackResponse = result.data;
-                // Record pending transaction
-                // (Already calculated above)
+                paypackRef = result.data?.ref;
+                paypackStatus = "pending";
+
+                // ── Record pending transaction (status = pending) ─────────────
                 await Transaction.create({
                     driverId,
                     rideId: ride._id,
-                    amount: fare,
+                    amount: numericFare,
                     type: "cash_in",
                     status: "pending",
-                    paypackRef: result.data?.ref,
-                    description: `Cash In via MoMo. Fare: ${fare} RWF, Driver earns: ${driverEarning} RWF`,
+                    paypackRef,
+                    description: `Cash In via MoMo. Fare: ${numericFare} RWF, Driver earns: ${driverEarning} RWF`,
                 });
 
-                // Update ride with ref
-                ride.paypackRef = result.data?.ref;
+                // Store ref on ride
+                ride.paypackRef = paypackRef;
                 await ride.save();
+            } else {
+                paypackStatus = "failed";
             }
+        } catch (payErr) {
+            console.error("Paypack initiation error (non-blocking):", payErr.message);
+            paypackStatus = "error";
         }
 
-        // Update streak and tier
-        const streakResult = await updateStreak(driverId);
-        const tierResult = await updateTier(driverId);
-
-        // Process through MOTA Algorithm Engine
+        // ── Streak / tier / algorithm (non-blocking) ─────────────────────────
+        let streakResult = null;
+        let tierResult = null;
         let algorithmResult = null;
+
+        try {
+            streakResult = await updateStreak(driverId);
+        } catch (e) {
+            console.error("Streak update error (non-blocking):", e.message);
+        }
+
+        try {
+            tierResult = await updateTier(driverId);
+        } catch (e) {
+            console.error("Tier update error (non-blocking):", e.message);
+        }
+
         try {
             algorithmResult = await algorithmService.processRide(driverId);
-        } catch (algoErr) {
-            console.error("Algorithm engine error (non-blocking):", algoErr.message);
+        } catch (e) {
+            console.error("Algorithm engine error (non-blocking):", e.message);
         }
 
-        res.status(201).json({
-            message: paymentMethod === "cash" ? "Cash In recorded successfully" : "Cash In initiated via MoMo. Complete on phone.",
-            ride,
-            paypackRef: paypackResponse?.ref,
-            driverEarning,
-            commission,
-            walletBalance,
-            ridesToday: streakResult.todayRideCount,
+        return res.status(201).json({
+            message: "Ride logged. MoMo payment request sent to passenger's phone.",
+            ride: {
+                _id: ride._id,
+                fare: ride.fare,
+                passengerPhone: ride.passengerPhone,
+                paymentStatus: ride.paymentStatus,   // "pending"
+                paymentMethod: ride.paymentMethod,
+                driverEarning,
+                commission,
+                createdAt: ride.createdAt,
+            },
+            paypackRef,
+            paypackStatus,
+            ridesToday: streakResult?.todayRideCount ?? null,
             target: 20,
-            currentStreak: streakResult.currentStreak,
-            tier: tierResult.tier,
+            currentStreak: streakResult?.currentStreak ?? null,
+            tier: tierResult?.tier ?? null,
             algorithm: algorithmResult ? {
                 daily_rides: algorithmResult.daily_rides,
                 monthly_rides: algorithmResult.monthly_rides,

@@ -84,8 +84,31 @@ const handleWebhook = async (event, driverId, rideId) => {
     }
 };
 
+const getTransactionStatus = async (ref) => {
+    try {
+        if (!ref) return { success: false, error: "Transaction ref is required" };
+        const response = await paypack.transaction(ref);
+        return { success: true, data: response.data };
+    } catch (error) {
+        console.error("Paypack transaction fetch error:", error?.response?.data || error.message);
+        return { success: false, error: error?.response?.data || error.message };
+    }
+};
+
+const getEvents = async (filters) => {
+    try {
+        const response = await paypack.events(filters);
+        return { success: true, data: response.data };
+    } catch (error) {
+        console.error("Paypack events fetch error:", error?.response?.data || error.message);
+        return { success: false, error: error?.response?.data || error.message };
+    }
+};
+
 module.exports = {
     requestCashIn,
     requestCashOut,
     handleWebhook,
+    getTransactionStatus,
+    getEvents,
 };

@@ -179,8 +179,18 @@ router.put("/update-profile", authMiddleware, roleMiddleware("driver"), driverCo
  * @swagger
  * /api/driver/log-ride:
  *   post:
- *     summary: Log a completed ride
- *     description: Logs a ride and automatically updates daily streak and tier progress
+ *     summary: Log a ride and initiate MoMo cash-in
+ *     description: |
+ *       Logs a ride for the authenticated driver and sends a MoMo payment request
+ *       to the passenger's phone via Paypack. The ride is saved with
+ *       `paymentStatus: pending`. The wallet is credited and streak/tier updated
+ *       after Paypack confirms the payment via webhook.
+ *
+ *       **Phone number rules:**
+ *       The passenger phone must be a valid Rwandan number in one of these formats:
+ *       - `+2507XXXXXXXX` (accepted as-is)
+ *       - `07XXXXXXXX` (auto-prefixed to `+250`)
+ *       - `7XXXXXXXX` (auto-prefixed to `+250`)
  *     tags: [Driver]
  *     security:
  *       - bearerAuth: []
@@ -192,29 +202,30 @@ router.put("/update-profile", authMiddleware, roleMiddleware("driver"), driverCo
  *             type: object
  *             required:
  *               - fare
- *               - paymentMethod
+ *               - passengerPhone
  *             properties:
  *               fare:
  *                 type: number
- *                 description: Ride fare in RWF
- *                 example: 1500
+ *                 description: Ride fare in RWF (must be greater than 0)
+ *                 example: 3000
+ *               passengerPhone:
+ *                 type: string
+ *                 description: Passenger phone number (Rwandan — +250 / 07 / 7 prefix)
+ *                 example: "0782123456"
  *               paymentMethod:
  *                 type: string
- *                 enum: [cash, momo]
- *                 example: cash
- *               pickupLocation:
+ *                 enum: [momo, wallet]
+ *                 default: momo
+ *                 description: Payment method (defaults to momo)
+ *                 example: "momo"
+ *               date:
  *                 type: string
- *                 example: "Kicukiro"
- *               dropoffLocation:
- *                 type: string
- *                 example: "Nyabugogo"
- *               distance:
- *                 type: number
- *                 description: Distance in km
- *                 example: 8.5
+ *                 format: date-time
+ *                 description: Optional ride date/time (defaults to now)
+ *                 example: "2026-05-05T10:30:00.000Z"
  *     responses:
  *       201:
- *         description: Ride logged successfully with updated stats
+ *         description: Ride logged and MoMo payment request sent
  *         content:
  *           application/json:
  *             schema:
@@ -222,18 +233,65 @@ router.put("/update-profile", authMiddleware, roleMiddleware("driver"), driverCo
  *               properties:
  *                 message:
  *                   type: string
+ *                   example: "Ride logged. MoMo payment request sent to passenger's phone."
  *                 ride:
  *                   type: object
+ *                   properties:
+ *                     _id:
+ *                       type: string
+ *                       example: "664abc123def456789"
+ *                     fare:
+ *                       type: number
+ *                       example: 3000
+ *                     passengerPhone:
+ *                       type: string
+ *                       example: "+250782123456"
+ *                     paymentStatus:
+ *                       type: string
+ *                       enum: [pending, completed, failed]
+ *                       example: "pending"
+ *                     paymentMethod:
+ *                       type: string
+ *                       example: "momo"
+ *                     driverEarning:
+ *                       type: number
+ *                       example: 2700
+ *                     commission:
+ *                       type: number
+ *                       example: 300
+ *                     createdAt:
+ *                       type: string
+ *                       format: date-time
+ *                 paypackRef:
+ *                   type: string
+ *                   description: Paypack transaction reference (null if initiation failed)
+ *                   example: "pp_ref_xyz123"
+ *                 paypackStatus:
+ *                   type: string
+ *                   enum: [pending, failed, error, not_initiated]
+ *                   example: "pending"
  *                 ridesToday:
  *                   type: number
+ *                   description: Number of completed rides today (paymentStatus=completed only)
+ *                   example: 5
  *                 target:
  *                   type: number
+ *                   example: 20
  *                 currentStreak:
  *                   type: number
+ *                   example: 3
  *                 tier:
  *                   type: string
+ *                   example: "silver"
+ *                 algorithm:
+ *                   type: object
+ *                   nullable: true
  *       400:
- *         description: Missing or invalid fields
+ *         description: Missing or invalid fields (fare, phone format, payment method)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
  *       401:
  *         description: Not authenticated
  *       500:

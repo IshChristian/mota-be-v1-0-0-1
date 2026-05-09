@@ -7,6 +7,13 @@ const paymentService = require("../services/paymentService");
 const loanService = require("../services/loanService");
 const { sendSMS } = require("../services/smsService");
 const { sendEmail } = require("../services/notificationService");
+const EventEmitter = require("events");
+
+// ── In-process SSE bus ─────────────────────────────────────────────────────
+// Emits  "tx:<paypackRef>"  with the updated transaction document
+// when the Paypack webhook confirms a payment status change.
+const txBus = new EventEmitter();
+txBus.setMaxListeners(200); // allow many concurrent listeners
 
 /**
  * POST /api/payment/request
@@ -69,18 +76,33 @@ const requestPayment = async (req, res) => {
  */
 const handleWebhook = async (req, res) => {
     try {
-        const event = req.body;
-
-        if (!event || !event.ref) {
-            return res.status(400).json({ message: "Invalid webhook payload" });
+        const payload = req.body.data || req.body;
+        
+        if (!payload || !payload.ref) {
+            return res.status(400).json({ message: "Invalid webhook payload structure" });
         }
 
-        const { ref, status, amount, kind } = event;
+        const { ref, status, amount, kind } = payload;
 
         // Find pending transaction by paypackRef
         const tx = await Transaction.findOne({ paypackRef: ref, status: "pending" });
 
         if (!tx) {
+            // It might be a registration payment (which doesn't create a Transaction record yet)
+            const user = await User.findOne({ registrationPaypackRef: ref });
+            if (user && !user.registrationPaid) {
+                if (status === "successful" || status === "completed") {
+                    user.registrationPaid = true;
+                    user.registrationStatus = "pending";
+                    if (user.role === "agent") {
+                        user.kycLevel = "full";
+                    }
+                    await user.save();
+                    // ⚡ Instantly notify any SSE listeners watching this ref
+                    txBus.emit(`tx:${ref}`);
+                }
+            }
+            
             // Still acknowledge
             return res.status(200).json({ message: "Webhook received" });
         }
@@ -88,6 +110,9 @@ const handleWebhook = async (req, res) => {
         if (status === "successful" || status === "completed") {
             tx.status = "completed";
             await tx.save();
+
+            // ⚡ Instantly notify any SSE listeners watching this ref
+            txBus.emit(`tx:${ref}`);
 
             // Unified Cash In handler — ride-based, pure wallet deposit or USSD ride payment
             if (tx.driverId) {
@@ -149,13 +174,30 @@ const handleWebhook = async (req, res) => {
                         </ul>`;
                     await sendEmail(adminEmail, "MOTA Admin: Ride Payment Alert", "", adminHtml);
 
-                    // Update performance stats
-                    const { updateStreak } = require("../services/streakService");
-                    const { updateTier } = require("../services/tierService");
-                    await updateStreak(tx.driverId.toString());
-                    await updateTier(tx.driverId.toString());
+                    // ── Update streak / tier / algorithm ────────────────────
+                    // IMPORTANT: ride.paymentStatus was just set to "completed"
+                    // above, so countDocuments({ paymentStatus: "completed" })
+                    // in streakService will now include this ride correctly.
+                    // Rides that are still "pending" are NOT counted toward the
+                    // 20-ride daily target.
+                    try {
+                        const { updateStreak } = require("../services/streakService");
+                        const { updateTier }   = require("../services/tierService");
+                        const algorithmService = require("../services/algorithmService");
 
-                    // Auto-deduct loan repayment from ride earnings
+                        await updateStreak(tx.driverId.toString());
+                        await updateTier(tx.driverId.toString());
+
+                        try {
+                            await algorithmService.processRide(tx.driverId.toString());
+                        } catch (algoErr) {
+                            console.error("Algorithm engine error (non-blocking):", algoErr.message);
+                        }
+                    } catch (statErr) {
+                        console.error("Streak/tier update error (non-blocking):", statErr.message);
+                    }
+
+                    // ── Auto-deduct loan repayment from ride earnings ─────────
                     try {
                         const loanDeducted = await loanService.autoDeductFromRide(tx.driverId.toString(), driverEarning);
                         if (loanDeducted > 0 && user) {
@@ -192,6 +234,9 @@ const handleWebhook = async (req, res) => {
             tx.status = "failed";
             await tx.save();
 
+            // ⚡ Instantly notify any SSE listeners watching this ref
+            txBus.emit(`tx:${ref}`);
+
             if (tx.rideId) {
                 await Ride.findByIdAndUpdate(tx.rideId, { paymentStatus: "failed" });
             }
@@ -204,7 +249,203 @@ const handleWebhook = async (req, res) => {
     }
 };
 
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/payment/status/:ref
+ * One-shot polling: return current transaction status for a paypackRef.
+ */
+const getTransactionStatus = async (req, res) => {
+    try {
+        const { ref } = req.params;
+        if (!ref) return res.status(400).json({ message: "Paypack ref is required." });
+
+        const tx = await Transaction.findOne({ paypackRef: ref })
+            .select("status amount type description paypackRef rideId createdAt")
+            .populate("rideId", "paymentStatus fare passengerPhone");
+
+        if (!tx) {
+            return res.status(404).json({ message: "Transaction not found for this ref." });
+        }
+
+        // Only return the transaction if it belongs to the requesting driver
+        if (tx.driverId && req.user && tx.driverId.toString() !== req.user.id) {
+            return res.status(403).json({ message: "Access denied." });
+        }
+
+        return res.status(200).json({
+            ref,
+            status: tx.status,                      // pending | completed | failed
+            amount: tx.amount,
+            type: tx.type,
+            description: tx.description,
+            ride: tx.rideId
+                ? {
+                      rideId: tx.rideId._id,
+                      paymentStatus: tx.rideId.paymentStatus,
+                      fare: tx.rideId.fare,
+                      passengerPhone: tx.rideId.passengerPhone,
+                  }
+                : null,
+            createdAt: tx.createdAt,
+        });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+/**
+ * GET /api/payment/status-stream/:ref
+ * Server-Sent Events: streams real-time transaction status updates.
+ *
+ * Flow:
+ *  1. Opens SSE connection, sends current status immediately.
+ *  2. Listens on txBus for "tx:<ref>" event (emitted by handleWebhook).
+ *  3. Also polls every 3 seconds as a safety net (in case webhook fires
+ *     before the SSE client connected).
+ *  4. Closes the stream when status is "completed" or "failed".
+ *
+ * Client usage (JavaScript):
+ *   const es = new EventSource('/api/payment/status-stream/pp_ref_xyz?token=<jwt>');
+ *   es.onmessage = (e) => console.log(JSON.parse(e.data));
+ */
+const POLL_INTERVAL_MS = 1000;  // check DB/Paypack every 1 sec as safety net
+const SSE_TIMEOUT_MS  = 5 * 60 * 1000; // auto-close after 5 minutes
+
+const streamTransactionStatus = async (req, res) => {
+    const { ref } = req.params;
+    if (!ref) {
+        return res.status(400).json({ message: "Paypack ref is required." });
+    }
+
+    // ── SSE headers ───────────────────────────────────────────────
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no"); // disable Nginx buffering
+    res.flushHeaders();
+
+    let closed = false;
+
+    const send = (payload) => {
+        if (!closed) {
+            res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        }
+    };
+
+    const close = (reason) => {
+        if (!closed) {
+            closed = true;
+            send({ ref, status: "stream_closed", reason });
+            res.end();
+        }
+    };
+
+    // Helper: fetch tx and push to client
+    const pushStatus = async () => {
+        try {
+            let tx = await Transaction.findOne({ paypackRef: ref })
+                .select("status amount type description rideId createdAt driverId")
+                .populate("rideId", "paymentStatus fare passengerPhone");
+
+            if (!tx) {
+                send({ ref, status: "not_found", message: "Transaction not found." });
+                close("transaction_not_found");
+                return;
+            }
+
+            // Ownership check
+            if (req.user && tx.driverId && tx.driverId.toString() !== req.user.id) {
+                send({ ref, status: "forbidden" });
+                close("access_denied");
+                return;
+            }
+
+            // ── Real-time Paypack Check (Active Polling) ──────────────
+            // If local DB still says pending, double-check directly with Paypack
+            if (tx.status === "pending") {
+                const ppStatusResult = await paymentService.getTransactionStatus(ref);
+                if (ppStatusResult.success && ppStatusResult.data) {
+                    const realStatus = ppStatusResult.data.status; // e.g. "successful", "failed", "pending"
+                    if (realStatus === "successful" || realStatus === "failed") {
+                        // Forward this to our webhook handler logic directly to ensure all wallet/streak logic runs
+                        // Since we just need to pass the event object it expects:
+                        const fakeEvent = {
+                            ref: ppStatusResult.data.ref,
+                            status: realStatus,
+                            amount: ppStatusResult.data.amount,
+                            kind: ppStatusResult.data.kind
+                        };
+                        
+                        // Fake a req/res for handleWebhook to process it inline
+                        const fakeReq = { body: fakeEvent };
+                        const fakeRes = { status: () => ({ json: () => {} }) };
+                        await handleWebhook(fakeReq, fakeRes);
+                        
+                        // Re-fetch the transaction from DB after processing
+                        tx = await Transaction.findOne({ paypackRef: ref })
+                            .select("status amount type description rideId createdAt driverId")
+                            .populate("rideId", "paymentStatus fare passengerPhone");
+                    }
+                }
+            }
+
+            send({
+                ref,
+                status: tx.status,           // pending | completed | failed
+                amount: tx.amount,
+                type: tx.type,
+                description: tx.description,
+                ride: tx.rideId
+                    ? {
+                          rideId: tx.rideId._id,
+                          paymentStatus: tx.rideId.paymentStatus,
+                          fare: tx.rideId.fare,
+                          passengerPhone: tx.rideId.passengerPhone,
+                      }
+                    : null,
+                timestamp: new Date().toISOString(),
+            });
+
+            // Terminal state — close stream
+            if (tx.status === "completed" || tx.status === "failed") {
+                close(`payment_${tx.status}`);
+            }
+        } catch (err) {
+            console.error("SSE pushStatus error:", err.message);
+        }
+    };
+
+    // ── 1. Send current status immediately ──────────────────────────
+    await pushStatus();
+    if (closed) return;
+
+    // ── 2. Subscribe to webhook push events ────────────────────────
+    const eventName = `tx:${ref}`;
+    const onTxUpdate = () => {
+        pushStatus(); // re-query DB when webhook fires
+    };
+    txBus.on(eventName, onTxUpdate);
+
+    // ── 3. Safety-net poll (every 3 s) ────────────────────────────
+    const pollTimer = setInterval(pushStatus, POLL_INTERVAL_MS);
+
+    // ── 4. Auto-close after timeout ──────────────────────────────
+    const timeoutTimer = setTimeout(() => close("timeout"), SSE_TIMEOUT_MS);
+
+    // ── Cleanup on client disconnect ────────────────────────────
+    req.on("close", () => {
+        closed = true;
+        clearInterval(pollTimer);
+        clearTimeout(timeoutTimer);
+        txBus.off(eventName, onTxUpdate);
+    });
+};
+
 module.exports = {
     requestPayment,
     handleWebhook,
+    getTransactionStatus,
+    streamTransactionStatus,
+    txBus, // exported so handleWebhook can emit from anywhere if refactored
 };
