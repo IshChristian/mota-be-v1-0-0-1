@@ -49,6 +49,52 @@ const runDailyTasks = async () => {
     }
 };
 
+const runTransactionSync = async () => {
+    try {
+        const Transaction = require("../models/Transaction");
+        const User = require("../models/User");
+        const paymentService = require("./paymentService");
+        const paymentController = require("../controllers/paymentController");
+
+        let pendingRefs = [];
+
+        // Find all pending wallet transactions
+        const pendingTxs = await Transaction.find({ status: "pending", paypackRef: { $ne: null } });
+        for (const t of pendingTxs) pendingRefs.push({ ref: t.paypackRef, status: t.status });
+
+        // Find all pending registration payments
+        const pendingUsers = await User.find({ registrationPaid: false, registrationPaypackRef: { $ne: null } });
+        for (const u of pendingUsers) pendingRefs.push({ ref: u.registrationPaypackRef, status: "pending" });
+
+        for (const item of pendingRefs) {
+            const ppStatusResult = await paymentService.getTransactionStatus(item.ref);
+            
+            if (ppStatusResult.success && ppStatusResult.data) {
+                const realStatus = ppStatusResult.data.status;
+                
+                // If Paypack status is terminal (successful or failed) and local is still pending
+                if (item.status !== realStatus && (realStatus === "successful" || realStatus === "failed" || realStatus === "completed")) {
+                    const fakeEvent = {
+                        ref: ppStatusResult.data.ref,
+                        status: realStatus,
+                        amount: ppStatusResult.data.amount,
+                        kind: ppStatusResult.data.kind
+                    };
+                    
+                    const fakeReq = { body: { data: fakeEvent } };
+                    const fakeRes = { status: () => ({ json: () => {} }) };
+                    
+                    // Route it through the official webhook handler so wallet/streak/registration updates run identically
+                    await paymentController.handleWebhook(fakeReq, fakeRes);
+                    console.log(`[Auto-Sync] Fixed out-of-sync transaction: ${item.ref} -> ${realStatus}`);
+                }
+            }
+        }
+    } catch (err) {
+        console.error("Auto-sync background task failed:", err.message);
+    }
+};
+
 const initCron = () => {
     // Basic polling cron - checks every hour if the day has changed since last run
     setInterval(() => {
@@ -59,7 +105,12 @@ const initCron = () => {
         }
     }, 60 * 60 * 1000); // Check every 1 hour
 
-    console.log("⏱️  Daily Cron Service initialized.");
+    // Realtime background sync poller - checks every 30 seconds for stuck pending transactions
+    setInterval(() => {
+        runTransactionSync();
+    }, 30 * 1000);
+
+    console.log("⏱️  Daily Cron & Realtime Sync Service initialized.");
 };
 
-module.exports = { initCron, runDailyTasks };
+module.exports = { initCron, runDailyTasks, runTransactionSync };
