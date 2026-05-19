@@ -71,6 +71,8 @@ const cashIn = async (req, res) => {
             type: "cash_in",
             status: "pending",
             paypackRef: result.data?.ref,
+            senderPhone: recipientPhone,
+            receiverPhone: "MOTA",
             description: `Digital cash-in request. Amount: ${amount} RWF`,
         });
 
@@ -118,6 +120,15 @@ const requestCashOut = async (req, res) => {
         );
 
         if (result.success) {
+            // Update transaction with paypack info
+            if (cashOutResult.transactionId) {
+                await Transaction.findByIdAndUpdate(cashOutResult.transactionId, {
+                    paypackRef: result.data?.ref,
+                    senderPhone: "MOTA",
+                    receiverPhone: user.phone
+                });
+            }
+
             return res.status(200).json({
                 message: `Success! ${amount} RWF has been sent to your MoMo account (${user.phone}). Fee: ${cashOutResult.fee} RWF.`,
                 amount,
@@ -157,7 +168,8 @@ const getTransactions = async (req, res) => {
         const transactions = await Transaction.find(query)
             .sort({ createdAt: -1 })
             .skip(skip)
-            .limit(limit);
+            .limit(limit)
+            .populate("driverId", "firstName lastName phone profilePicture email");
 
         const total = await Transaction.countDocuments(query);
 

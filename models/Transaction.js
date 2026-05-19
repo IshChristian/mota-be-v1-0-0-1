@@ -68,6 +68,17 @@ const transactionSchema = new mongoose.Schema({
         type: String,
         trim: true,
     },
+    senderPhone: {
+        type: String,
+        trim: true,
+    },
+    receiverPhone: {
+        type: String,
+        trim: true,
+    },
+    paypackEvent: {
+        type: mongoose.Schema.Types.Mixed,
+    },
     createdAt: {
         type: Date,
         default: Date.now,

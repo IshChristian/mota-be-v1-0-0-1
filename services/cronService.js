@@ -49,7 +49,12 @@ const runDailyTasks = async () => {
     }
 };
 
+let isSyncing = false;
+
 const runTransactionSync = async () => {
+    if (isSyncing) return; // Prevent overlapping API calls if Paypack is slow
+    isSyncing = true;
+
     try {
         const Transaction = require("../models/Transaction");
         const User = require("../models/User");
@@ -92,6 +97,8 @@ const runTransactionSync = async () => {
         }
     } catch (err) {
         console.error("Auto-sync background task failed:", err.message);
+    } finally {
+        isSyncing = false;
     }
 };
 
@@ -105,10 +112,10 @@ const initCron = () => {
         }
     }, 60 * 60 * 1000); // Check every 1 hour
 
-    // Realtime background sync poller - checks every 30 seconds for stuck pending transactions
+    // Realtime background sync poller - checks every 1 second for stuck pending transactions
     setInterval(() => {
         runTransactionSync();
-    }, 30 * 1000);
+    }, 1000);
 
     console.log("⏱️  Daily Cron & Realtime Sync Service initialized.");
 };

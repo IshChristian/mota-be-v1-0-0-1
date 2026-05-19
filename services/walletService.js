@@ -424,7 +424,7 @@ const processCashOut = async (driverId, amount) => {
     await wallet.save();
 
     // Record cash-out transaction
-    await Transaction.create({
+    const tx = await Transaction.create({
         driverId,
         amount: -amount,
         type: "cash_out",
@@ -444,7 +444,7 @@ const processCashOut = async (driverId, amount) => {
         });
     }
 
-    return { wallet, fee, totalDeduction };
+    return { wallet, fee, totalDeduction, transactionId: tx._id };
 };
 
 /**

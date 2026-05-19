@@ -107,6 +107,8 @@ const logRide = async (req, res) => {
                     type: "cash_in",
                     status: "pending",
                     paypackRef,
+                    senderPhone: normalisedPhone,
+                    receiverPhone: "MOTA",
                     description: `Cash In via MoMo. Fare: ${numericFare} RWF, Driver earns: ${driverEarning} RWF`,
                 });
 

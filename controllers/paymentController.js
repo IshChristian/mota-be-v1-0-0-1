@@ -109,6 +109,7 @@ const handleWebhook = async (req, res) => {
 
         if (status === "successful" || status === "completed") {
             tx.status = "completed";
+            tx.paypackEvent = payload;
             await tx.save();
 
             // ⚡ Instantly notify any SSE listeners watching this ref
@@ -232,6 +233,7 @@ const handleWebhook = async (req, res) => {
             }
         } else if (status === "failed") {
             tx.status = "failed";
+            tx.paypackEvent = payload;
             await tx.save();
 
             // ⚡ Instantly notify any SSE listeners watching this ref
