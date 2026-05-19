@@ -348,12 +348,53 @@ const streamTransactionStatus = async (req, res) => {
                 .select("status amount type description rideId createdAt driverId")
                 .populate("rideId", "paymentStatus fare passengerPhone");
 
+            let isRegistration = false;
+            let user = null;
+
             if (!tx) {
-                send({ ref, status: "not_found", message: "Transaction not found." });
-                close("transaction_not_found");
+                // If not a wallet transaction, check if it's a registration payment
+                const User = require("../models/User");
+                user = await User.findOne({ registrationPaypackRef: ref });
+                if (!user) {
+                    send({ ref, status: "not_found", message: "Transaction not found." });
+                    close("transaction_not_found");
+                    return;
+                }
+                isRegistration = true;
+            }
+
+            if (isRegistration) {
+                // ── Handle Registration Polling ────────────────────────────────
+                if (!user.registrationPaid) {
+                    const ppStatusResult = await paymentService.getTransactionStatus(ref);
+                    if (ppStatusResult.success && ppStatusResult.data) {
+                        const realStatus = ppStatusResult.data.status;
+                        if (realStatus === "successful" || realStatus === "completed" || realStatus === "failed") {
+                            const fakeReq = { body: { ...ppStatusResult.data } };
+                            const fakeRes = { status: () => ({ json: () => {} }) };
+                            await handleWebhook(fakeReq, fakeRes);
+                            user = await User.findOne({ registrationPaypackRef: ref });
+                        }
+                    }
+                }
+
+                const currentStatus = user.registrationPaid ? "completed" : "pending";
+                send({
+                    ref,
+                    status: currentStatus,
+                    amount: 5000,
+                    type: "registration",
+                    description: "Driver Registration Fee",
+                    timestamp: new Date().toISOString(),
+                });
+
+                if (currentStatus === "completed" || currentStatus === "failed") {
+                    close(`payment_${currentStatus}`);
+                }
                 return;
             }
 
+            // ── Handle Regular Transaction Polling ────────────────────────────
             // Ownership check
             if (req.user && tx.driverId && tx.driverId.toString() !== req.user.id) {
                 send({ ref, status: "forbidden" });
@@ -361,28 +402,15 @@ const streamTransactionStatus = async (req, res) => {
                 return;
             }
 
-            // ── Real-time Paypack Check (Active Polling) ──────────────
-            // If local DB still says pending, double-check directly with Paypack
             if (tx.status === "pending") {
                 const ppStatusResult = await paymentService.getTransactionStatus(ref);
                 if (ppStatusResult.success && ppStatusResult.data) {
                     const realStatus = ppStatusResult.data.status; // e.g. "successful", "failed", "pending"
                     if (realStatus === "successful" || realStatus === "failed") {
-                        // Forward this to our webhook handler logic directly to ensure all wallet/streak logic runs
-                        // Since we just need to pass the event object it expects:
-                        const fakeEvent = {
-                            ref: ppStatusResult.data.ref,
-                            status: realStatus,
-                            amount: ppStatusResult.data.amount,
-                            kind: ppStatusResult.data.kind
-                        };
-                        
-                        // Fake a req/res for handleWebhook to process it inline
-                        const fakeReq = { body: fakeEvent };
+                        const fakeReq = { body: { ...ppStatusResult.data } };
                         const fakeRes = { status: () => ({ json: () => {} }) };
                         await handleWebhook(fakeReq, fakeRes);
                         
-                        // Re-fetch the transaction from DB after processing
                         tx = await Transaction.findOne({ paypackRef: ref })
                             .select("status amount type description rideId createdAt driverId")
                             .populate("rideId", "paymentStatus fare passengerPhone");
@@ -407,7 +435,6 @@ const streamTransactionStatus = async (req, res) => {
                 timestamp: new Date().toISOString(),
             });
 
-            // Terminal state — close stream
             if (tx.status === "completed" || tx.status === "failed") {
                 close(`payment_${tx.status}`);
             }
