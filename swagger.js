@@ -93,8 +93,8 @@ const options = {
             },
             paymentStatus: {
               type: "string",
-              enum: ["pending", "completed", "failed"],
-              description: "Set to 'completed' only after Paypack webhook confirms payment",
+              enum: ["pending", "successful", "failed"],
+              description: "Set to 'successful' only after Paypack webhook confirms payment",
               example: "pending",
             },
             paypackRef: { type: "string", description: "Paypack transaction reference" },
@@ -132,7 +132,7 @@ const options = {
             reward: { type: "number" },
             status: {
               type: "string",
-              enum: ["pending", "completed"],
+              enum: ["pending", "successful"],
             },
           },
         },

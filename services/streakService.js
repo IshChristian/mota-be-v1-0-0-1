@@ -38,7 +38,7 @@ const updateStreak = async (driverId) => {
     // Count completed rides today
     const todayRideCount = await Ride.countDocuments({
       driverId,
-      paymentStatus: "completed",
+      paymentStatus: "successful",
       createdAt: { $gte: startOfToday, $lte: endOfToday },
     });
 
@@ -119,7 +119,7 @@ const getStreakInfo = async (driverId) => {
 
   const todayRideCount = await Ride.countDocuments({
     driverId,
-    paymentStatus: "completed",
+    paymentStatus: "successful",
     createdAt: { $gte: startOfToday, $lte: endOfToday },
   });
 

@@ -97,7 +97,7 @@ const getDashboard = async (req, res) => {
         // Get referral count
         const referralCount = await Referral.countDocuments({
             referrerId: driverId,
-            status: "completed",
+            status: "successful",
         });
 
         res.status(200).json({

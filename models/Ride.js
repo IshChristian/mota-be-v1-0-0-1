@@ -22,7 +22,7 @@ const rideSchema = new mongoose.Schema({
     },
     paymentStatus: {
         type: String,
-        enum: ["pending", "completed", "failed"],
+        enum: ["pending", "successful", "failed"],
         default: "pending",
     },
     paypackRef: {

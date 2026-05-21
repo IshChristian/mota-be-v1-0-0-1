@@ -98,7 +98,7 @@ const sendMoney = async (senderId, receiverPhone, amount, description = "") => {
         amount,
         feeAmount: fee,
         method: "direct",
-        status: "completed",
+        status: "successful",
         reference,
         description: description || `Transfer to ${receiver.firstName} ${receiver.lastName}`,
     });
@@ -109,7 +109,7 @@ const sendMoney = async (senderId, receiverPhone, amount, description = "") => {
         amount: -totalDeduction,
         feeAmount: fee,
         type: "cash_out",
-        status: "completed",
+        status: "successful",
         reference,
         description: `P2P Transfer to ${receiver.phone}. Amount: ${amount} RWF. Fee: ${fee} RWF.`,
     });
@@ -118,7 +118,7 @@ const sendMoney = async (senderId, receiverPhone, amount, description = "") => {
         driverId: receiver._id,
         amount: amount,
         type: "cash_in",
-        status: "completed",
+        status: "successful",
         reference,
         description: `P2P Transfer received from ${(await User.findById(senderId)).phone}. Amount: ${amount} RWF.`,
     });
@@ -129,7 +129,7 @@ const sendMoney = async (senderId, receiverPhone, amount, description = "") => {
             driverId: senderId,
             amount: fee,
             type: "transaction_fee",
-            status: "completed",
+            status: "successful",
             reference,
             description: `Transfer fee (${feePercentage}%). Fee: ${fee} RWF.`,
         });
@@ -205,7 +205,7 @@ const sendMoneyViaQR = async (senderId, receiverPhone, amount, description = "")
         amount,
         feeAmount: fee,
         method: "qr_code",
-        status: "completed",
+        status: "successful",
         reference,
         description: description || `QR Transfer to ${receiver.firstName} ${receiver.lastName}`,
     });
@@ -216,7 +216,7 @@ const sendMoneyViaQR = async (senderId, receiverPhone, amount, description = "")
         amount: -totalDeduction,
         feeAmount: fee,
         type: "cash_out",
-        status: "completed",
+        status: "successful",
         reference,
         description: `QR Transfer to ${receiver.phone}. Amount: ${amount} RWF. Fee: ${fee} RWF.`,
     });
@@ -225,7 +225,7 @@ const sendMoneyViaQR = async (senderId, receiverPhone, amount, description = "")
         driverId: receiver._id,
         amount: amount,
         type: "cash_in",
-        status: "completed",
+        status: "successful",
         reference,
         description: `QR Transfer received. Amount: ${amount} RWF.`,
     });
@@ -235,7 +235,7 @@ const sendMoneyViaQR = async (senderId, receiverPhone, amount, description = "")
             driverId: senderId,
             amount: fee,
             type: "transaction_fee",
-            status: "completed",
+            status: "successful",
             reference,
             description: `QR Transfer fee (${feePercentage}%). Fee: ${fee} RWF.`,
         });

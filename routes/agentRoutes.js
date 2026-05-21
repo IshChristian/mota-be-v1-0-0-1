@@ -118,7 +118,7 @@ router.post("/register-driver", async (req, res) => {
             referrerId: agentId,
             referredUserId: newUser._id,
             reward: 500,
-            status: "completed",
+            status: "successful",
         });
 
         // Create driver profile if data provided
@@ -253,11 +253,11 @@ router.get("/stats", async (req, res) => {
         const agentId = req.user.id;
 
         const totalRegistered = await Referral.countDocuments({ referrerId: agentId });
-        const completedReferrals = await Referral.countDocuments({ referrerId: agentId, status: "completed" });
+        const completedReferrals = await Referral.countDocuments({ referrerId: agentId, status: "successful" });
         const pendingReferrals = await Referral.countDocuments({ referrerId: agentId, status: "pending" });
 
         const rewardAgg = await Referral.aggregate([
-            { $match: { referrerId: agentId, status: "completed" } },
+            { $match: { referrerId: agentId, status: "successful" } },
             { $group: { _id: null, total: { $sum: "$reward" } } },
         ]);
 

@@ -216,49 +216,49 @@ const calculateRevenue = async () => {
 
     // Platform commission from rides
     const commissionAgg = await Transaction.aggregate([
-        { $match: { type: "platform_commission", status: "completed" } },
+        { $match: { type: "platform_commission", status: "successful" } },
         { $group: { _id: null, total: { $sum: "$amount" } } },
     ]);
     const totalCommissions = commissionAgg[0]?.total || 0;
 
     // Fine payments revenue
     const fineAgg = await Transaction.aggregate([
-        { $match: { type: "fine_payment", status: "completed" } },
+        { $match: { type: "fine_payment", status: "successful" } },
         { $group: { _id: null, total: { $sum: { $abs: "$amount" } } } },
     ]);
     const totalFineRevenue = fineAgg[0]?.total || 0;
 
     // Cash-out fees
     const cashOutFeeAgg = await Transaction.aggregate([
-        { $match: { type: "cash_out_fee", status: "completed" } },
+        { $match: { type: "cash_out_fee", status: "successful" } },
         { $group: { _id: null, total: { $sum: { $abs: "$amount" } } } },
     ]);
     const totalCashOutFees = cashOutFeeAgg[0]?.total || 0;
 
     // Transaction fees
     const txFeeAgg = await Transaction.aggregate([
-        { $match: { type: "transaction_fee", status: "completed" } },
+        { $match: { type: "transaction_fee", status: "successful" } },
         { $group: { _id: null, total: { $sum: { $abs: "$amount" } } } },
     ]);
     const totalTxFees = txFeeAgg[0]?.total || 0;
 
     // Registration fees (agent + driver)
     const regFeeAgg = await Transaction.aggregate([
-        { $match: { type: { $in: ["agent_registration_fee", "commission"] }, status: "completed" } },
+        { $match: { type: { $in: ["agent_registration_fee", "commission"] }, status: "successful" } },
         { $group: { _id: null, total: { $sum: "$amount" } } },
     ]);
     const totalRegistrationFees = regFeeAgg[0]?.total || 0;
 
     // Loan interest revenue
     const loanInterestAgg = await Loan.aggregate([
-        { $match: { loanStatus: { $in: ["active", "completed"] } } },
+        { $match: { loanStatus: { $in: ["active", "successful"] } } },
         { $group: { _id: null, total: { $sum: { $subtract: ["$totalWithInterest", "$loanAmount"] } } } },
     ]);
     const totalLoanInterest = loanInterestAgg[0]?.total || 0;
 
     // Total referral costs (outgoing)
     const referralAgg = await Transaction.aggregate([
-        { $match: { type: "referral_reward", status: "completed" } },
+        { $match: { type: "referral_reward", status: "successful" } },
         { $group: { _id: null, total: { $sum: "$amount" } } },
     ]);
     const totalReferralCosts = referralAgg[0]?.total || 0;

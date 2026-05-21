@@ -168,8 +168,8 @@ router.get("/status/:ref", authMiddleware, paymentController.getTransactionStatu
  *       );
  *       es.onmessage = (e) => {
  *         const data = JSON.parse(e.data);
- *         console.log(data.status); // "pending" | "completed" | "failed"
- *         if (data.status === "completed" || data.status === "failed") {
+ *         console.log(data.status); // "pending" | "successful" | "failed"
+ *         if (data.status === "successful" || data.status === "failed") {
  *           es.close();
  *         }
  *       };
@@ -179,13 +179,13 @@ router.get("/status/:ref", authMiddleware, paymentController.getTransactionStatu
  *       ```json
  *       {
  *         "ref": "pp_ref_abc123xyz",
- *         "status": "completed",
+ *         "status": "successful",
  *         "amount": 3000,
  *         "type": "cash_in",
  *         "description": "Cash In via MoMo...",
  *         "ride": {
  *           "rideId": "664abc...",
- *           "paymentStatus": "completed",
+ *           "paymentStatus": "successful",
  *           "fare": 3000,
  *           "passengerPhone": "+250782123456"
  *         },

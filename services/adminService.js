@@ -7,11 +7,11 @@ const getSystemStats = async () => {
     const totalDrivers = await User.countDocuments({ role: "driver" });
     const totalAgents = await User.countDocuments({ role: "agent" });
     const activeRides = await Ride.countDocuments({ paymentStatus: "pending" });
-    const completedRides = await Ride.countDocuments({ paymentStatus: "completed" });
+    const completedRides = await Ride.countDocuments({ paymentStatus: "successful" });
 
     // Calculate total revenue (commissions)
     const result = await Ride.aggregate([
-        { $match: { paymentStatus: "completed" } },
+        { $match: { paymentStatus: "successful" } },
         { $group: { _id: null, totalCommission: { $sum: "$commissionAmount" } } }
     ]);
     const totalRevenue = result.length > 0 ? result[0].totalCommission : 0;

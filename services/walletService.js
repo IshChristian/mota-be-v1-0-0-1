@@ -66,7 +66,7 @@ const getWalletSummary = async (driverId) => {
             {
                 $match: {
                     driverId: objectId,
-                    status: "completed",
+                    status: "successful",
                     createdAt: { $gte: startOfToday, $lte: endOfToday },
                 },
             },
@@ -85,7 +85,7 @@ const getWalletSummary = async (driverId) => {
             {
                 $match: {
                     driverId: objectId,
-                    status: "completed",
+                    status: "successful",
                     createdAt: { $gte: startOfWeek },
                 },
             },
@@ -109,7 +109,7 @@ const getWalletSummary = async (driverId) => {
             {
                 $match: {
                     driverId: objectId,
-                    status: "completed",
+                    status: "successful",
                     createdAt: { $gte: startOfMonth },
                 },
             },
@@ -133,7 +133,7 @@ const getWalletSummary = async (driverId) => {
             {
                 $match: {
                     driverId: objectId,
-                    status: "completed",
+                    status: "successful",
                 },
             },
             {
@@ -292,7 +292,7 @@ const creditWallet = async (driverId, amount, type, meta = {}) => {
         amount,
         feeAmount: meta.feeAmount || 0,
         type,
-        status: "completed",
+        status: "successful",
         reference: meta.reference || null,
         description: meta.description || null,
         paypackRef: meta.paypackRef || null,
@@ -322,7 +322,7 @@ const debitWallet = async (driverId, amount, type, meta = {}) => {
         amount: -amount,
         feeAmount: meta.feeAmount || 0,
         type,
-        status: "completed",
+        status: "successful",
         reference: meta.reference || null,
         description: meta.description || null,
         paypackRef: meta.paypackRef || null,
@@ -361,7 +361,7 @@ const creditRidePayment = async (driverId, rideId, fare) => {
             rideId,
             amount: commission,
             type: "platform_commission",
-            status: "completed",
+            status: "successful",
             description: `Platform commission from ride. ${commission} RWF.`,
         });
     }
@@ -428,7 +428,7 @@ const processCashOut = async (driverId, amount) => {
         driverId,
         amount: -amount,
         type: "cash_out",
-        status: "completed",
+        status: "successful",
         description: `Cash-out withdrawal. Amount: ${amount} RWF.`,
     });
 
@@ -439,7 +439,7 @@ const processCashOut = async (driverId, amount) => {
             amount: -fee,
             feeAmount: fee,
             type: "cash_out_fee",
-            status: "completed",
+            status: "successful",
             description: `Cash-out fee (${feePercentage}%). Fee: ${fee} RWF.`,
         });
     }

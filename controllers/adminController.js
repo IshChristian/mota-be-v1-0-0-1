@@ -329,7 +329,7 @@ const reviewRegistration = async (req, res) => {
             if (pendingReferral) {
                 // Reward referrer visually 3000 RWF in their wallet
                 await walletService.rewardReferral(pendingReferral.referrerId, 3000);
-                pendingReferral.status = "completed";
+                pendingReferral.status = "successful";
                 await pendingReferral.save();
             }
 

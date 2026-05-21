@@ -68,7 +68,7 @@ const handleWebhook = async (event, driverId, rideId) => {
         // Find the pending transaction by paypackRef
         const tx = await Transaction.findOne({ paypackRef: ref });
         if (tx) {
-            tx.status = status === "successful" ? "completed" : "failed";
+            tx.status = status === "successful" ? "successful" : "failed";
             await tx.save();
         }
 

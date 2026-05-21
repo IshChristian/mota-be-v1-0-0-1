@@ -91,7 +91,7 @@ const handleWebhook = async (req, res) => {
             // It might be a registration payment (which doesn't create a Transaction record yet)
             const user = await User.findOne({ registrationPaypackRef: ref });
             if (user && !user.registrationPaid) {
-                if (status === "successful" || status === "completed") {
+                if (status === "successful" || status === "successful") {
                     user.registrationPaid = true;
                     user.registrationStatus = "pending";
                     if (user.role === "agent") {
@@ -107,8 +107,8 @@ const handleWebhook = async (req, res) => {
             return res.status(200).json({ message: "Webhook received" });
         }
 
-        if (status === "successful" || status === "completed") {
-            tx.status = "completed";
+        if (status === "successful" || status === "successful") {
+            tx.status = "successful";
             tx.paypackEvent = payload;
             await tx.save();
 
@@ -135,7 +135,7 @@ const handleWebhook = async (req, res) => {
 
                     // If it was a logged ride, update ride status
                     if (tx.rideId) {
-                        await Ride.findByIdAndUpdate(tx.rideId, { paymentStatus: "completed" });
+                        await Ride.findByIdAndUpdate(tx.rideId, { paymentStatus: "successful" });
                     }
 
                     const wallet = await Wallet.findOne({ driverId: tx.driverId });
@@ -176,8 +176,8 @@ const handleWebhook = async (req, res) => {
                     await sendEmail(adminEmail, "MOTA Admin: Ride Payment Alert", "", adminHtml);
 
                     // ── Update streak / tier / algorithm ────────────────────
-                    // IMPORTANT: ride.paymentStatus was just set to "completed"
-                    // above, so countDocuments({ paymentStatus: "completed" })
+                    // IMPORTANT: ride.paymentStatus was just set to "successful"
+                    // above, so countDocuments({ paymentStatus: "successful" })
                     // in streakService will now include this ride correctly.
                     // Rides that are still "pending" are NOT counted toward the
                     // 20-ride daily target.
@@ -305,7 +305,7 @@ const getTransactionStatus = async (req, res) => {
  *  2. Listens on txBus for "tx:<ref>" event (emitted by handleWebhook).
  *  3. Also polls every 3 seconds as a safety net (in case webhook fires
  *     before the SSE client connected).
- *  4. Closes the stream when status is "completed" or "failed".
+ *  4. Closes the stream when status is "successful" or "failed".
  *
  * Client usage (JavaScript):
  *   const es = new EventSource('/api/payment/status-stream/pp_ref_xyz?token=<jwt>');
@@ -371,7 +371,7 @@ const streamTransactionStatus = async (req, res) => {
                     const ppStatusResult = await paymentService.getTransactionStatus(ref);
                     if (ppStatusResult.success && ppStatusResult.data) {
                         const realStatus = ppStatusResult.data.status;
-                        if (realStatus === "successful" || realStatus === "completed" || realStatus === "failed") {
+                        if (realStatus === "successful" || realStatus === "successful" || realStatus === "failed") {
                             const fakeReq = { body: { ...ppStatusResult.data } };
                             const fakeRes = { status: () => ({ json: () => {} }) };
                             await handleWebhook(fakeReq, fakeRes);
@@ -380,7 +380,7 @@ const streamTransactionStatus = async (req, res) => {
                     }
                 }
 
-                const currentStatus = user.registrationPaid ? "completed" : "pending";
+                const currentStatus = user.registrationPaid ? "successful" : "pending";
                 send({
                     ref,
                     status: currentStatus,
@@ -390,7 +390,7 @@ const streamTransactionStatus = async (req, res) => {
                     timestamp: new Date().toISOString(),
                 });
 
-                if (currentStatus === "completed" || currentStatus === "failed") {
+                if (currentStatus === "successful" || currentStatus === "failed") {
                     close(`payment_${currentStatus}`);
                 }
                 return;
@@ -437,7 +437,7 @@ const streamTransactionStatus = async (req, res) => {
                 timestamp: new Date().toISOString(),
             });
 
-            if (tx.status === "completed" || tx.status === "failed") {
+            if (tx.status === "successful" || tx.status === "failed") {
                 close(`payment_${tx.status}`);
             }
         } catch (err) {

@@ -160,7 +160,7 @@ const getFullUserDataByPlateNumber = async (plateNumber, options = {}) => {
             made: referralsMade,
             received: referralsReceived,
             totalMade: referralsMade.length,
-            totalCompleted: referralsMade.filter(r => r.status === "completed").length,
+            totalCompleted: referralsMade.filter(r => r.status === "successful").length,
         },
 
         // Transactions
@@ -238,10 +238,10 @@ const computeRideStats = async (driverId) => {
         Ride.countDocuments({ driverId, createdAt: { $gte: startOfWeek } }),
         Ride.countDocuments({ driverId, createdAt: { $gte: startOfMonth } }),
         Ride.aggregate([
-            { $match: { driverId: (typeof driverId === "string" ? require("mongoose").Types.ObjectId.createFromHexString(driverId) : driverId), paymentStatus: "completed" } },
+            { $match: { driverId: (typeof driverId === "string" ? require("mongoose").Types.ObjectId.createFromHexString(driverId) : driverId), paymentStatus: "successful" } },
             { $group: { _id: null, totalFare: { $sum: "$fare" }, totalDriverEarning: { $sum: "$driverEarning" } } },
         ]),
-        Ride.countDocuments({ driverId, paymentStatus: "completed" }),
+        Ride.countDocuments({ driverId, paymentStatus: "successful" }),
     ]);
 
     return {

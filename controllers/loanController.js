@@ -50,7 +50,7 @@ const repayLoan = async (req, res) => {
         }
         const result = await loanService.repayLoan(loanId, amount, req.user.id);
         res.status(200).json({
-            message: result.loan.loanStatus === "completed" ? "Loan fully repaid!" : "Loan repayment successful",
+            message: result.loan.loanStatus === "successful" ? "Loan fully repaid!" : "Loan repayment successful",
             data: result,
         });
     } catch (error) {

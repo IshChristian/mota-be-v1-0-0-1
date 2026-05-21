@@ -78,7 +78,7 @@ const runTransactionSync = async () => {
                 const realStatus = ppStatusResult.data.status;
                 
                 // If Paypack status is terminal (successful or failed) and local is still pending
-                if (item.status !== realStatus && (realStatus === "successful" || realStatus === "failed" || realStatus === "completed")) {
+                if (item.status !== realStatus && (realStatus === "successful" || realStatus === "failed" || realStatus === "successful")) {
                     const fakeEvent = {
                         ref: ppStatusResult.data.ref,
                         status: realStatus,

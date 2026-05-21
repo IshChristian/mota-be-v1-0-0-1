@@ -29,8 +29,8 @@ const transferSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ["pending", "completed", "failed", "reversed"],
-        default: "completed",
+        enum: ["pending", "successful", "failed", "reversed"],
+        default: "successful",
     },
     reference: {
         type: String,

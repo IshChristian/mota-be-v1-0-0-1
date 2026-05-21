@@ -77,7 +77,7 @@ const approveLoan = async (loanId, adminId) => {
         driverId: loan.driverId,
         amount: loan.loanAmount,
         type: "fine_loan_issued",
-        status: "completed",
+        status: "successful",
         description: `Fine loan issued. Amount: ${loan.loanAmount} RWF. Total with interest: ${loan.totalWithInterest} RWF.`,
     });
 
@@ -134,7 +134,7 @@ const repayLoan = async (loanId, amount, driverId) => {
     loan.remainingBalance -= paymentAmount;
     if (loan.remainingBalance <= 0) {
         loan.remainingBalance = 0;
-        loan.loanStatus = "completed";
+        loan.loanStatus = "successful";
         loan.completedAt = new Date();
     }
     await loan.save();
@@ -144,14 +144,14 @@ const repayLoan = async (loanId, amount, driverId) => {
         driverId,
         amount: paymentAmount,
         type: "fine_loan_repayment",
-        status: "completed",
+        status: "successful",
         description: `Manual loan repayment. Loan remaining: ${loan.remainingBalance} RWF.`,
     });
 
     // Notify
     const driver = await User.findById(driverId);
     if (driver) {
-        const msg = loan.loanStatus === "completed"
+        const msg = loan.loanStatus === "successful"
             ? `MOTA: Loan fully repaid! Thank you.`
             : `MOTA: Loan repayment of ${paymentAmount} RWF received. Remaining: ${loan.remainingBalance} RWF.`;
         await sendSMS(driver.phone, msg, "fine_loan_repayment");
@@ -184,7 +184,7 @@ const autoDeductFromRide = async (driverId, rideEarning) => {
 
         if (loan.remainingBalance <= 0) {
             loan.remainingBalance = 0;
-            loan.loanStatus = "completed";
+            loan.loanStatus = "successful";
             loan.completedAt = new Date();
         }
         await loan.save();
@@ -197,7 +197,7 @@ const autoDeductFromRide = async (driverId, rideEarning) => {
             driverId,
             amount: payment,
             type: "fine_loan_repayment",
-            status: "completed",
+            status: "successful",
             description: `Auto loan repayment (${repaymentPercentage}% of ride). Loan remaining: ${loan.remainingBalance} RWF.`,
         });
     }

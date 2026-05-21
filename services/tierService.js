@@ -55,11 +55,11 @@ const updateTier = async (driverId) => {
 
         const monthlyRideCount = await Ride.countDocuments({
             driverId,
-            paymentStatus: "completed",
+            paymentStatus: "successful",
             createdAt: { $gte: startOfMonth, $lte: endOfMonth },
         });
 
-        const totalRideCount = await Ride.countDocuments({ driverId, paymentStatus: "completed" });
+        const totalRideCount = await Ride.countDocuments({ driverId, paymentStatus: "successful" });
 
         const newTier = await determineTier(totalRideCount);
         const multiplier = TIER_MULTIPLIERS[newTier];
