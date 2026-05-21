@@ -72,26 +72,34 @@ const runTransactionSync = async () => {
         for (const u of pendingUsers) pendingRefs.push({ ref: u.registrationPaypackRef, status: "pending" });
 
         for (const item of pendingRefs) {
-            const ppStatusResult = await paymentService.getTransactionStatus(item.ref);
+            // Check Paypack Events directly for this ref
+            const ppStatusResult = await paymentService.getEvents({ ref: item.ref });
             
-            if (ppStatusResult.success && ppStatusResult.data) {
-                const realStatus = ppStatusResult.data.status;
+            if (ppStatusResult.success && ppStatusResult.data && ppStatusResult.data.transactions && ppStatusResult.data.transactions.length > 0) {
+                // The newest event is usually the first or last, let's sort or just take the one with terminal status
+                const events = ppStatusResult.data.transactions;
                 
-                // If Paypack status is terminal (successful or failed) and local is still pending
-                if (item.status !== realStatus && (realStatus === "successful" || realStatus === "failed" || realStatus === "successful")) {
-                    const fakeEvent = {
-                        ref: ppStatusResult.data.ref,
-                        status: realStatus,
-                        amount: ppStatusResult.data.amount,
-                        kind: ppStatusResult.data.kind
-                    };
+                // Find the event data block (Paypack's event returns an array, each has .data which contains the actual webhook payload)
+                // Let's get the most definitive event (e.g., successful or failed)
+                let latestEventData = events[0].data; 
+                for (const ev of events) {
+                    if (ev.data && (ev.data.status === "successful" || ev.data.status === "failed")) {
+                        latestEventData = ev.data;
+                    }
+                }
+
+                if (latestEventData) {
+                    const realStatus = latestEventData.status;
                     
-                    const fakeReq = { body: { data: fakeEvent } };
-                    const fakeRes = { status: () => ({ json: () => {} }) };
-                    
-                    // Route it through the official webhook handler so wallet/streak/registration updates run identically
-                    await paymentController.handleWebhook(fakeReq, fakeRes);
-                    console.log(`[Auto-Sync] Fixed out-of-sync transaction: ${item.ref} -> ${realStatus}`);
+                    // If the event status differs from our local pending status
+                    if (item.status !== realStatus && (realStatus === "successful" || realStatus === "failed")) {
+                        const fakeReq = { body: { data: latestEventData } };
+                        const fakeRes = { status: () => ({ json: () => {} }) };
+                        
+                        // Route the raw event through the webhook handler
+                        await paymentController.handleWebhook(fakeReq, fakeRes);
+                        console.log(`[Auto-Sync] Fixed out-of-sync transaction using Event Log: ${item.ref} -> ${realStatus}`);
+                    }
                 }
             }
         }
