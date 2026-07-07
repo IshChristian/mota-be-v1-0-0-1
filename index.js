@@ -73,6 +73,7 @@ const transferRoutes = require("./routes/transferRoutes");
 const fineRequestRoutes = require("./routes/fineRequestRoutes");
 const algorithmRoutes = require("./routes/algorithmRoutes");
 const platformRoutes = require("./routes/platformRoutes");
+const financeRoutes = require("./routes/financeRoutes");
 
 // ─── API Routes ─────────────────────────────────────────
 // (Auth moved to new module below)
@@ -98,6 +99,7 @@ app.use("/api/fine-requests", fineRequestRoutes);
 app.use("/api/ride", algorithmRoutes);  // POST /api/ride/complete
 app.use("/api/rider", algorithmRoutes); // GET /api/rider/status, /api/rider/earnings
 app.use("/api/platform", platformRoutes);
+app.use("/api/finance", financeRoutes);
 
 // ─── Root Endpoint ──────────────────────────────────────
 app.get("/", (req, res) => {
@@ -127,6 +129,7 @@ app.get("/", (req, res) => {
       fineRequests: "/api/fine-requests",
       rider: "/api/rider",
       platform: "/api/platform",
+      finance: "/api/finance",
     },
   });
 });
