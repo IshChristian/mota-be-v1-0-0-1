@@ -10,17 +10,26 @@ const requestLoan = async (req, res) => {
     try {
         const mongoose = require("mongoose");
         const driverId = mongoose.Types.ObjectId.createFromHexString(req.user.id);
-        
-        const { tinNumber } = req.body;
+
+        const { tinNumber, ticketNumber } = req.body;
+
+        // ── Validate TIN ──────────────────────────────────────────────────
         if (!tinNumber) {
             return res.status(400).json({ message: "tinNumber is required" });
         }
-        
         if (String(tinNumber).length !== 9) {
             return res.status(400).json({ message: "TIN number must be exactly 9 digits" });
         }
-        
-        const loan = await loanService.requestLoan(driverId, String(tinNumber));
+
+        // ── Validate Ticket Number ────────────────────────────────────────
+        if (!ticketNumber) {
+            return res.status(400).json({ message: "ticketNumber is required" });
+        }
+        if (String(ticketNumber).trim().length < 3) {
+            return res.status(400).json({ message: "Ticket number is too short" });
+        }
+
+        const loan = await loanService.requestLoan(driverId, String(tinNumber), String(ticketNumber).trim());
         res.status(201).json({
             message: "Loan request submitted. Pending to be approval.",
             data: loan,

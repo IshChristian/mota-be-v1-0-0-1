@@ -5,37 +5,61 @@ const Wallet = require("../models/Wallet");
 const User = require("../models/User");
 const systemSettingService = require("./systemSettingService");
 const { sendSMS } = require("./smsService");
+const riskScoringService = require("./riskScoringService");
 
 /**
  * Request a fine loan (driver-initiated)
+ * @param {ObjectId} driverId
+ * @param {string}   tinNumber    - 9-digit TIN number
+ * @param {string}   ticketNumber - Traffic ticket/fine reference number
  */
-const requestLoan = async (driverId, tinNumber) => {
-    // Find the fine using the external string ID (TIN number or ticket ID)
-    let fine = await Fine.findOne({ fineId: tinNumber });
-    
-    // Auto-create a pending Fine if it doesn't exist to allow the loan request to succeed
+const requestLoan = async (driverId, tinNumber, ticketNumber) => {
+    // ── 1. Uniqueness: reject if same ticketNumber already used for this TIN ──
+    const duplicateTicket = await Fine.findOne({ fineId: tinNumber, ticketNumber });
+    if (duplicateTicket) {
+        // Also check if that fine already has an active/pending loan
+        const duplicateLoan = await Loan.findOne({
+            fineId: duplicateTicket._id,
+            loanStatus: { $in: ["pending", "active"] },
+        });
+        if (duplicateLoan) {
+            throw new Error(`Ticket number '${ticketNumber}' has already been used to request a loan for this TIN number.`);
+        }
+    }
+
+    // ── 2. Find or auto-create the Fine record for this TIN ─────────────
+    let fine = await Fine.findOne({ fineId: tinNumber, ticketNumber });
+
     if (!fine) {
         fine = await Fine.create({
             driverId,
             fineId: tinNumber,
+            ticketNumber,
             amount: 0,
             status: "pending",
         });
     } else {
-        if (fine.driverId.toString() !== driverId.toString()) throw new Error("Fine does not belong to this driver");
-        if (fine.status === "paid") throw new Error("Fine is already paid");
+        if (fine.driverId.toString() !== driverId.toString()) {
+            throw new Error("This fine does not belong to your account.");
+        }
+        if (fine.status === "paid") {
+            throw new Error("This fine is already paid.");
+        }
     }
 
-    // Check for existing active/pending loan on this fine using the internal ObjectId
-    const existingLoan = await Loan.findOne({ fineId: fine._id, loanStatus: { $in: ["pending", "active"] } });
-    if (existingLoan) throw new Error("An active or pending loan already exists for this fine");
+    // ── 3. Block duplicate active/pending loans on the same fine ───────
+    const existingLoan = await Loan.findOne({
+        fineId: fine._id,
+        loanStatus: { $in: ["pending", "active"] },
+    });
+    if (existingLoan) {
+        throw new Error("An active or pending loan already exists for this ticket.");
+    }
 
+    // ── 4. Determine loan amount from settings ────────────────────
     const remainingFine = fine.totalAmountWithInterest - fine.paidAmount;
-    if (remainingFine <= 0) throw new Error("No outstanding balance on this fine");
-
-    // Check max loan amount from settings
     const maxLoanAmount = await systemSettingService.getSetting("fine_loan_max_amount", 50000);
-    const loanAmount = Math.min(remainingFine, maxLoanAmount);
+    const loanAmount = remainingFine > 0 ? Math.min(remainingFine, maxLoanAmount) : 0;
 
     const interestRate = await systemSettingService.getSetting("fine_loan_interest_rate", 5);
     const totalWithInterest = Math.round(loanAmount * (1 + interestRate / 100));
@@ -44,9 +68,21 @@ const requestLoan = async (driverId, tinNumber) => {
     const dueDate = new Date();
     dueDate.setDate(dueDate.getDate() + maxDurationDays);
 
+    // ── 5. Get driver’s personal loan eligibility cap from risk score ──
+    let driverLoanLimit = maxLoanAmount;
+    try {
+        const riskScore = await riskScoringService.getRiskScore(driverId);
+        driverLoanLimit = riskScore.maxLoanEligible;
+    } catch (_) {
+        // If risk score fails, fall back to system max
+    }
+
+    // ── 6. Create the Loan ──────────────────────────────────────
     const loan = await Loan.create({
         driverId,
         fineId: fine._id,
+        tinNumber,
+        ticketNumber,
         loanAmount,
         interestRate,
         totalWithInterest,
@@ -55,7 +91,12 @@ const requestLoan = async (driverId, tinNumber) => {
         dueDate,
     });
 
-    return loan;
+    // ── 7. Return loan + driver’s limit in response ──────────────────
+    return {
+        loan,
+        driverLoanLimit,
+        systemMaxLoan: maxLoanAmount,
+    };
 };
 
 /**

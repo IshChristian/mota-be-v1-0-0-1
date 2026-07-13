@@ -13,6 +13,15 @@ const loanSchema = new mongoose.Schema(
             ref: "Fine",
             required: true,
         },
+        tinNumber: {
+            type: String,
+            trim: true,
+            index: true,
+        },
+        ticketNumber: {
+            type: String,
+            trim: true,
+        },
         loanAmount: {
             type: Number,
             required: true,

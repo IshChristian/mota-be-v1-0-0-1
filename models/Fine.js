@@ -11,6 +11,11 @@ const fineSchema = new mongoose.Schema({
         required: true,
         trim: true,
     },
+    ticketNumber: {
+        type: String,
+        trim: true,
+        index: true,
+    },
     amount: {
         type: Number,
         required: true,
