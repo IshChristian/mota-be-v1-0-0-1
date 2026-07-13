@@ -33,7 +33,7 @@ const requestLoan = async (driverId, tinNumber, ticketNumber) => {
     if (!fine) {
         fine = await Fine.create({
             driverId,
-            tinNumber: tinNumber,
+            fineId: tinNumber,
             ticketNumber,
             amount: 0,
             status: "pending",
@@ -49,7 +49,7 @@ const requestLoan = async (driverId, tinNumber, ticketNumber) => {
 
     // ── 3. Block duplicate active/pending loans on the same fine ───────
     const existingLoan = await Loan.findOne({
-        tinNumber: fine._id,
+        fineId: fine._id,
         loanStatus: { $in: ["pending", "active"] },
     });
     if (existingLoan) {
@@ -80,7 +80,7 @@ const requestLoan = async (driverId, tinNumber, ticketNumber) => {
     // ── 6. Create the Loan ──────────────────────────────────────
     const loan = await Loan.create({
         driverId,
-        tinNumber: fine._id,
+        fineId: fine._id,
         tinNumber,
         ticketNumber,
         loanAmount,
