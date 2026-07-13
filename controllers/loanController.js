@@ -25,9 +25,6 @@ const requestLoan = async (req, res) => {
         if (!ticketNumber) {
             return res.status(400).json({ message: "ticketNumber is required" });
         }
-        if (String(ticketNumber).trim().length < 3) {
-            return res.status(400).json({ message: "Ticket number is too short" });
-        }
 
         const loan = await loanService.requestLoan(driverId, String(tinNumber), String(ticketNumber).trim());
         res.status(201).json({
