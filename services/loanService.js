@@ -11,10 +11,20 @@ const { sendSMS } = require("./smsService");
  */
 const requestLoan = async (driverId, tinNumber) => {
     // Find the fine using the external string ID (TIN number or ticket ID)
-    const fine = await Fine.findOne({ fineId: tinNumber });
-    if (!fine) throw new Error("Fine not found for this TIN number");
-    if (fine.driverId.toString() !== driverId.toString()) throw new Error("Fine does not belong to this driver");
-    if (fine.status === "paid") throw new Error("Fine is already paid");
+    let fine = await Fine.findOne({ fineId: tinNumber });
+    
+    // Auto-create a pending Fine if it doesn't exist to allow the loan request to succeed
+    if (!fine) {
+        fine = await Fine.create({
+            driverId,
+            fineId: tinNumber,
+            amount: 0,
+            status: "pending",
+        });
+    } else {
+        if (fine.driverId.toString() !== driverId.toString()) throw new Error("Fine does not belong to this driver");
+        if (fine.status === "paid") throw new Error("Fine is already paid");
+    }
 
     // Check for existing active/pending loan on this fine using the internal ObjectId
     const existingLoan = await Loan.findOne({ fineId: fine._id, loanStatus: { $in: ["pending", "active"] } });
