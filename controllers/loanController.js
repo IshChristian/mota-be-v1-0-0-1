@@ -11,15 +11,14 @@ const requestLoan = async (req, res) => {
         const mongoose = require("mongoose");
         const driverId = mongoose.Types.ObjectId.createFromHexString(req.user.id);
         
-        if (!req.body.fineId) {
-            return res.status(400).json({ message: "fineId is required" });
+        const { tinNumber } = req.body;
+        if (!tinNumber) {
+            return res.status(400).json({ message: "tinNumber is required" });
         }
         
-        const fineId = mongoose.Types.ObjectId.createFromHexString(req.body.fineId);
-
-        const loan = await loanService.requestLoan(driverId, fineId);
+        const loan = await loanService.requestLoan(driverId, tinNumber);
         res.status(201).json({
-            message: "Loan request submitted. Pending admin approval.",
+            message: "Loan request submitted. Pending to be approval.",
             data: loan,
         });
     } catch (error) {

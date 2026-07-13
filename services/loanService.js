@@ -9,14 +9,15 @@ const { sendSMS } = require("./smsService");
 /**
  * Request a fine loan (driver-initiated)
  */
-const requestLoan = async (driverId, fineId) => {
-    const fine = await Fine.findById(fineId);
-    if (!fine) throw new Error("Fine not found");
+const requestLoan = async (driverId, tinNumber) => {
+    // Find the fine using the external string ID (TIN number or ticket ID)
+    const fine = await Fine.findOne({ fineId: tinNumber });
+    if (!fine) throw new Error("Fine not found for this TIN number");
     if (fine.driverId.toString() !== driverId.toString()) throw new Error("Fine does not belong to this driver");
     if (fine.status === "paid") throw new Error("Fine is already paid");
 
-    // Check for existing active/pending loan on this fine
-    const existingLoan = await Loan.findOne({ fineId, loanStatus: { $in: ["pending", "active"] } });
+    // Check for existing active/pending loan on this fine using the internal ObjectId
+    const existingLoan = await Loan.findOne({ fineId: fine._id, loanStatus: { $in: ["pending", "active"] } });
     if (existingLoan) throw new Error("An active or pending loan already exists for this fine");
 
     const remainingFine = fine.totalAmountWithInterest - fine.paidAmount;
@@ -35,7 +36,7 @@ const requestLoan = async (driverId, fineId) => {
 
     const loan = await Loan.create({
         driverId,
-        fineId,
+        fineId: fine._id,
         loanAmount,
         interestRate,
         totalWithInterest,
