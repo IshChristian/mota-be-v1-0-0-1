@@ -8,12 +8,14 @@ const loanService = require("../services/loanService");
  */
 const requestLoan = async (req, res) => {
     try {
-        const driverId = req.user.id;
-        const { fineId } = req.body;
-
-        if (!fineId) {
+        const mongoose = require("mongoose");
+        const driverId = mongoose.Types.ObjectId.createFromHexString(req.user.id);
+        
+        if (!req.body.fineId) {
             return res.status(400).json({ message: "fineId is required" });
         }
+        
+        const fineId = mongoose.Types.ObjectId.createFromHexString(req.body.fineId);
 
         const loan = await loanService.requestLoan(driverId, fineId);
         res.status(201).json({
