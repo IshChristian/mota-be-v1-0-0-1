@@ -48,6 +48,15 @@ const userSchema = new mongoose.Schema({
         issuedAt: { type: Date, default: Date.now },
         isUsed: { type: Boolean, default: false }
     }],
+    // ── Driver Availability & Location ──────────────────────────────
+    isOnline: { type: Boolean, default: false },
+    lastLocation: {
+        latitude: { type: Number },
+        longitude: { type: Number },
+        heading: { type: Number },
+        speed: { type: Number },
+    },
+    lastLocationAt: { type: Date },
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
 });

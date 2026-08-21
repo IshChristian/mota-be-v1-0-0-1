@@ -1,4 +1,5 @@
 const express = require("express");
+const http = require("http");
 const dotenv = require("dotenv");
 const cors = require("cors");
 const morgan = require("morgan");
@@ -8,11 +9,16 @@ const connectDB = require("./config/database");
 const { seedDefaults } = require("./services/systemSettingService");
 const { startScheduler } = require("./utils/scheduler");
 const { initCron } = require("./services/cronService");
+const { initSocket } = require("./services/socketService");
 
 // Load environment variables
 dotenv.config();
 
 const app = express();
+const server = http.createServer(app);
+
+// Initialize WebSockets
+initSocket(server);
 
 // ─── Middleware ──────────────────────────────────────────
 app.use(cors());
@@ -74,6 +80,7 @@ const fineRequestRoutes = require("./routes/fineRequestRoutes");
 const algorithmRoutes = require("./routes/algorithmRoutes");
 const platformRoutes = require("./routes/platformRoutes");
 const financeRoutes = require("./routes/financeRoutes");
+const rideEngineRoutes = require("./routes/rideEngineRoutes");
 
 // ─── API Routes ─────────────────────────────────────────
 // (Auth moved to new module below)
@@ -100,6 +107,7 @@ app.use("/api/ride", algorithmRoutes);  // POST /api/ride/complete
 app.use("/api/rider", algorithmRoutes); // GET /api/rider/status, /api/rider/earnings
 app.use("/api/platform", platformRoutes);
 app.use("/api/finance", financeRoutes);
+app.use("/api/rides", rideEngineRoutes);
 
 // ─── Root Endpoint ──────────────────────────────────────
 app.get("/", (req, res) => {
@@ -130,6 +138,7 @@ app.get("/", (req, res) => {
       rider: "/api/rider",
       platform: "/api/platform",
       finance: "/api/finance",
+      rideEngine: "/api/rides",
     },
   });
 });
@@ -154,8 +163,9 @@ app.use((err, req, res, next) => {
 
 // ─── Start Server ───────────────────────────────────────
 const port = process.env.PORT || 5000;
-app.listen(port, () => {
+server.listen(port, () => {
   console.log(`\n🚀 MOTA API Server running on port ${port}`);
   console.log(`📚 API Documentation: http://localhost:${port}/api-docs`);
-  console.log(`🔗 API Base URL: http://localhost:${port}/api\n`);
+  console.log(`🔗 API Base URL: http://localhost:${port}/api`);
+  console.log(`🔌 WebSocket server is active\n`);
 });

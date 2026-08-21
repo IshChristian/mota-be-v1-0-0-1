@@ -1,40 +1,117 @@
 const mongoose = require("mongoose");
 
 const rideSchema = new mongoose.Schema({
+    // ── Actors ─────────────────────────────────────────────────────────
+    passengerId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        index: true,
+    },
     driverId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: "User",
-        required: true,
         index: true,
     },
-    passengerPhone: {
-        type: String,
-        trim: true,
+    passengerPhone: { type: String, trim: true },
+
+    // ── Locations ──────────────────────────────────────────────────────
+    pickup: {
+        latitude: { type: Number },
+        longitude: { type: Number },
+        address: { type: String, trim: true },
     },
-    fare: { type: Number, required: true, min: 0 },
-    commissionRate: { type: Number, default: 0.10 }, // 10%
-    driverEarning: { type: Number },                 // fare after commission
-    commissionAmount: { type: Number },              // platform cut
+    destination: {
+        latitude: { type: Number },
+        longitude: { type: Number },
+        address: { type: String, trim: true },
+    },
+    // Legacy string fields for backward compat with driver-logged rides
+    pickupLocation: { type: String },
+    dropoffLocation: { type: String },
+
+    // ── Distance & Duration ────────────────────────────────────────────
+    estimatedDistanceKm: { type: Number },
+    estimatedDurationMin: { type: Number },
+    actualDistanceKm: { type: Number },
+    actualDurationMin: { type: Number },
+
+    // ── Fare ───────────────────────────────────────────────────────────
+    minimumFare: { type: Number },
+    maximumFare: { type: Number },
+    offeredFare: { type: Number },          // Passenger's fare offer
+    fare: { type: Number, min: 0 },         // Final agreed fare
+    commissionRate: { type: Number, default: 0.10 },
+    commissionAmount: { type: Number },
+    driverEarning: { type: Number },
+
+    // ── Payment ────────────────────────────────────────────────────────
     paymentMethod: {
         type: String,
         enum: ["cash", "momo", "ussd", "wallet"],
-        required: true,
     },
     paymentStatus: {
         type: String,
         enum: ["pending", "successful", "failed"],
         default: "pending",
     },
-    paypackRef: {
+    paypackRef: { type: String },
+
+    // ── Ride Lifecycle ─────────────────────────────────────────────────
+    rideStatus: {
         type: String,
+        enum: [
+            "requested",      // Passenger submitted request
+            "matching",       // Finding drivers
+            "accepted",       // Driver accepted
+            "arriving",       // Driver navigating to passenger
+            "arrived",        // Driver at pickup
+            "in_progress",    // Ride started
+            "completed",      // Ride finished
+            "cancelled",      // Cancelled by either party
+            "expired",        // No driver accepted in time
+            "driver_logged",  // Legacy: driver-logged rides (backward compat)
+        ],
+        default: "driver_logged",
+        index: true,
     },
-    pickupLocation: { type: String },
-    dropoffLocation: { type: String },
+
+    // ── Matching ───────────────────────────────────────────────────────
+    backupDriverCount: { type: Number, default: 1, min: 1, max: 5 },
+    notifiedDrivers: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+    declinedDrivers: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+
+    // ── Ride PIN (OTP for passenger to confirm correct driver) ──────
+    ridePin: { type: String },
+
+    // ── Ratings ─────────────────────────────────────────────────────────
+    passengerRating: { type: Number, min: 1, max: 5 },
+    passengerComment: { type: String, trim: true },
+    driverRating: { type: Number, min: 1, max: 5 },
+    driverComment: { type: String, trim: true },
+
+    // ── Cancellation ───────────────────────────────────────────────────
+    cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    cancellationReason: { type: String, trim: true },
+
+    // ── Timestamps ─────────────────────────────────────────────────────
+    requestedAt: { type: Date },
+    matchedAt: { type: Date },
+    acceptedAt: { type: Date },
+    arrivedAt: { type: Date },
+    startedAt: { type: Date },
+    completedAt: { type: Date },
+    cancelledAt: { type: Date },
+    expiresAt: { type: Date },
+
+    // ── Distance & Duration for legacy rides ───────────────────────────
     distance: { type: Number },
     createdAt: { type: Date, default: Date.now },
 });
 
 rideSchema.index({ driverId: 1, createdAt: -1 });
+rideSchema.index({ passengerId: 1, createdAt: -1 });
+rideSchema.index({ rideStatus: 1, createdAt: -1 });
+rideSchema.index({ "pickup.latitude": 1, "pickup.longitude": 1 });
 
 const Ride = mongoose.model("Ride", rideSchema);
 

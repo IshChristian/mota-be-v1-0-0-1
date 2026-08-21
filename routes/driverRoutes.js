@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const driverController = require("../controllers/driverController");
 const rideController = require("../controllers/rideController");
+const rideEngineController = require("../controllers/rideEngineController");
 const tierController = require("../controllers/tierController");
 const { protect: authMiddleware } = require("../middleware/authMiddleware");
 const roleMiddleware = require("../middleware/roleMiddleware");
@@ -449,5 +450,48 @@ router.post("/pay-fine", authMiddleware, roleMiddleware("driver"), driverControl
  *         description: Server error
  */
 router.post("/request-fine", authMiddleware, roleMiddleware("driver"), driverController.requestFinePayment);
+
+/**
+ * @swagger
+ * /api/driver/availability:
+ *   put:
+ *     summary: Toggle driver online/offline status
+ *     description: Set driver as available or unavailable for ride requests. Cannot go offline during an active ride.
+ *     tags: [Driver]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [isOnline]
+ *             properties:
+ *               isOnline:
+ *                 type: boolean
+ *                 example: true
+ *     responses:
+ *       200:
+ *         description: Availability updated
+ *       400:
+ *         description: Cannot go offline during active ride
+ */
+router.put("/availability", authMiddleware, roleMiddleware("driver"), rideEngineController.setAvailability);
+
+/**
+ * @swagger
+ * /api/driver/active-ride:
+ *   get:
+ *     summary: Get driver's current active ride
+ *     description: Returns the ride the driver is currently assigned to (accepted, arriving, arrived, or in_progress). Returns null if no active ride.
+ *     tags: [Driver]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Active ride or null
+ */
+router.get("/active-ride", authMiddleware, roleMiddleware("driver"), rideEngineController.getActiveRide);
 
 module.exports = router;

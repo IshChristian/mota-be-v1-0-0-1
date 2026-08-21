@@ -125,6 +125,16 @@ const initCron = () => {
         runTransactionSync();
     }, 1000);
 
+    // Expire stale ride requests every 10 seconds
+    const rideEngineService = require("./rideEngineService");
+    setInterval(async () => {
+        try {
+            await rideEngineService.expireStaleRequests();
+        } catch (error) {
+            console.error("Auto-expire stale rides failed:", error.message);
+        }
+    }, 10000);
+
     console.log("⏱️  Daily Cron & Realtime Sync Service initialized.");
 };
 
