@@ -57,7 +57,7 @@ const register = async (req, res) => {
             phone: cleanPhone,
             email: cleanEmail || undefined,   // store undefined so sparse index skips it
             nationalId: cleanNationalId,
-            role: role || "user",
+            role: role || "client",
             referralCode: userReferralCode,
             password: hashedPassword,
             isActive: false, // Inactive until registration fee is paid

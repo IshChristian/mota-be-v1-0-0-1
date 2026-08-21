@@ -78,7 +78,7 @@ const initSocket = (server) => {
         }
         
         // Passengers can join a specific ride room to get updates
-        if (socket.user.role === "user" || socket.user.role === "passenger") {
+        if (socket.user.role === "user" || socket.user.role === "client") {
              socket.on("joinRide", async (data) => {
                  const { rideId } = data;
                  if (rideId) {
