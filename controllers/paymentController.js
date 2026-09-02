@@ -59,14 +59,17 @@ const requestPayment = async (req, res) => {
         }
 
         res.status(200).json({
-            message: "Payment request sent to passenger.",
-            ref: result.data?.ref,
-            amount,
-            driverEarning,
-            commission,
+            status: "success",
+            message: "Payment prompt sent to passenger phone",
+            data: {
+                transactionRef: result.data?.ref,
+                amount,
+                driverEarning,
+                commission,
+            }
         });
     } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+        res.status(500).json({ status: "error", message: "Server error", error: error.message });
     }
 };
 

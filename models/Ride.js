@@ -13,17 +13,26 @@ const rideSchema = new mongoose.Schema({
         index: true,
     },
     passengerPhone: { type: String, trim: true },
+    passengers: { type: Number, default: 1 },
+    scheduledDate: { type: String },
+    scheduledTime: { type: String },
 
     // ── Locations ──────────────────────────────────────────────────────
     pickup: {
         latitude: { type: Number },
         longitude: { type: Number },
+        lat: { type: Number }, // Alias for latitude
+        lng: { type: Number }, // Alias for longitude
         address: { type: String, trim: true },
+        name: { type: String, trim: true },
     },
     destination: {
         latitude: { type: Number },
         longitude: { type: Number },
+        lat: { type: Number },
+        lng: { type: Number },
         address: { type: String, trim: true },
+        name: { type: String, trim: true },
     },
     // Legacy string fields for backward compat with driver-logged rides
     pickupLocation: { type: String },
@@ -61,9 +70,9 @@ const rideSchema = new mongoose.Schema({
         type: String,
         enum: [
             "requested",      // Passenger submitted request
-            "matching",       // Finding drivers
+            "searching",      // Finding drivers (renamed from matching)
             "accepted",       // Driver accepted
-            "arriving",       // Driver navigating to passenger
+            "approaching",    // Driver navigating to passenger (renamed from arriving)
             "arrived",        // Driver at pickup
             "in_progress",    // Ride started
             "completed",      // Ride finished
@@ -74,6 +83,8 @@ const rideSchema = new mongoose.Schema({
         default: "driver_logged",
         index: true,
     },
+    // The spec defines "status", so we alias it to rideStatus via a virtual later or just accept it as rideStatus in code but map to status in output
+    status: { type: String },
 
     // ── Matching ───────────────────────────────────────────────────────
     backupDriverCount: { type: Number, default: 1, min: 1, max: 5 },

@@ -81,6 +81,7 @@ const algorithmRoutes = require("./routes/algorithmRoutes");
 const platformRoutes = require("./routes/platformRoutes");
 const financeRoutes = require("./routes/financeRoutes");
 const rideEngineRoutes = require("./routes/rideEngineRoutes");
+const realtimeRoutes = require("./routes/realtimeRoutes");
 
 // ─── API Routes ─────────────────────────────────────────
 // (Auth moved to new module below)
@@ -108,6 +109,7 @@ app.use("/api/rider", algorithmRoutes); // GET /api/rider/status, /api/rider/ear
 app.use("/api/platform", platformRoutes);
 app.use("/api/finance", financeRoutes);
 app.use("/api/rides", rideEngineRoutes);
+app.use("/api/realtime", realtimeRoutes);
 
 // ─── Root Endpoint ──────────────────────────────────────
 app.get("/", (req, res) => {

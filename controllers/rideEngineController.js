@@ -24,18 +24,26 @@ const estimateFare = async (req, res) => {
 const requestRide = async (req, res) => {
     try {
         const passengerId = req.user.id;
-        const { pickup, destination, offeredFare, backupDriverCount } = req.body;
+        const { pickup, destination, offeredFare, backupDrivers, passengers, scheduledDate, scheduledTime } = req.body;
 
         if (!pickup || !destination || !offeredFare) {
-            return res.status(400).json({ message: "pickup, destination, and offeredFare are required." });
+            return res.status(400).json({ status: "error", message: "pickup, destination, and offeredFare are required." });
         }
 
         const result = await rideEngineService.requestRide(
-            passengerId, pickup, destination, offeredFare, backupDriverCount
+            passengerId, pickup, destination, offeredFare, backupDrivers || 3, passengers || 1, scheduledDate, scheduledTime
         );
-        res.status(201).json(result);
+
+        // Required JSON response by specs
+        res.status(201).json({
+            status: "success",
+            message: "Ride request broadcasted to nearby drivers",
+            data: {
+                rideId: result.ride._id
+            }
+        });
     } catch (error) {
-        res.status(400).json({ message: error.message });
+        res.status(400).json({ status: "error", message: error.message });
     }
 };
 
@@ -191,10 +199,46 @@ const getRideById = async (req, res) => {
             .populate("driverId", "firstName lastName phone")
             .populate("passengerId", "firstName lastName phone");
 
-        if (!ride) return res.status(404).json({ message: "Ride not found" });
-        res.status(200).json(ride);
+        if (!ride) return res.status(404).json({ status: "error", message: "Ride not found" });
+        
+        // Map to exact spec structure
+        const mappedRide = {
+            _id: ride._id,
+            status: ride.rideStatus,
+            offeredFare: ride.offeredFare,
+            passengers: ride.passengers,
+            scheduledDate: ride.scheduledDate,
+            scheduledTime: ride.scheduledTime,
+            pickup: ride.pickup,
+            destination: ride.destination,
+        };
+
+        if (ride.driverId) {
+            mappedRide.driver = {
+                _id: ride.driverId._id,
+                firstName: ride.driverId.firstName,
+                phone: ride.driverId.phone,
+                plate: ride.driverId.plateNumber || "N/A",
+                lastLocation: ride.driverId.lastLocation
+            };
+        }
+
+        if (ride.passengerId) {
+            mappedRide.passenger = {
+                _id: ride.passengerId._id,
+                firstName: ride.passengerId.firstName,
+                phone: ride.passengerId.phone
+            };
+        }
+
+        res.status(200).json({
+            status: "success",
+            data: {
+                ride: mappedRide
+            }
+        });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ status: "error", message: error.message });
     }
 };
 
@@ -231,6 +275,26 @@ const getActiveRide = async (req, res) => {
     }
 };
 
+/**
+ * PUT /api/driver/location
+ * Update driver real-time GPS location via REST
+ */
+const updateLocation = async (req, res) => {
+    try {
+        const { latitude, longitude, heading, speed } = req.body;
+        if (!latitude || !longitude) {
+            return res.status(400).json({ status: "error", message: "latitude and longitude required" });
+        }
+        await rideEngineService.updateDriverLocation(req.user.id, latitude, longitude, heading, speed);
+        res.status(200).json({
+            status: "success",
+            message: "Driver location updated"
+        });
+    } catch (error) {
+        res.status(500).json({ status: "error", message: error.message });
+    }
+};
+
 module.exports = {
     estimateFare,
     requestRide,
@@ -247,4 +311,5 @@ module.exports = {
     getRideById,
     setAvailability,
     getActiveRide,
+    updateLocation,
 };

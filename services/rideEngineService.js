@@ -7,6 +7,7 @@ const paymentService = require("./paymentService");
 const auditService = require("./auditService");
 const { sendSMS } = require("./smsService");
 const systemSettingService = require("./systemSettingService");
+const sseService = require("./sseService");
 
 // ── Haversine distance (km) ────────────────────────────────────────────────
 function haversine(lat1, lon1, lat2, lon2) {
@@ -73,7 +74,7 @@ const estimateFare = async (pickup, destination) => {
 // 2. RIDE REQUEST (Passenger-initiated)
 // ═══════════════════════════════════════════════════════════════════════════
 
-const requestRide = async (passengerId, pickup, destination, offeredFare, backupDriverCount = 1) => {
+const requestRide = async (passengerId, pickup, destination, offeredFare, backupDrivers = 1, passengers = 1, scheduledDate = null, scheduledTime = null) => {
     // Validate coordinates
     if (!pickup?.latitude || !destination?.latitude) {
         throw new Error("Pickup and destination coordinates are required.");
@@ -94,7 +95,7 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
     // Check passenger doesn't have an active ride
     const activeRide = await Ride.findOne({
         passengerId,
-        rideStatus: { $in: ["requested", "matching", "accepted", "arriving", "arrived", "in_progress"] },
+        rideStatus: { $in: ["requested", "searching", "accepted", "approaching", "arrived", "in_progress"] },
     });
     if (activeRide) {
         throw new Error("You already have an active ride. Complete or cancel it first.");
@@ -115,7 +116,10 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
         maximumFare: estimate.maximumFare,
         offeredFare,
         fare: offeredFare,
-        backupDriverCount: driverCount,
+        backupDriverCount: Math.max(1, Math.min(5, backupDrivers)),
+        passengers,
+        scheduledDate,
+        scheduledTime,
         rideStatus: "requested",
         ridePin: generatePin(),
         requestedAt: new Date(),
@@ -124,9 +128,9 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
 
     // Find nearby online drivers
     const nearbyDrivers = await findNearbyDrivers(
-        pickup.latitude, pickup.longitude,
+        pickup.lat || pickup.latitude, pickup.lng || pickup.longitude,
         await systemSettingService.getSetting("ride_search_radius_km", 5),
-        driverCount
+        Math.max(1, Math.min(5, backupDrivers))
     );
 
     if (nearbyDrivers.length === 0) {
@@ -135,17 +139,42 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
         throw new Error("No drivers available near your location. Please try again.");
     }
 
-    // Mark as matching and record notified drivers
-    ride.rideStatus = "matching";
+    // Mark as searching and record notified drivers
+    ride.rideStatus = "searching";
     ride.notifiedDrivers = nearbyDrivers.map(d => d._id);
     await ride.save();
 
-    // Notify drivers via SMS
+    // Notify drivers via SMS and SSE
+    const expiresInSeconds = expiryMinutes * 60;
+    
     for (const driver of nearbyDrivers) {
         const pickupDist = haversine(
             driver.lastLocation.latitude, driver.lastLocation.longitude,
-            pickup.latitude, pickup.longitude
+            pickup.lat || pickup.latitude, pickup.lng || pickup.longitude
         );
+
+        // SSE Payload
+        const ssePayload = {
+            id: ride._id,
+            pickup: {
+                address: pickup.name || pickup.address,
+                distanceKm: Math.round(pickupDist * 10) / 10
+            },
+            destination: {
+                address: destination.name || destination.address,
+                distanceKm: Math.round(estimate.distanceKm * 10) / 10
+            },
+            offeredFare: offeredFare,
+            passengers: passengers,
+            scheduledDate: scheduledDate,
+            scheduledTime: scheduledTime,
+            expiresInSeconds: expiresInSeconds
+        };
+
+        // Send real-time SSE event
+        sseService.sendEventToDriver(driver._id, "ride_request", ssePayload);
+
+        // Optional SMS fallback
         await sendSMS(
             driver.phone,
             `MOTA RIDE: New ride request! Pickup: ${pickupDist.toFixed(1)}km away. Fare: ${offeredFare} RWF. Trip: ${estimate.distanceKm}km. Open the app to accept.`,
@@ -197,7 +226,7 @@ const findNearbyDrivers = async (lat, lng, radiusKm = 5, limit = 3) => {
         if (available.length >= limit) break;
         const hasActiveRide = await Ride.findOne({
             driverId: driver._id,
-            rideStatus: { $in: ["accepted", "arriving", "arrived", "in_progress"] },
+            rideStatus: { $in: ["accepted", "approaching", "arrived", "in_progress"] },
         });
         if (!hasActiveRide) available.push(driver);
     }
@@ -214,7 +243,7 @@ const acceptRide = async (driverId, rideId) => {
     const ride = await Ride.findOneAndUpdate(
         {
             _id: rideId,
-            rideStatus: "matching",
+            rideStatus: "searching",
             notifiedDrivers: driverId,
         },
         {
@@ -231,7 +260,7 @@ const acceptRide = async (driverId, rideId) => {
         // Either already assigned or ride expired
         const existing = await Ride.findById(rideId);
         if (!existing) throw new Error("Ride not found.");
-        if (existing.rideStatus !== "matching") {
+        if (existing.rideStatus !== "searching") {
             throw new Error("This ride has already been assigned to another driver.");
         }
         throw new Error("You are not eligible for this ride.");
@@ -303,7 +332,7 @@ const declineRide = async (driverId, rideId) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const driverArrived = async (driverId, rideId) => {
-    const ride = await Ride.findOne({ _id: rideId, driverId, rideStatus: { $in: ["accepted", "arriving"] } });
+    const ride = await Ride.findOne({ _id: rideId, driverId, rideStatus: { $in: ["accepted", "approaching"] } });
     if (!ride) throw new Error("No active ride found or you are not the assigned driver.");
 
     ride.rideStatus = "arrived";
@@ -387,7 +416,7 @@ const cancelRide = async (userId, rideId, reason) => {
     const ride = await Ride.findById(rideId);
     if (!ride) throw new Error("Ride not found.");
 
-    const cancellableStatuses = ["requested", "matching", "accepted", "arriving", "arrived"];
+    const cancellableStatuses = ["requested", "searching", "accepted", "approaching", "arrived"];
     if (!cancellableStatuses.includes(ride.rideStatus)) {
         throw new Error("This ride cannot be cancelled at its current stage.");
     }
@@ -509,7 +538,7 @@ const getPassengerRides = async (passengerId, page = 1, limit = 20) => {
 const getDriverActiveRide = async (driverId) => {
     return await Ride.findOne({
         driverId,
-        rideStatus: { $in: ["accepted", "arriving", "arrived", "in_progress"] },
+        rideStatus: { $in: ["accepted", "approaching", "arrived", "in_progress"] },
     }).populate("passengerId", "firstName lastName phone");
 };
 
@@ -526,7 +555,7 @@ const setDriverAvailability = async (driverId, isOnline) => {
     if (!isOnline) {
         const activeRide = await Ride.findOne({
             driverId,
-            rideStatus: { $in: ["accepted", "arriving", "arrived", "in_progress"] },
+            rideStatus: { $in: ["accepted", "approaching", "arrived", "in_progress"] },
         });
         if (activeRide) {
             throw new Error("Cannot go offline while you have an active ride. Complete it first.");
@@ -557,7 +586,7 @@ const updateDriverLocation = async (driverId, latitude, longitude, heading, spee
 const expireStaleRequests = async () => {
     const result = await Ride.updateMany(
         {
-            rideStatus: { $in: ["requested", "matching"] },
+            rideStatus: { $in: ["requested", "searching"] },
             expiresAt: { $lt: new Date() },
         },
         { $set: { rideStatus: "expired" } }

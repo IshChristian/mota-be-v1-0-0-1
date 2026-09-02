@@ -494,4 +494,30 @@ router.put("/availability", authMiddleware, roleMiddleware("driver"), rideEngine
  */
 router.get("/active-ride", authMiddleware, roleMiddleware("driver"), rideEngineController.getActiveRide);
 
+/**
+ * @swagger
+ * /api/driver/location:
+ *   put:
+ *     summary: Update driver real-time location via REST
+ *     tags: [Driver]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [latitude, longitude]
+ *             properties:
+ *               latitude: { type: number }
+ *               longitude: { type: number }
+ *               heading: { type: number }
+ *               speed: { type: number }
+ *     responses:
+ *       200:
+ *         description: Location updated
+ */
+router.put("/location", authMiddleware, roleMiddleware("driver"), rideEngineController.updateLocation);
+
 module.exports = router;
