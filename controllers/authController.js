@@ -441,6 +441,46 @@ const payRegistration = async (req, res) => {
     }
 };
 
+const submitRegistration = async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ message: "User not found" });
+        if (!["driver", "agent"].includes(user.role)) {
+            return res.status(400).json({ message: "Registration review is only required for drivers and agents." });
+        }
+        if (!user.registrationPaid) {
+            return res.status(409).json({ message: "Complete the registration payment before submitting." });
+        }
+        if (!user.isVerified) {
+            return res.status(409).json({ message: "Verify your phone before submitting." });
+        }
+        user.registrationStatus = "pending";
+        user.registrationSubmittedAt = user.registrationSubmittedAt || new Date();
+        user.registrationRemarks = undefined;
+        await user.save();
+        res.status(200).json({ message: "Registration submitted for review.", data: { registrationStatus: user.registrationStatus, submittedAt: user.registrationSubmittedAt } });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+const getRegistrationApproval = async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id).select("registrationStatus registrationRemarks registrationSubmittedAt isActive registrationPaid");
+        if (!user) return res.status(404).json({ message: "User not found" });
+        res.status(200).json({ data: {
+            status: user.registrationStatus,
+            registrationStatus: user.registrationStatus,
+            message: user.registrationRemarks,
+            submittedAt: user.registrationSubmittedAt,
+            isActive: user.isActive,
+            registrationPaid: user.registrationPaid,
+        } });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
 module.exports = {
     register,
     login,
@@ -456,4 +496,6 @@ module.exports = {
     resendOTP,
     payRegistration,
     resendEmailOTP,
+    submitRegistration,
+    getRegistrationApproval,
 };
