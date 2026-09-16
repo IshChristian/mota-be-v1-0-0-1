@@ -62,6 +62,41 @@ const getMyRides = async (req, res) => {
     }
 };
 
+const getDriverRequests = async (req, res) => {
+    try { res.status(200).json({ data: await rideEngineService.getDriverRequests(req.user.id) }); }
+    catch (error) { res.status(500).json({ message: error.message }); }
+};
+
+const requestStart = async (req, res) => {
+    try { res.status(200).json({ data: await rideEngineService.requestStart(req.user.id, req.params.id) }); }
+    catch (error) { res.status(400).json({ message: error.message }); }
+};
+
+const confirmStart = async (req, res) => {
+    try { res.status(200).json({ data: await rideEngineService.confirmStart(req.user.id, req.params.id) }); }
+    catch (error) { res.status(400).json({ message: error.message }); }
+};
+
+const requestStop = async (req, res) => {
+    try { res.status(200).json({ data: await rideEngineService.requestStop(req.user.id, req.params.id) }); }
+    catch (error) { res.status(400).json({ message: error.message }); }
+};
+
+const confirmStop = async (req, res) => {
+    try { res.status(200).json({ data: await rideEngineService.confirmStop(req.user.id, req.params.id) }); }
+    catch (error) { res.status(400).json({ message: error.message }); }
+};
+
+const claimFare = async (req, res) => {
+    try { res.status(200).json({ data: await rideEngineService.claimFare(req.user.id, req.params.id) }); }
+    catch (error) { res.status(409).json({ message: error.message }); }
+};
+
+const requestRidePayment = async (req, res) => {
+    try { res.status(200).json({ data: await rideEngineService.requestRidePayment(req.user.id, req.params.id) }); }
+    catch (error) { res.status(409).json({ message: error.message }); }
+};
+
 // ── DRIVER ENDPOINTS ───────────────────────────────────────────────────
 
 /**
@@ -196,7 +231,7 @@ const reportRide = async (req, res) => {
 const getRideById = async (req, res) => {
     try {
         const ride = await Ride.findById(req.params.id)
-            .populate("driverId", "firstName lastName phone")
+            .populate("driverId", "firstName lastName phone lastLocation lastLocationAt")
             .populate("passengerId", "firstName lastName phone");
 
         if (!ride) return res.status(404).json({ status: "error", message: "Ride not found" });
@@ -299,6 +334,13 @@ module.exports = {
     estimateFare,
     requestRide,
     getMyRides,
+    getDriverRequests,
+    requestStart,
+    confirmStart,
+    requestStop,
+    confirmStop,
+    claimFare,
+    requestRidePayment,
     acceptRide,
     declineRide,
     driverArrived,

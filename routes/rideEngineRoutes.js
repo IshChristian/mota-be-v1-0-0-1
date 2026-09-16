@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const ctrl = require("../controllers/rideEngineController");
 const { protect: authMiddleware } = require("../middleware/authMiddleware");
+const financialWriteGuard = require("../middleware/financialWriteGuard");
 
 /**
  * @swagger
@@ -113,6 +114,7 @@ router.post("/request", ctrl.requestRide);
  *         description: Paginated ride history
  */
 router.get("/my-rides", ctrl.getMyRides);
+router.get("/driver/requests", ctrl.getDriverRequests);
 
 /**
  * @swagger
@@ -210,6 +212,12 @@ router.post("/:id/decline", ctrl.declineRide);
  *         description: Marked as arrived
  */
 router.post("/:id/arrived", ctrl.driverArrived);
+router.post("/:id/request-start", ctrl.requestStart);
+router.post("/:id/confirm-start", ctrl.confirmStart);
+router.post("/:id/request-stop", ctrl.requestStop);
+router.post("/:id/confirm-stop", ctrl.confirmStop);
+router.post("/:id/claim-fare", ctrl.claimFare);
+router.post("/:id/pay", financialWriteGuard, ctrl.requestRidePayment);
 
 /**
  * @swagger
