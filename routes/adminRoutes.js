@@ -413,6 +413,7 @@ router.post("/fines/approve", authorize("fines:update"), adminController.approve
  *         description: Server error
  */
 router.get("/registrations/pending", authorize("user:view"), adminController.getPendingRegistrations);
+router.get("/registrations", authorize("user:view"), adminController.getPendingRegistrations);
 
 /**
  * @swagger
