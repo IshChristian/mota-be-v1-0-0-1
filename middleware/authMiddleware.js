@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const { STAFF_ROLE_TEMPLATES } = require("../constants/staffRoles");
 
 /**
  * Middleware to authenticate JWT token
@@ -54,7 +55,9 @@ const authorize = (...permissions) => {
       return next();
     }
 
-    const userPermissions = req.user.roleId?.permissions || [];
+    // Transitional fallback prevents legacy staff lockout before roleId migration.
+    // Once a roleId is assigned, its stored permissions are authoritative.
+    const userPermissions = req.user.roleId?.permissions || STAFF_ROLE_TEMPLATES[req.user.role] || [];
 
     // Check if user has ALL required permissions (or at least one? Let's go with ALL required for this route, or we can use ANY. Let's do ANY for flexibility or require exact).
     // Usually, you might want to check if user has at least one of the required permissions, or all. Let's check for ALL permissions passed.
