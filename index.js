@@ -10,6 +10,7 @@ const { seedDefaults } = require("./services/systemSettingService");
 const { startScheduler } = require("./utils/scheduler");
 const { initCron } = require("./services/cronService");
 const { initSocket } = require("./services/socketService");
+const financialWriteGuard = require("./middleware/financialWriteGuard");
 
 // Load environment variables
 dotenv.config();
@@ -82,6 +83,7 @@ const platformRoutes = require("./routes/platformRoutes");
 const financeRoutes = require("./routes/financeRoutes");
 const rideEngineRoutes = require("./routes/rideEngineRoutes");
 const realtimeRoutes = require("./routes/realtimeRoutes");
+const fuelVoucherRoutes = require("./routes/fuelVoucherRoutes");
 
 // ─── API Routes ─────────────────────────────────────────
 // (Auth moved to new module below)
@@ -97,19 +99,20 @@ app.use("/api/driver", driverRoutes);
 app.use("/api/ride", rideRoutes);
 app.use("/api/agent", agentRoutes);
 app.use("/api/ussd", ussdRoutes);
-app.use("/api/wallet", walletRoutes);
-app.use("/api/payment", paymentRoutes);
+app.use("/api/wallet", financialWriteGuard, walletRoutes);
+app.use("/api/payment", financialWriteGuard, paymentRoutes);
 app.use("/api/system-settings", systemSettingRoutes);
-app.use("/api/loans", loanRoutes);
+app.use("/api/loans", financialWriteGuard, loanRoutes);
 app.use("/api/lookup", lookupRoutes);
-app.use("/api/transfer", transferRoutes);
+app.use("/api/transfer", financialWriteGuard, transferRoutes);
 app.use("/api/fine-requests", fineRequestRoutes);
 app.use("/api/ride", algorithmRoutes);  // POST /api/ride/complete
 app.use("/api/rider", algorithmRoutes); // GET /api/rider/status, /api/rider/earnings
 app.use("/api/platform", platformRoutes);
-app.use("/api/finance", financeRoutes);
+app.use("/api/finance", financialWriteGuard, financeRoutes);
 app.use("/api/rides", rideEngineRoutes);
 app.use("/api/realtime", realtimeRoutes);
+app.use("/api/fuel-vouchers", fuelVoucherRoutes);
 
 // ─── Root Endpoint ──────────────────────────────────────
 app.get("/", (req, res) => {
