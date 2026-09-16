@@ -35,9 +35,23 @@ const getMe = async (req, res) => {
 
 const updateMe = async (req, res) => {
     try {
-        const { firstName, lastName, phone } = req.body;
+        const {
+            firstName, lastName, phone, emergencyContactName,
+            emergencyContactPhone, preferredPayment,
+        } = req.body;
+        if (preferredPayment && !["CASH", "MOMO", "CARD"].includes(preferredPayment)) {
+            return res.status(400).json({ message: "preferredPayment must be CASH, MOMO, or CARD" });
+        }
         // Don't allow updating sensitive fields here directly
-        const user = await userService.updateUser(req.user.id, { firstName, lastName, phone });
+        const updates = {
+            firstName, lastName, phone, emergencyContactName,
+            emergencyContactPhone, preferredPayment,
+        };
+        if (emergencyContactName && emergencyContactPhone && preferredPayment) {
+            updates.passengerProfileCompleted = true;
+        }
+        Object.keys(updates).forEach((key) => updates[key] === undefined && delete updates[key]);
+        const user = await userService.updateUser(req.user.id, updates);
         res.status(200).json({ message: "Profile updated", data: user });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
