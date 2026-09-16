@@ -8,6 +8,24 @@ const auditService = require("./auditService");
 const { sendSMS } = require("./smsService");
 const systemSettingService = require("./systemSettingService");
 const sseService = require("./sseService");
+const notificationService = require("./notificationService");
+
+function emitToUser(userId, event, payload) {
+    try { require("./socketService").getIo().to(`user_${userId}`).emit(event, payload); }
+    catch (_) { /* Socket server may not be initialized in tests. */ }
+}
+
+async function notifyUser(user, title, message, event, payload) {
+    if (!user) return;
+    await notificationService.createNotification(user._id, title, message, "in_app", payload);
+    emitToUser(user._id, event, payload);
+    const tasks = [
+        sendSMS(user.phone, message, event),
+        notificationService.sendPushNotification(user._id, title, message, { ...payload, event }),
+    ];
+    if (user.email) tasks.push(notificationService.sendEmail(user.email, title, message));
+    await Promise.allSettled(tasks);
+}
 
 // ── Haversine distance (km) ────────────────────────────────────────────────
 function haversine(lat1, lon1, lat2, lon2) {
@@ -90,8 +108,6 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
     }
 
     // Cap backup drivers
-    const driverCount = Math.max(1, Math.min(5, backupDriverCount));
-
     // Check passenger doesn't have an active ride
     const activeRide = await Ride.findOne({
         passengerId,
@@ -173,13 +189,12 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
 
         // Send real-time SSE event
         sseService.sendEventToDriver(driver._id, "ride_request", ssePayload);
-
-        // Optional SMS fallback
-        await sendSMS(
-            driver.phone,
-            `MOTA RIDE: New ride request! Pickup: ${pickupDist.toFixed(1)}km away. Fare: ${offeredFare} RWF. Trip: ${estimate.distanceKm}km. Open the app to accept.`,
-            "ride_request"
-        );
+        const requestMessage = `New ride request ${pickupDist.toFixed(1)}km away. Fare: ${offeredFare} RWF. Trip: ${estimate.distanceKm}km.`;
+        await notifyUser(driver, "Nearby ride request", requestMessage, "rideRequest", {
+            rideId: ride._id,
+            pickupDistanceKm: pickupDist,
+            fare: offeredFare,
+        });
     }
 
     return {
@@ -249,7 +264,7 @@ const acceptRide = async (driverId, rideId) => {
         {
             $set: {
                 driverId,
-                rideStatus: "accepted",
+                rideStatus: "approaching",
                 acceptedAt: new Date(),
             },
         },
@@ -274,13 +289,9 @@ const acceptRide = async (driverId, rideId) => {
 
     // Notify passenger
     const driver = await User.findById(driverId).select("firstName lastName phone");
-    const passenger = await User.findById(ride.passengerId).select("phone");
+    const passenger = await User.findById(ride.passengerId).select("phone email firstName");
     if (passenger) {
-        await sendSMS(
-            passenger.phone,
-            `MOTA: Driver ${driver.firstName} accepted your ride! Plate: check app. Fare: ${ride.fare} RWF. Your ride PIN: ${ride.ridePin}`,
-            "ride_accepted"
-        );
+        await notifyUser(passenger, "Ride accepted", `Driver ${driver.firstName} accepted your ride. Fare: ${ride.fare} RWF.`, "rideAccepted", { rideId: ride._id, driverId, rideStatus: ride.rideStatus });
     }
 
     await auditService.log({
@@ -345,6 +356,92 @@ const driverArrived = async (driverId, rideId) => {
     }
 
     return ride;
+};
+
+const getDriverRequests = async (driverId) => {
+    return Ride.find({
+        rideStatus: "searching",
+        notifiedDrivers: driverId,
+        declinedDrivers: { $ne: driverId },
+        expiresAt: { $gt: new Date() },
+    }).select("pickup destination offeredFare estimatedDistanceKm estimatedDurationMin passengers scheduledDate scheduledTime expiresAt requestedAt").sort({ requestedAt: -1 });
+};
+
+const requestStart = async (driverId, rideId) => {
+    const ride = await Ride.findOneAndUpdate(
+        { _id: rideId, driverId, rideStatus: "arrived" },
+        { $set: { rideStatus: "start_requested", startRequestedAt: new Date() } },
+        { new: true }
+    );
+    if (!ride) throw new Error("Ride must be at the pickup stage.");
+    const passenger = await User.findById(ride.passengerId).select("phone email");
+    await notifyUser(passenger, "Confirm ride start", "Your driver is ready. Confirm the ride start in the app.", "rideStartRequested", { rideId: ride._id, rideStatus: ride.rideStatus });
+    return ride;
+};
+
+const confirmStart = async (passengerId, rideId) => {
+    const ride = await Ride.findOneAndUpdate(
+        { _id: rideId, passengerId, rideStatus: "start_requested" },
+        { $set: { rideStatus: "in_progress", startConfirmedAt: new Date(), startedAt: new Date() } },
+        { new: true }
+    );
+    if (!ride) throw new Error("No start confirmation is pending.");
+    emitToUser(ride.driverId, "rideStartConfirmed", { rideId: ride._id, rideStatus: ride.rideStatus });
+    return ride;
+};
+
+const requestStop = async (driverId, rideId) => {
+    const ride = await Ride.findOneAndUpdate(
+        { _id: rideId, driverId, rideStatus: "in_progress" },
+        { $set: { rideStatus: "stop_requested", stopRequestedAt: new Date() } },
+        { new: true }
+    );
+    if (!ride) throw new Error("No in-progress ride found.");
+    const passenger = await User.findById(ride.passengerId).select("phone email");
+    await notifyUser(passenger, "Confirm ride completion", "Your driver requested to end the ride. Confirm after reaching your destination.", "rideStopRequested", { rideId: ride._id, rideStatus: ride.rideStatus, fare: ride.fare });
+    return ride;
+};
+
+const confirmStop = async (passengerId, rideId) => {
+    const ride = await Ride.findOne({ _id: rideId, passengerId, rideStatus: "stop_requested" });
+    if (!ride) throw new Error("No stop confirmation is pending.");
+    ride.rideStatus = "awaiting_payment";
+    ride.stopConfirmedAt = new Date();
+    ride.actualDurationMin = Math.max(1, Math.round((Date.now() - new Date(ride.startedAt).getTime()) / 60000));
+    await ride.save();
+    emitToUser(ride.driverId, "rideStopConfirmed", { rideId: ride._id, rideStatus: ride.rideStatus, fare: ride.fare });
+    return ride;
+};
+
+const claimFare = async (driverId, rideId) => {
+    const ride = await Ride.findOne({ _id: rideId, driverId });
+    if (!ride) throw new Error("Ride not found.");
+    if (ride.paymentStatus !== "successful") throw new Error("Payment has not been confirmed yet.");
+    if (!["awaiting_payment", "completed"].includes(ride.rideStatus)) throw new Error("Ride is not ready for fare claim.");
+    if (ride.rideStatus !== "completed") {
+        ride.rideStatus = "completed";
+        ride.completedAt = new Date();
+        ride.fareClaimedAt = new Date();
+        await ride.save();
+    }
+    const wallet = await Wallet.findOne({ driverId });
+    return { ride, balance: wallet?.balance || 0 };
+};
+
+const requestRidePayment = async (passengerId, rideId) => {
+    const ride = await Ride.findOne({ _id: rideId, passengerId, rideStatus: "awaiting_payment" });
+    if (!ride) throw new Error("Ride is not ready for passenger payment.");
+    if (ride.paymentStatus === "successful") return { ref: ride.paypackRef, status: "successful" };
+    if (ride.paypackRef) return { ref: ride.paypackRef, status: "pending" };
+    const passenger = await User.findById(passengerId).select("phone");
+    const result = await paymentService.requestCashIn(passenger.phone, ride.fare, process.env.PAYPACK_ENV || "development");
+    if (!result.success) throw new Error("Payment provider could not start the request.");
+    const ref = result.data?.ref;
+    await Transaction.create({ driverId: ride.driverId, rideId: ride._id, amount: ride.fare, type: "cash_in", status: "pending", paypackRef: ref, description: `Passenger payment for ride ${ride._id}` });
+    ride.paypackRef = ref;
+    ride.paymentStatus = "pending";
+    await ride.save();
+    return { ref, status: "pending", amount: ride.fare };
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -498,14 +595,14 @@ const getRideStatus = async (rideId, userId) => {
         const isNotified = ride.notifiedDrivers.some(id => id.toString() === userId.toString());
         if (!isNotified) throw new Error("Not authorized to view this ride.");
 
-        // For notified-but-unassigned drivers: mask exact pickup
+        // Only drivers explicitly selected by the matching engine can view pickup coordinates.
         return {
             _id: ride._id,
             rideStatus: ride.rideStatus,
             offeredFare: ride.offeredFare,
             estimatedDistanceKm: ride.estimatedDistanceKm,
             estimatedDurationMin: ride.estimatedDurationMin,
-            pickupArea: ride.pickup?.address || "Nearby",
+            pickup: ride.pickup,
             destination: ride.destination,
             expiresAt: ride.expiresAt,
         };
@@ -538,7 +635,7 @@ const getPassengerRides = async (passengerId, page = 1, limit = 20) => {
 const getDriverActiveRide = async (driverId) => {
     return await Ride.findOne({
         driverId,
-        rideStatus: { $in: ["accepted", "approaching", "arrived", "in_progress"] },
+        rideStatus: { $in: ["accepted", "approaching", "arrived", "start_requested", "in_progress", "stop_requested", "awaiting_payment"] },
     }).populate("passengerId", "firstName lastName phone");
 };
 
@@ -601,6 +698,13 @@ module.exports = {
     acceptRide,
     declineRide,
     driverArrived,
+    getDriverRequests,
+    requestStart,
+    confirmStart,
+    requestStop,
+    confirmStop,
+    claimFare,
+    requestRidePayment,
     startRide,
     completeRide,
     cancelRide,

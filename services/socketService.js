@@ -7,9 +7,13 @@ const rideEngineService = require("./rideEngineService");
 let io;
 
 const initSocket = (server) => {
+    const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || "").split(",").map((value) => value.trim()).filter(Boolean);
     io = socketIo(server, {
         cors: {
-            origin: "*",
+            origin(origin, callback) {
+                if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+                return callback(new Error("Origin not allowed"));
+            },
             methods: ["GET", "POST"],
         },
     });

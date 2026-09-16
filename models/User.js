@@ -11,7 +11,7 @@ const userSchema = new mongoose.Schema({
     role: {
         type: String,
         required: true,
-        enum: ["driver", "agent", "admin", "client", "manager", "moderator"],
+        enum: ["driver", "agent", "admin", "superadmin", "financial", "caller_support", "client", "manager", "moderator"],
         default: "driver",
     },
     roleId: { type: mongoose.Schema.Types.ObjectId, ref: "Role" },
@@ -27,6 +27,25 @@ const userSchema = new mongoose.Schema({
         type: String, 
         enum: ["pending", "correction", "approved"], 
         default: "pending" 
+    },
+    registrationSubmittedAt: { type: Date },
+    registrationRemarks: { type: String, trim: true },
+    emergencyContactName: { type: String, trim: true },
+    emergencyContactPhone: { type: String, trim: true },
+    preferredPayment: {
+        type: String,
+        enum: ["CASH", "MOMO", "CARD"],
+        default: "CASH",
+    },
+    passengerProfileCompleted: { type: Boolean, default: false },
+    pushTokens: {
+        type: [{
+            token: { type: String, required: true },
+            platform: { type: String, enum: ["android", "ios"], required: true },
+            updatedAt: { type: Date, default: Date.now },
+        }],
+        default: [],
+        select: false,
     },
     // 2FA Fields
     twoFactorEnabled: { type: Boolean, default: false },
@@ -45,7 +64,12 @@ const userSchema = new mongoose.Schema({
     fuelVouchers: [{
         code: String,
         amount: Number,
+        type: { type: String, enum: ["momo", "qr"], default: "qr" },
+        status: { type: String, enum: ["pending", "active", "redeemed", "expired"], default: "active" },
+        station: String,
         issuedAt: { type: Date, default: Date.now },
+        expiresAt: Date,
+        redeemedAt: Date,
         isUsed: { type: Boolean, default: false }
     }],
     // ── Driver Availability & Location ──────────────────────────────

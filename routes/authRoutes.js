@@ -164,6 +164,7 @@ router.post("/reset-password", authController.resetPassword);
  *         description: Email verified
  */
 router.post("/verify-email", authController.verifyEmail);
+router.post("/verify-email-otp", authController.verifyEmail);
 
 /**
  * @swagger
@@ -208,6 +209,9 @@ router.post("/2fa/verify", authController.verify2FA);
 
 // Protected routes
 router.use(protect);
+
+router.post("/submit-registration", authController.submitRegistration);
+router.get("/registration-approval", authController.getRegistrationApproval);
 
 /**
  * @swagger

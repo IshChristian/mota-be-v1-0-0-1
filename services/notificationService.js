@@ -1,5 +1,6 @@
 const nodemailer = require("nodemailer");
 const Notification = require("../models/Notification");
+const User = require("../models/User");
 
 // Create standard SMTP transporter
 const transporter = nodemailer.createTransport({
@@ -44,6 +45,21 @@ const createNotification = async (userId, title, message, type = "in_app", metad
     });
 };
 
+const sendPushNotification = async (userId, title, body, data = {}) => {
+    const user = await User.findById(userId).select("+pushTokens");
+    const tokens = (user?.pushTokens || []).map((item) => item.token);
+    if (!tokens.length) return { sent: 0 };
+
+    const messages = tokens.map((to) => ({ to, sound: "default", title, body, data }));
+    const response = await fetch("https://exp.host/--/api/v2/push/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(messages),
+    });
+    if (!response.ok) throw new Error(`Expo push request failed (${response.status})`);
+    return { sent: tokens.length, response: await response.json() };
+};
+
 const getUserNotifications = async (userId, unreadOnly = false, page = 1, limit = 20) => {
     const query = { userId };
     if (unreadOnly) {
@@ -83,6 +99,7 @@ const deleteNotification = async (id, userId) => {
 module.exports = {
     sendEmail,
     createNotification,
+    sendPushNotification,
     getUserNotifications,
     markAsRead,
     deleteNotification,

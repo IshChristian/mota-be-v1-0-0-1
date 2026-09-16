@@ -74,7 +74,10 @@ const rideSchema = new mongoose.Schema({
             "accepted",       // Driver accepted
             "approaching",    // Driver navigating to passenger (renamed from arriving)
             "arrived",        // Driver at pickup
+            "start_requested",// Driver requested passenger confirmation
             "in_progress",    // Ride started
+            "stop_requested", // Driver requested passenger confirmation
+            "awaiting_payment", // Passenger confirmed stop; payment pending
             "completed",      // Ride finished
             "cancelled",      // Cancelled by either party
             "expired",        // No driver accepted in time
@@ -110,6 +113,11 @@ const rideSchema = new mongoose.Schema({
     acceptedAt: { type: Date },
     arrivedAt: { type: Date },
     startedAt: { type: Date },
+    startRequestedAt: { type: Date },
+    startConfirmedAt: { type: Date },
+    stopRequestedAt: { type: Date },
+    stopConfirmedAt: { type: Date },
+    fareClaimedAt: { type: Date },
     completedAt: { type: Date },
     cancelledAt: { type: Date },
     expiresAt: { type: Date },

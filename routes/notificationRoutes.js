@@ -5,6 +5,9 @@ const { protect } = require("../middleware/authMiddleware");
 
 router.use(protect);
 
+router.post("/push-token", notificationController.registerPushToken);
+router.delete("/push-token", notificationController.unregisterPushToken);
+
 /**
  * @swagger
  * /api/notifications:
