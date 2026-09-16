@@ -151,7 +151,7 @@ const login = async (req, res) => {
             ? { email: identifier }
             : { phone: identifier };
 
-        const user = await User.findOne(query);
+        const user = await User.findOne(query).populate("roleId", "name permissions");
 
         if (!user || (!user.password && !user.googleId)) {
             return res.status(401).json({ message: "Invalid credentials" });
@@ -174,7 +174,7 @@ const login = async (req, res) => {
         }
 
         const token = authService.generateToken(user);
-        res.status(200).json({ message: "Login success", token, user: { id: user._id, role: user.role } });
+        res.status(200).json({ message: "Login success", token, user: { id: user._id, firstName: user.firstName, lastName: user.lastName, role: user.role, permissions: user.roleId?.permissions || [] } });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
     }

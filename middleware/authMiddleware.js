@@ -49,8 +49,8 @@ const authorize = (...permissions) => {
       return res.status(401).json({ message: "Not authenticated" });
     }
 
-    // Admins bypass permission checks
-    if (req.user.role === "admin") {
+    // Only the ownership role bypasses checks. Every other staff role is explicit.
+    if (req.user.role === "superadmin") {
       return next();
     }
 

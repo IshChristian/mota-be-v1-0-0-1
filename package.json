@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon --watch .env --watch . index.js",
-    "build": "pnpm run build"
+    "build": "pnpm run build",
+    "seed:staff-roles": "node scripts/seedStaffRoles.js"
   },
   "nodemonConfig": {
     "watch": [

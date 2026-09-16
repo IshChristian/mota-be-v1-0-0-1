@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const roleController = require("../controllers/roleController");
-const { protect } = require("../middleware/authMiddleware");
+const { protect, authorize } = require("../middleware/authMiddleware");
 
 // Require authentication for roles
 router.use(protect);
@@ -18,7 +18,7 @@ router.use(protect);
  *       200:
  *         description: List of roles
  */
-router.get("/", roleController.getRoles);
+router.get("/", authorize("role:view"), roleController.getRoles);
 
 /**
  * @swagger
@@ -47,7 +47,7 @@ router.get("/", roleController.getRoles);
  *       201:
  *         description: Role created
  */
-router.post("/", roleController.createRole);
+router.post("/", authorize("role:manage"), roleController.createRole);
 
 /**
  * @swagger
@@ -78,6 +78,7 @@ router.post("/", roleController.createRole);
  *       200:
  *         description: Role updated
  */
-router.patch("/:id", roleController.updateRole);
+router.patch("/:id", authorize("role:manage"), roleController.updateRole);
+router.put("/:id/permissions", authorize("role:manage"), roleController.updateRole);
 
 module.exports = router;

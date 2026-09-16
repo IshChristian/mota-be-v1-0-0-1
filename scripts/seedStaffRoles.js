@@ -1,0 +1,4 @@
+require("dotenv").config();const mongoose=require("mongoose");const connectDB=require("../config/database");const Role=require("../models/Role");const{STAFF_ROLE_TEMPLATES}=require("../constants/staffRoles");
+const descriptions={superadmin:"System owner with unrestricted access",admin:"Daily platform administration",financial:"Payments, wallets, loans and reconciliation",agent:"KYC, registration, vouchers and fines",caller_support:"Customer calls, cases and notifications"};
+async function run(){await connectDB();for(const[name,permissions]of Object.entries(STAFF_ROLE_TEMPLATES)){await Role.findOneAndUpdate({name},{$set:{description:descriptions[name],permissions}},{upsert:true,new:true,setDefaultsOnInsert:true});console.log(`Seeded ${name}`)}await mongoose.connection.close()}
+run().catch(async error=>{console.error(error);await mongoose.connection.close();process.exitCode=1});
