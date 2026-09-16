@@ -306,7 +306,7 @@ const getRegistrationDetails = async (req, res) => {
 
 const reviewRegistration = async (req, res) => {
     try {
-        const { status, remarks } = req.body;
+        const { status, remarks, rejectionReason } = req.body;
         const validStatuses = ["pending", "correction", "approved"];
 
         if (!validStatuses.includes(status)) {
@@ -317,6 +317,7 @@ const reviewRegistration = async (req, res) => {
         if (!user) return res.status(404).json({ message: "User not found" });
 
         user.registrationStatus = status;
+        user.registrationRemarks = status === "approved" ? undefined : (remarks || rejectionReason);
 
         if (status === "approved") {
             user.isActive = true;
