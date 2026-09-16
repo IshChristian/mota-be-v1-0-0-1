@@ -28,6 +28,16 @@ const userSchema = new mongoose.Schema({
         enum: ["pending", "correction", "approved"], 
         default: "pending" 
     },
+    registrationSubmittedAt: { type: Date },
+    registrationRemarks: { type: String, trim: true },
+    emergencyContactName: { type: String, trim: true },
+    emergencyContactPhone: { type: String, trim: true },
+    preferredPayment: {
+        type: String,
+        enum: ["CASH", "MOMO", "CARD"],
+        default: "CASH",
+    },
+    passengerProfileCompleted: { type: Boolean, default: false },
     // 2FA Fields
     twoFactorEnabled: { type: Boolean, default: false },
     twoFactorSecret: { type: String },
@@ -45,7 +55,12 @@ const userSchema = new mongoose.Schema({
     fuelVouchers: [{
         code: String,
         amount: Number,
+        type: { type: String, enum: ["momo", "qr"], default: "qr" },
+        status: { type: String, enum: ["pending", "active", "redeemed", "expired"], default: "active" },
+        station: String,
         issuedAt: { type: Date, default: Date.now },
+        expiresAt: Date,
+        redeemedAt: Date,
         isUsed: { type: Boolean, default: false }
     }],
     // ── Driver Availability & Location ──────────────────────────────
