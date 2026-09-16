@@ -313,6 +313,7 @@ router.post("/:id/cancel", ctrl.cancelRide);
  *         description: Rating submitted
  */
 router.post("/:id/rating", ctrl.rateRide);
+router.post("/:id/rate", ctrl.rateRide);
 
 /**
  * @swagger
