@@ -90,8 +90,6 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
     }
 
     // Cap backup drivers
-    const driverCount = Math.max(1, Math.min(5, backupDriverCount));
-
     // Check passenger doesn't have an active ride
     const activeRide = await Ride.findOne({
         passengerId,
