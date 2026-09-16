@@ -3,6 +3,9 @@ const http = require("http");
 const dotenv = require("dotenv");
 const cors = require("cors");
 const morgan = require("morgan");
+const helmet = require("helmet");
+const { rateLimit } = require("express-rate-limit");
+const mongoose = require("mongoose");
 const swaggerUi = require("swagger-ui-express");
 const swaggerSpec = require("./swagger");
 const connectDB = require("./config/database");
@@ -22,9 +25,22 @@ const server = http.createServer(app);
 initSocket(server);
 
 // ─── Middleware ──────────────────────────────────────────
-app.use(cors());
-app.use(express.json());
+app.disable("x-powered-by");
+app.set("trust proxy", 1);
+app.use(helmet());
+const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || "")
+  .split(",").map((origin) => origin.trim()).filter(Boolean);
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error("Origin not allowed by CORS"));
+  },
+  credentials: true,
+}));
+app.use(express.json({ limit: "1mb" }));
 app.use(morgan("dev"));
+app.use("/api", rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: "draft-8", legacyHeaders: false }));
+app.use("/api/auth", rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: "draft-8", legacyHeaders: false }));
 
 // ─── Database Connection ────────────────────────────────
 connectDB().then(async () => {
@@ -174,3 +190,18 @@ server.listen(port, () => {
   console.log(`🔗 API Base URL: http://localhost:${port}/api`);
   console.log(`🔌 WebSocket server is active\n`);
 });
+
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal} received; shutting down gracefully`);
+  server.close(async () => {
+    try { await mongoose.connection.close(); }
+    finally { process.exit(0); }
+  });
+  setTimeout(() => process.exit(1), 10000).unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
