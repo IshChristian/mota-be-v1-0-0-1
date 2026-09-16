@@ -19,7 +19,10 @@ async function notifyUser(user, title, message, event, payload) {
     if (!user) return;
     await notificationService.createNotification(user._id, title, message, "in_app", payload);
     emitToUser(user._id, event, payload);
-    const tasks = [sendSMS(user.phone, message, event)];
+    const tasks = [
+        sendSMS(user.phone, message, event),
+        notificationService.sendPushNotification(user._id, title, message, { ...payload, event }),
+    ];
     if (user.email) tasks.push(notificationService.sendEmail(user.email, title, message));
     await Promise.allSettled(tasks);
 }
@@ -186,13 +189,12 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
 
         // Send real-time SSE event
         sseService.sendEventToDriver(driver._id, "ride_request", ssePayload);
-
-        // Optional SMS fallback
-        await sendSMS(
-            driver.phone,
-            `MOTA RIDE: New ride request! Pickup: ${pickupDist.toFixed(1)}km away. Fare: ${offeredFare} RWF. Trip: ${estimate.distanceKm}km. Open the app to accept.`,
-            "ride_request"
-        );
+        const requestMessage = `New ride request ${pickupDist.toFixed(1)}km away. Fare: ${offeredFare} RWF. Trip: ${estimate.distanceKm}km.`;
+        await notifyUser(driver, "Nearby ride request", requestMessage, "rideRequest", {
+            rideId: ride._id,
+            pickupDistanceKm: pickupDist,
+            fare: offeredFare,
+        });
     }
 
     return {

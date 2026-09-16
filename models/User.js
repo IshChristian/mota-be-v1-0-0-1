@@ -38,6 +38,15 @@ const userSchema = new mongoose.Schema({
         default: "CASH",
     },
     passengerProfileCompleted: { type: Boolean, default: false },
+    pushTokens: {
+        type: [{
+            token: { type: String, required: true },
+            platform: { type: String, enum: ["android", "ios"], required: true },
+            updatedAt: { type: Date, default: Date.now },
+        }],
+        default: [],
+        select: false,
+    },
     // 2FA Fields
     twoFactorEnabled: { type: Boolean, default: false },
     twoFactorSecret: { type: String },
