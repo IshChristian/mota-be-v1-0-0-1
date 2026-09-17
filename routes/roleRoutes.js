@@ -80,5 +80,6 @@ router.post("/", authorize("role:manage"), roleController.createRole);
  */
 router.patch("/:id", authorize("role:manage"), roleController.updateRole);
 router.put("/:id/permissions", authorize("role:manage"), roleController.updateRole);
+router.delete("/:id", authorize("role:manage"), roleController.deleteRole);
 
 module.exports = router;
