@@ -7,7 +7,8 @@
     "start": "node index.js",
     "dev": "nodemon --watch .env --watch . index.js",
     "build": "pnpm run build",
-    "seed:staff-roles": "node scripts/seedStaffRoles.js"
+    "seed:staff-roles": "node scripts/seedStaffRoles.js",
+    "bootstrap:superadmin": "node scripts/bootstrapSuperadmin.js"
   },
   "nodemonConfig": {
     "watch": [
