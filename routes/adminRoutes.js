@@ -26,7 +26,11 @@ router.use(authorize("admin:access"));
  *       200:
  *         description: List of users
  */
-router.get("/users", adminController.getUsersList);
+router.get("/users", authorize("user:view"), adminController.getUsersList);
+router.post("/users", authorize("user:create"), adminController.createUserAccount);
+router.get("/users/:id", authorize("user:view"), adminController.getUserDetails);
+router.patch("/users/:id", authorize("user:update"), adminController.updateUserAccount);
+router.patch("/users/:id/role", authorize("user:assign_role"), adminController.assignUserRole);
 
 /**
  * @swagger

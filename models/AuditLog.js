@@ -19,6 +19,7 @@ const auditLogSchema = new mongoose.Schema({
             "risk_score_calculated",
             "migration_stage_advanced",
             "account_blocked", "account_unblocked",
+            "user_created", "user_updated", "user_deleted", "user_role_assigned",
             "role_created", "role_updated", "role_deleted",
         ],
     },
