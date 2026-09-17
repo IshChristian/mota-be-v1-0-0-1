@@ -261,6 +261,10 @@ router.post("/support-cases", authorize("support:update"), adminController.creat
 router.get("/support-cases/:id", authorize("support:view"), adminController.getSupportCaseDetails);
 router.patch("/support-cases/:id", authorize("support:update"), adminController.updateSupportCase);
 router.delete("/support-cases/:id", authorize("support:update"), adminController.deleteSupportCase);
+router.get("/support-operations", authorize("support:view"), adminController.getSupportOperations);
+router.post("/support-cases/:id/contact", authorize("call_log:create"), adminController.logSupportContact);
+router.post("/support-cases/:id/notify-passenger", authorize("notification:send"), adminController.notifySupportPassenger);
+router.post("/support-rides/:id/assign-driver", authorize("ride:manage"), adminController.assignRideBySupport);
 
 /**
  * @swagger
