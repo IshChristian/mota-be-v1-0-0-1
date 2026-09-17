@@ -26,7 +26,11 @@ router.use(authorize("admin:access"));
  *       200:
  *         description: List of users
  */
-router.get("/users", adminController.getUsersList);
+router.get("/users", authorize("user:view"), adminController.getUsersList);
+router.post("/users", authorize("user:create"), adminController.createUserAccount);
+router.get("/users/:id", authorize("user:view"), adminController.getUserDetails);
+router.patch("/users/:id", authorize("user:update"), adminController.updateUserAccount);
+router.patch("/users/:id/role", authorize("user:assign_role"), adminController.assignUserRole);
 
 /**
  * @swagger
@@ -246,6 +250,13 @@ router.get("/drivers", authorize("driver:view"), adminController.getDriversList)
  *         description: Driver details
  */
 router.get("/drivers/:id", authorize("driver:view"), adminController.getDriverDetails);
+router.get("/rides", authorize("ride:view"), adminController.getRidesList);
+router.patch("/rides/:id/cancel", authorize("ride:cancel"), adminController.cancelRideAsAdmin);
+router.get("/support-cases", authorize("support:view"), adminController.getSupportCases);
+router.post("/support-cases", authorize("support:update"), adminController.createSupportCase);
+router.get("/support-cases/:id", authorize("support:view"), adminController.getSupportCaseDetails);
+router.patch("/support-cases/:id", authorize("support:update"), adminController.updateSupportCase);
+router.delete("/support-cases/:id", authorize("support:update"), adminController.deleteSupportCase);
 
 /**
  * @swagger
