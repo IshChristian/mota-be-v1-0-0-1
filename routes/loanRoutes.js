@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const loanController = require("../controllers/loanController");
-const { protect } = require("../middleware/authMiddleware");
+const { protect, authorize } = require("../middleware/authMiddleware");
 const roleMiddleware = require("../middleware/roleMiddleware");
 
 /**
@@ -103,7 +103,7 @@ router.post("/repay", roleMiddleware("driver"), loanController.repayLoan);
  *       200:
  *         description: Paginated loan list
  */
-router.get("/admin/all", roleMiddleware("admin"), loanController.getAllLoans);
+router.get("/admin/all", authorize("loan:view"), loanController.getAllLoans);
 
 /**
  * @swagger
@@ -128,6 +128,6 @@ router.get("/admin/all", roleMiddleware("admin"), loanController.getAllLoans);
  *       200:
  *         description: Loan approved or rejected
  */
-router.post("/admin/approve", roleMiddleware("admin"), loanController.approveLoan);
+router.post("/admin/approve", authorize("loan:approve"), loanController.approveLoan);
 
 module.exports = router;

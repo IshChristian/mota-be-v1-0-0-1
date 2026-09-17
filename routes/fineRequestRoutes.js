@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const fineRequestController = require("../controllers/fineRequestController");
-const { protect: authMiddleware } = require("../middleware/authMiddleware");
+const { protect: authMiddleware, authorize } = require("../middleware/authMiddleware");
 const roleMiddleware = require("../middleware/roleMiddleware");
 
 /**
@@ -142,7 +142,7 @@ router.get(
 router.get(
     "/all",
     authMiddleware,
-    roleMiddleware("admin", "manager"),
+    authorize("fines:view"),
     fineRequestController.getAllFineRequests
 );
 
@@ -212,7 +212,7 @@ router.get(
 router.put(
     "/:id/approve",
     authMiddleware,
-    roleMiddleware("admin", "manager"),
+    authorize("fines:update"),
     fineRequestController.approveFineRequest
 );
 
@@ -250,7 +250,7 @@ router.put(
 router.put(
     "/:id/reject",
     authMiddleware,
-    roleMiddleware("admin", "manager"),
+    authorize("fines:update"),
     fineRequestController.rejectFineRequest
 );
 
@@ -275,7 +275,7 @@ router.put(
 router.put(
     "/:id/review",
     authMiddleware,
-    roleMiddleware("admin", "manager"),
+    authorize("fines:update"),
     fineRequestController.markUnderReview
 );
 

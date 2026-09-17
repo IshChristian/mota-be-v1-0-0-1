@@ -7,6 +7,8 @@ const Role = require("../models/Role");
 const bcrypt = require("bcrypt");
 const auditService = require("../services/auditService");
 const { STAFF_ROLES } = require("../constants/staffRoles");
+const Ride = require("../models/Ride");
+const SupportCase = require("../models/SupportCase");
 
 const USER_ROLES = ["driver", "agent", "admin", "superadmin", "financial", "caller_support", "client", "manager", "moderator"];
 const editableUserFields = ["firstName", "lastName", "phone", "email", "nationalId", "isActive", "isVerified", "isEmailVerified", "kycLevel", "registrationStatus", "registrationRemarks", "emergencyContactName", "emergencyContactPhone", "preferredPayment"];
@@ -76,6 +78,29 @@ const assignUserRole = async (req, res) => {
         res.status(200).json({ message: "Role assigned", data: publicUser(user) });
     } catch (error) { res.status(500).json({ message: "Server error", error: error.message }); }
 };
+
+const getRidesList = async (req, res) => {
+    try {
+        const page = Math.max(parseInt(req.query.page) || 1, 1); const limit = Math.min(Math.max(parseInt(req.query.limit) || 20, 1), 100);
+        const filter = req.query.status ? { rideStatus: req.query.status } : {};
+        const [data, total] = await Promise.all([Ride.find(filter).populate("passengerId driverId", "firstName lastName phone").sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit), Ride.countDocuments(filter)]);
+        res.json({ data, pagination: { page, limit, total, pages: Math.ceil(total / limit) } });
+    } catch (error) { res.status(500).json({ message: "Server error", error: error.message }); }
+};
+const cancelRideAsAdmin = async (req, res) => {
+    try {
+        const ride = await Ride.findById(req.params.id); if (!ride) return res.status(404).json({ message: "Ride not found" });
+        if (["completed", "cancelled", "expired"].includes(ride.rideStatus)) return res.status(409).json({ message: `A ${ride.rideStatus} ride cannot be cancelled` });
+        const before = ride.rideStatus; ride.rideStatus = "cancelled"; ride.status = "cancelled"; ride.cancelledBy = req.user.id; ride.cancellationReason = String(req.body.reason || "Cancelled by administrator").slice(0, 500); ride.cancelledAt = new Date(); await ride.save();
+        await auditService.log({ ...auditContext(req), action: "ride_admin_cancelled", targetType: "Ride", targetId: ride._id, metadata: { before, reason: ride.cancellationReason } });
+        res.json({ message: "Ride cancelled", data: ride });
+    } catch (error) { res.status(500).json({ message: "Server error", error: error.message }); }
+};
+const getSupportCases = async (req, res) => { try { const filter = req.query.status ? { status: req.query.status } : {}; const data = await SupportCase.find(filter).populate("customerId assignedTo createdBy", "firstName lastName phone role").sort({ createdAt: -1 }).limit(200); res.json({ data }); } catch (error) { res.status(500).json({ message: "Server error", error: error.message }); } };
+const getSupportCaseDetails = async (req, res) => { try { const item = await SupportCase.findById(req.params.id).populate("customerId assignedTo createdBy", "firstName lastName phone role"); if (!item) return res.status(404).json({ message: "Support case not found" }); res.json({ data: item }); } catch (error) { res.status(500).json({ message: "Server error", error: error.message }); } };
+const createSupportCase = async (req, res) => { try { const { customerId, subject, description, priority = "normal", assignedTo } = req.body; if (!subject || !description) return res.status(400).json({ message: "Subject and description are required" }); const item = await SupportCase.create({ customerId, subject, description, priority, assignedTo, createdBy: req.user.id }); await auditService.log({ ...auditContext(req), action: "support_case_created", targetType: "SupportCase", targetId: item._id, metadata: { subject, priority } }); res.status(201).json({ message: "Support case created", data: item }); } catch (error) { res.status(400).json({ message: error.message }); } };
+const updateSupportCase = async (req, res) => { try { const allowed = pickFields(req.body, ["subject", "description", "priority", "status", "assignedTo", "resolution"]); const before = await SupportCase.findById(req.params.id); if (!before) return res.status(404).json({ message: "Support case not found" }); if (["resolved", "closed"].includes(allowed.status) && !allowed.resolution && !before.resolution) return res.status(400).json({ message: "Resolution is required before resolving or closing a case" }); const item = await SupportCase.findByIdAndUpdate(req.params.id, allowed, { new: true, runValidators: true }); await auditService.log({ ...auditContext(req), action: "support_case_updated", targetType: "SupportCase", targetId: item._id, metadata: { changes: allowed } }); res.json({ message: "Support case updated", data: item }); } catch (error) { res.status(400).json({ message: error.message }); } };
+const deleteSupportCase = async (req, res) => { try { const item = await SupportCase.findByIdAndDelete(req.params.id); if (!item) return res.status(404).json({ message: "Support case not found" }); await auditService.log({ ...auditContext(req), action: "support_case_deleted", targetType: "SupportCase", targetId: item._id, metadata: { subject: item.subject } }); res.json({ message: "Support case deleted" }); } catch (error) { res.status(500).json({ message: "Server error", error: error.message }); } };
 
 const getUsersList = async (req, res) => {
     try {
@@ -534,6 +559,13 @@ module.exports = {
     createUserAccount,
     updateUserAccount,
     assignUserRole,
+    getRidesList,
+    cancelRideAsAdmin,
+    getSupportCases,
+    getSupportCaseDetails,
+    createSupportCase,
+    updateSupportCase,
+    deleteSupportCase,
     getDriversList,
     getDriverDetails,
     updateUserStatus,

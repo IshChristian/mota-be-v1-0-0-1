@@ -250,6 +250,13 @@ router.get("/drivers", authorize("driver:view"), adminController.getDriversList)
  *         description: Driver details
  */
 router.get("/drivers/:id", authorize("driver:view"), adminController.getDriverDetails);
+router.get("/rides", authorize("ride:view"), adminController.getRidesList);
+router.patch("/rides/:id/cancel", authorize("ride:cancel"), adminController.cancelRideAsAdmin);
+router.get("/support-cases", authorize("support:view"), adminController.getSupportCases);
+router.post("/support-cases", authorize("support:update"), adminController.createSupportCase);
+router.get("/support-cases/:id", authorize("support:view"), adminController.getSupportCaseDetails);
+router.patch("/support-cases/:id", authorize("support:update"), adminController.updateSupportCase);
+router.delete("/support-cases/:id", authorize("support:update"), adminController.deleteSupportCase);
 
 /**
  * @swagger
