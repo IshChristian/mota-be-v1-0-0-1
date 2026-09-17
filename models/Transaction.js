@@ -41,6 +41,7 @@ const transactionSchema = new mongoose.Schema({
             "fine_loan_repayment",
             "referral_reward",
             "admin_credit",
+            "admin_debit",
             "commission",
             "agent_registration_fee",
             "agent_pay_fine",
@@ -91,4 +92,3 @@ transactionSchema.index({ driverId: 1, createdAt: -1 });
 const Transaction = mongoose.model("Transaction", transactionSchema);
 
 module.exports = Transaction;
-

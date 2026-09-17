@@ -29,6 +29,7 @@ router.use(authorize("admin:access"));
 router.get("/users", authorize("user:view"), adminController.getUsersList);
 router.post("/users", authorize("user:create"), adminController.createUserAccount);
 router.get("/users/:id", authorize("user:view"), adminController.getUserDetails);
+router.get("/users/:id/overview", authorize("user:view"), adminController.getUserOverview);
 router.patch("/users/:id", authorize("user:update"), adminController.updateUserAccount);
 router.patch("/users/:id/role", authorize("user:assign_role"), adminController.assignUserRole);
 
@@ -250,6 +251,8 @@ router.get("/drivers", authorize("driver:view"), adminController.getDriversList)
  *         description: Driver details
  */
 router.get("/drivers/:id", authorize("driver:view"), adminController.getDriverDetails);
+router.patch("/drivers/:id/profile", authorize("driver:update"), adminController.updateDriverProfile);
+router.post("/drivers/:id/wallet-adjust", authorize("wallet:adjust"), adminController.adjustDriverWallet);
 router.get("/rides", authorize("ride:view"), adminController.getRidesList);
 router.patch("/rides/:id/cancel", authorize("ride:cancel"), adminController.cancelRideAsAdmin);
 router.get("/support-cases", authorize("support:view"), adminController.getSupportCases);

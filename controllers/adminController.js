@@ -9,6 +9,16 @@ const auditService = require("../services/auditService");
 const { STAFF_ROLES } = require("../constants/staffRoles");
 const Ride = require("../models/Ride");
 const SupportCase = require("../models/SupportCase");
+const DriverProfile = require("../models/DriverProfile");
+const Upload = require("../models/Upload");
+const Transaction = require("../models/Transaction");
+const Loan = require("../models/Loan");
+const Fine = require("../models/Fine");
+const FineRequest = require("../models/FineRequest");
+const Wallet = require("../models/Wallet");
+const AuditLog = require("../models/AuditLog");
+const AdminWalletAdjustment = require("../models/AdminWalletAdjustment");
+const mongoose = require("mongoose");
 
 const USER_ROLES = ["driver", "agent", "admin", "superadmin", "financial", "caller_support", "client", "manager", "moderator"];
 const editableUserFields = ["firstName", "lastName", "phone", "email", "nationalId", "isActive", "isVerified", "isEmailVerified", "kycLevel", "registrationStatus", "registrationRemarks", "emergencyContactName", "emergencyContactPhone", "preferredPayment"];
@@ -25,6 +35,59 @@ const getUserDetails = async (req, res) => {
         if (!user) return res.status(404).json({ message: "User not found" });
         res.status(200).json({ data: publicUser(user) });
     } catch (error) { res.status(500).json({ message: "Server error", error: error.message }); }
+};
+
+const getUserOverview = async (req, res) => {
+    try {
+        if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: "Invalid user ID" });
+        const id = new mongoose.Types.ObjectId(req.params.id);
+        const user = await User.findById(id).select("-password -otpToken -emailOtpToken -twoFactorSecret -pushTokens").populate("roleId", "name permissions").populate("avatarId", "url format");
+        if (!user) return res.status(404).json({ message: "User not found" });
+        const [driverProfile, uploads, rides, transactions, loans, fines, fineRequests, wallet, auditLogs] = await Promise.all([
+            DriverProfile.findOne({ driverId: id }), Upload.find({ userId: id }).sort({ createdAt: -1 }),
+            Ride.find({ $or: [{ passengerId: id }, { driverId: id }] }).populate("passengerId driverId", "firstName lastName phone").sort({ createdAt: -1 }).limit(100),
+            Transaction.find({ $or: [{ userId: id }, { driverId: id }, { agentId: id }] }).sort({ createdAt: -1 }).limit(100),
+            Loan.find({ driverId: id }).sort({ createdAt: -1 }).limit(100), Fine.find({ driverId: id }).sort({ createdAt: -1 }).limit(100),
+            FineRequest.find({ driverId: id }).sort({ createdAt: -1 }).limit(100), Wallet.findOne({ driverId: id }),
+            AuditLog.find({ $or: [{ actorId: id }, { targetId: id }] }).populate("actorId", "firstName lastName role").sort({ timestamp: -1 }).limit(100),
+        ]);
+        res.json({ data: { user, driverProfile, uploads, rides, transactions, loans, fines, fineRequests, wallet, auditLogs } });
+    } catch (error) { res.status(500).json({ message: "Server error", error: error.message }); }
+};
+
+const updateDriverProfile = async (req, res) => {
+    try {
+        const allowed = pickFields(req.body, ["plateNumber", "cooperativeName", "nid", "insuranceAttachment", "permitAttachment", "permitId", "code"]);
+        const profile = await DriverProfile.findOneAndUpdate({ driverId: req.params.id }, allowed, { new: true, runValidators: true });
+        if (!profile) return res.status(404).json({ message: "Driver profile not found" });
+        await auditService.log({ ...auditContext(req), action: "driver_profile_updated", targetType: "DriverProfile", targetId: profile._id, metadata: { changes: allowed, driverId: req.params.id } });
+        res.json({ message: "Driver profile updated", data: profile });
+    } catch (error) { res.status(error.code === 11000 ? 409 : 400).json({ message: error.code === 11000 ? "Plate, NID or permit already exists" : error.message }); }
+};
+
+const adjustDriverWallet = async (req, res) => {
+    const amount = Number(req.body.amount); const reason = String(req.body.reason || "").trim(); const idempotencyKey = String(req.get("Idempotency-Key") || req.body.idempotencyKey || "").trim();
+    if (!Number.isFinite(amount) || amount === 0 || Math.abs(amount) > 10000000) return res.status(400).json({ message: "Amount must be non-zero and within 10,000,000 RWF" });
+    if (reason.length < 5) return res.status(400).json({ message: "A reason of at least 5 characters is required" });
+    if (idempotencyKey.length < 16 || idempotencyKey.length > 128) return res.status(400).json({ message: "A valid idempotency key is required" });
+    const existing = await AdminWalletAdjustment.findOne({ idempotencyKey }); if (existing) return res.json({ message: "Adjustment already processed", data: existing, idempotent: true });
+    const session = await mongoose.startSession();
+    try {
+        let result;
+        await session.withTransaction(async () => {
+            const driver = await User.findOne({ _id: req.params.id, role: "driver" }).session(session); if (!driver) throw Object.assign(new Error("Driver not found"), { status: 404 });
+            let wallet = await Wallet.findOne({ driverId: driver._id }).session(session); if (!wallet) [wallet] = await Wallet.create([{ driverId: driver._id, balance: 0 }], { session });
+            if (wallet.balance + amount < 0) throw Object.assign(new Error("Adjustment would make the wallet balance negative"), { status: 409 });
+            wallet.balance += amount; await wallet.save({ session });
+            const [transaction] = await Transaction.create([{ driverId: driver._id, amount, type: amount > 0 ? "admin_credit" : "admin_debit", status: "successful", reference: idempotencyKey, description: reason }], { session });
+            [result] = await AdminWalletAdjustment.create([{ idempotencyKey, driverId: driver._id, actorId: req.user.id, amount, reason, transactionId: transaction._id, balanceAfter: wallet.balance }], { session });
+        });
+        await auditService.log({ ...auditContext(req), action: "wallet_adjusted", targetType: "User", targetId: req.params.id, metadata: { amount, reason, idempotencyKey, balanceAfter: result.balanceAfter } });
+        res.status(201).json({ message: "Wallet adjusted", data: result });
+    } catch (error) {
+        if (error.code === 11000) { const item = await AdminWalletAdjustment.findOne({ idempotencyKey }); return res.json({ message: "Adjustment already processed", data: item, idempotent: true }); }
+        res.status(error.status || 500).json({ message: error.message });
+    } finally { await session.endSession(); }
 };
 
 const createUserAccount = async (req, res) => {
@@ -556,6 +619,7 @@ const syncTransactionsWithPaypack = async (req, res) => {
 module.exports = {
     getUsersList,
     getUserDetails,
+    getUserOverview,
     createUserAccount,
     updateUserAccount,
     assignUserRole,
@@ -568,6 +632,8 @@ module.exports = {
     deleteSupportCase,
     getDriversList,
     getDriverDetails,
+    updateDriverProfile,
+    adjustDriverWallet,
     updateUserStatus,
     verifyUser,
     updateKYC,
