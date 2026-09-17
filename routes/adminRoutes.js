@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const adminController = require("../controllers/adminController");
 const { protect, authorize } = require("../middleware/authMiddleware");
+const financialWriteGuard = require("../middleware/financialWriteGuard");
 
 // Require authentication and RBAC for all admin routes, forcing them to have "admin:access"
 router.use(protect);
@@ -252,7 +253,7 @@ router.get("/drivers", authorize("driver:view"), adminController.getDriversList)
  */
 router.get("/drivers/:id", authorize("driver:view"), adminController.getDriverDetails);
 router.patch("/drivers/:id/profile", authorize("driver:update"), adminController.updateDriverProfile);
-router.post("/drivers/:id/wallet-adjust", authorize("wallet:adjust"), adminController.adjustDriverWallet);
+router.post("/drivers/:id/wallet-adjust", authorize("wallet:adjust"), financialWriteGuard, adminController.adjustDriverWallet);
 router.get("/rides", authorize("ride:view"), adminController.getRidesList);
 router.patch("/rides/:id/cancel", authorize("ride:cancel"), adminController.cancelRideAsAdmin);
 router.get("/support-cases", authorize("support:view"), adminController.getSupportCases);
