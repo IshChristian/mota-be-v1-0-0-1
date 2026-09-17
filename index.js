@@ -28,14 +28,23 @@ initSocket(server);
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
 app.use(helmet());
-const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || "")
-  .split(",").map((origin) => origin.trim()).filter(Boolean);
+const normalizeOrigin = (value) => {
+  try { return new URL(value.trim()).origin; } catch { return ""; }
+};
+const allowedOrigins = new Set([
+  "https://mota-admin-web-app.vercel.app",
+  ...(process.env.CORS_ALLOWED_ORIGINS || "").split(/[\n,]/),
+].map(normalizeOrigin).filter(Boolean));
 app.use(cors({
   origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error("Origin not allowed by CORS"));
+    if (!origin || allowedOrigins.has(normalizeOrigin(origin))) return callback(null, true);
+    console.warn(`[CORS] Rejected origin: ${origin}`);
+    return callback(null, false);
   },
   credentials: true,
+  methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key"],
+  optionsSuccessStatus: 204,
 }));
 app.use(express.json({ limit: "1mb" }));
 app.use(morgan("dev"));
