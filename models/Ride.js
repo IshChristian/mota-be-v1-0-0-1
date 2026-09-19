@@ -121,6 +121,7 @@ const rideSchema = new mongoose.Schema({
     completedAt: { type: Date },
     cancelledAt: { type: Date },
     expiresAt: { type: Date },
+    expiredAt: { type: Date },
 
     // ── Distance & Duration for legacy rides ───────────────────────────
     distance: { type: Number },
