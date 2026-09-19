@@ -93,6 +93,7 @@ const uploadRoutes = require("./routes/uploadRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const driverRoutes = require("./routes/driverRoutes");
 const rideRoutes = require("./routes/rideRoutes");
+const mapRoutes = require("./routes/mapRoutes");
 
 const agentRoutes = require("./routes/agentRoutes");
 const ussdRoutes = require("./routes/ussdRoutes");
@@ -136,6 +137,7 @@ app.use("/api/rider", algorithmRoutes); // GET /api/rider/status, /api/rider/ear
 app.use("/api/platform", platformRoutes);
 app.use("/api/finance", financialWriteGuard, financeRoutes);
 app.use("/api/rides", rideEngineRoutes);
+app.use("/api/maps", mapRoutes);
 app.use("/api/realtime", realtimeRoutes);
 app.use("/api/fuel-vouchers", fuelVoucherRoutes);
 
