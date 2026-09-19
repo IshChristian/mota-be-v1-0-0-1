@@ -14,6 +14,7 @@ const { startScheduler } = require("./utils/scheduler");
 const { initCron } = require("./services/cronService");
 const { initSocket } = require("./services/socketService");
 const financialWriteGuard = require("./middleware/financialWriteGuard");
+const { expireStaleRequests } = require("./services/rideEngineService");
 
 // Load environment variables
 dotenv.config();
@@ -59,6 +60,10 @@ connectDB().then(async () => {
     startScheduler();
     // Initialize Daily Tasks Cron (Fuel vouchers etc)
     initCron();
+    // Preserve expired requests as history records and notify passengers.
+    setInterval(() => {
+      expireStaleRequests().catch((error) => console.error("Ride expiry job failed:", error.message));
+    }, 30 * 1000).unref();
   } catch (err) {
     console.error("Failed to seed defaults:", err.message);
   }

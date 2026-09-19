@@ -117,9 +117,17 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
         throw new Error("You already have an active ride. Complete or cancel it first.");
     }
 
-    // Expiry: 2 minutes for drivers to accept
+    // Immediate requests use the configured search window. Scheduled requests
+    // remain available until their requested pickup time plus the same grace.
     const expiryMinutes = await systemSettingService.getSetting("ride_request_expiry_minutes", 2);
-    const expiresAt = new Date(Date.now() + expiryMinutes * 60 * 1000);
+    let requestDeadline = Date.now();
+    if (scheduledDate && scheduledTime) {
+        const scheduledAt = new Date(`${scheduledDate}T${scheduledTime}:00`);
+        if (Number.isNaN(scheduledAt.getTime())) throw new Error("Invalid scheduled ride date or time.");
+        if (scheduledAt.getTime() <= Date.now()) throw new Error("Scheduled ride time must be in the future.");
+        requestDeadline = scheduledAt.getTime();
+    }
+    const expiresAt = new Date(requestDeadline + expiryMinutes * 60 * 1000);
 
     // Create ride
     const ride = await Ride.create({
@@ -684,14 +692,25 @@ const updateDriverLocation = async (driverId, latitude, longitude, heading, spee
 // ═══════════════════════════════════════════════════════════════════════════
 
 const expireStaleRequests = async () => {
-    const result = await Ride.updateMany(
-        {
-            rideStatus: { $in: ["requested", "searching"] },
-            expiresAt: { $lt: new Date() },
-        },
-        { $set: { rideStatus: "expired" } }
-    );
-    return result.modifiedCount;
+    const stale = await Ride.find({
+        rideStatus: { $in: ["requested", "searching"] },
+        expiresAt: { $lt: new Date() },
+    }).select("_id passengerId");
+    let expired = 0;
+    for (const item of stale) {
+        const ride = await Ride.findOneAndUpdate(
+            { _id: item._id, rideStatus: { $in: ["requested", "searching"] } },
+            { $set: { rideStatus: "expired", expiredAt: new Date() } },
+            { new: true }
+        );
+        if (!ride) continue;
+        expired += 1;
+        const passenger = await User.findById(ride.passengerId).select("phone email firstName");
+        if (passenger) {
+            await notifyUser(passenger, "Ride request expired", "No driver accepted before your request deadline. The request remains available in ride history.", "rideExpired", { rideId: ride._id, rideStatus: "expired" });
+        }
+    }
+    return expired;
 };
 
 module.exports = {
