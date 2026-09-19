@@ -9,6 +9,7 @@ const { sendSMS } = require("./smsService");
 const systemSettingService = require("./systemSettingService");
 const sseService = require("./sseService");
 const notificationService = require("./notificationService");
+const mongoose = require("mongoose");
 
 function emitToUser(userId, event, payload) {
     try { require("./socketService").getIo().to(`user_${userId}`).emit(event, payload); }
@@ -105,6 +106,14 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
     }
     if (offeredFare > estimate.maximumFare) {
         throw new Error(`Fare too high. Maximum: ${estimate.maximumFare} RWF`);
+    }
+    if (paymentMethod === "wallet") {
+        const passengerWallet = await walletService.getOrCreateWallet(passengerId);
+        if (passengerWallet.balance < offeredFare) {
+            const error = new Error(`Insufficient wallet balance. Required: ${offeredFare} RWF, Available: ${passengerWallet.balance} RWF`);
+            error.code = "INSUFFICIENT_WALLET_BALANCE";
+            throw error;
+        }
     }
 
     // Cap backup drivers
@@ -361,10 +370,8 @@ const driverArrived = async (driverId, rideId) => {
     ride.arrivedAt = new Date();
     await ride.save();
 
-    const passenger = await User.findById(ride.passengerId).select("phone");
-    if (passenger) {
-        await sendSMS(passenger.phone, "MOTA: Your driver has arrived at the pickup point!", "driver_arrived");
-    }
+    const passenger = await User.findById(ride.passengerId).select("phone email firstName");
+    await notifyUser(passenger, "Driver arrived", "Your driver is at the pickup point. Open MOTA and confirm when you are together and ready to start.", "driverArrived", { rideId: ride._id, rideStatus: ride.rideStatus });
 
     return ride;
 };
@@ -419,7 +426,24 @@ const confirmStop = async (passengerId, rideId) => {
     ride.rideStatus = "awaiting_payment";
     ride.stopConfirmedAt = new Date();
     ride.actualDurationMin = Math.max(1, Math.round((Date.now() - new Date(ride.startedAt).getTime()) / 60000));
-    await ride.save();
+    if (ride.paymentMethod === "wallet" && ride.paymentStatus !== "successful") {
+        const session = await mongoose.startSession();
+        try {
+            await session.withTransaction(async () => {
+                const { commission, driverEarning } = await walletService.calculateCommission(ride.fare);
+                const passengerWallet = await Wallet.findOneAndUpdate({ driverId: passengerId, balance: { $gte: ride.fare } }, { $inc: { balance: -ride.fare } }, { new: true, session });
+                if (!passengerWallet) throw new Error("Insufficient wallet balance. Top up before completing payment.");
+                await Wallet.findOneAndUpdate({ driverId: ride.driverId }, { $inc: { balance: driverEarning }, $setOnInsert: { driverId: ride.driverId } }, { upsert: true, new: true, session });
+                await Transaction.create([{ driverId: passengerId, rideId: ride._id, amount: -ride.fare, type: "ride_payment", status: "successful", description: `Wallet payment for ride ${ride._id}` }, { driverId: ride.driverId, rideId: ride._id, amount: driverEarning, feeAmount: commission, type: "ride_payment", status: "successful", description: `Ride earning after ${commission} RWF commission` }], { session });
+                ride.paymentStatus = "successful";
+                ride.commissionAmount = commission;
+                ride.driverEarning = driverEarning;
+                await ride.save({ session });
+            });
+        } finally { await session.endSession(); }
+    } else {
+        await ride.save();
+    }
     emitToUser(ride.driverId, "rideStopConfirmed", { rideId: ride._id, rideStatus: ride.rideStatus, fare: ride.fare });
     return ride;
 };
