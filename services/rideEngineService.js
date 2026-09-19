@@ -92,7 +92,7 @@ const estimateFare = async (pickup, destination) => {
 // 2. RIDE REQUEST (Passenger-initiated)
 // ═══════════════════════════════════════════════════════════════════════════
 
-const requestRide = async (passengerId, pickup, destination, offeredFare, backupDrivers = 1, passengers = 1, scheduledDate = null, scheduledTime = null) => {
+const requestRide = async (passengerId, pickup, destination, offeredFare, backupDrivers = 1, passengers = 1, paymentMethod = "momo", scheduledDate = null, scheduledTime = null) => {
     // Validate coordinates
     if (!pickup?.latitude || !destination?.latitude) {
         throw new Error("Pickup and destination coordinates are required.");
@@ -134,6 +134,7 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
         fare: offeredFare,
         backupDriverCount: Math.max(1, Math.min(5, backupDrivers)),
         passengers,
+        paymentMethod,
         scheduledDate,
         scheduledTime,
         rideStatus: "requested",
@@ -150,9 +151,11 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
     );
 
     if (nearbyDrivers.length === 0) {
-        ride.rideStatus = "expired";
+        // Keep the request available for caller-support intervention instead
+        // of failing the passenger request when automatic matching is empty.
+        ride.rideStatus = "searching";
         await ride.save();
-        throw new Error("No drivers available near your location. Please try again.");
+        return { ride, nearbyDrivers: [], requiresSupport: true };
     }
 
     // Mark as searching and record notified drivers
