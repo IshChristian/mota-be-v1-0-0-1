@@ -24,14 +24,14 @@ const estimateFare = async (req, res) => {
 const requestRide = async (req, res) => {
     try {
         const passengerId = req.user.id;
-        const { pickup, destination, offeredFare, backupDrivers, passengers, scheduledDate, scheduledTime } = req.body;
+        const { pickup, destination, offeredFare, backupDrivers, passengers, paymentMethod, scheduledDate, scheduledTime } = req.body;
 
         if (!pickup || !destination || !offeredFare) {
             return res.status(400).json({ status: "error", message: "pickup, destination, and offeredFare are required." });
         }
 
         const result = await rideEngineService.requestRide(
-            passengerId, pickup, destination, offeredFare, backupDrivers || 3, passengers || 1, scheduledDate, scheduledTime
+            passengerId, pickup, destination, offeredFare, backupDrivers || 3, passengers || 1, paymentMethod, scheduledDate, scheduledTime
         );
 
         // Required JSON response by specs
@@ -39,7 +39,9 @@ const requestRide = async (req, res) => {
             status: "success",
             message: "Ride request broadcasted to nearby drivers",
             data: {
-                rideId: result.ride._id
+                rideId: result.ride._id,
+                requiresSupport: result.requiresSupport === true,
+                notifiedDrivers: result.nearbyDrivers?.length || 0
             }
         });
     } catch (error) {
