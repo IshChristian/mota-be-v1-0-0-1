@@ -12,7 +12,9 @@ const roleMiddleware = require("../middleware/roleMiddleware");
  */
 
 // All wallet routes require driver auth
-router.use(authMiddleware, roleMiddleware("driver"));
+// Ownership is derived exclusively from req.user.id; callers cannot supply a
+// wallet owner id and therefore cannot access another user's wallet.
+router.use(authMiddleware, roleMiddleware("driver", "client"));
 
 /**
  * @swagger
