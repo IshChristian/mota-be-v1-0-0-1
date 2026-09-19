@@ -265,6 +265,8 @@ router.get("/support-operations", authorize("support:view"), adminController.get
 router.post("/support-cases/:id/contact", authorize("call_log:create"), adminController.logSupportContact);
 router.post("/support-cases/:id/notify-passenger", authorize("notification:send"), adminController.notifySupportPassenger);
 router.post("/support-rides/:id/assign-driver", authorize("ride:manage"), adminController.assignRideBySupport);
+router.post("/support-rides", authorize("ride:manage"), adminController.createRideBySupport);
+router.patch("/support-rides/:id", authorize("ride:manage"), adminController.updateRideBySupport);
 
 /**
  * @swagger
