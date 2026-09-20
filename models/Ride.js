@@ -60,7 +60,7 @@ const rideSchema = new mongoose.Schema({
     },
     paymentStatus: {
         type: String,
-        enum: ["pending", "successful", "failed"],
+        enum: ["pending", "held", "successful", "failed"],
         default: "pending",
     },
     paypackRef: { type: String },
@@ -106,6 +106,9 @@ const rideSchema = new mongoose.Schema({
     // ── Cancellation ───────────────────────────────────────────────────
     cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     cancellationReason: { type: String, trim: true },
+    cancellationRequiresReview: { type: Boolean, default: false },
+    heldAmount: { type: Number, default: 0, min: 0 },
+    supportCaseId: { type: mongoose.Schema.Types.ObjectId, ref: "SupportCase" },
 
     // ── Timestamps ─────────────────────────────────────────────────────
     requestedAt: { type: Date },
