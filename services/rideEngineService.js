@@ -284,11 +284,15 @@ const acceptRide = async (driverId, rideId) => {
     );
 
     if (!ride) {
-        // Either already assigned or ride expired
+        // Repeated accepts from the already assigned driver are idempotent. This
+        // commonly happens when the request screen and timeline update together.
         const existing = await Ride.findById(rideId);
         if (!existing) throw new Error("Ride not found.");
+        if (existing.driverId?.toString() === driverId.toString() && ["accepted", "approaching", "arrived", "start_requested", "in_progress", "stop_requested", "awaiting_payment"].includes(existing.rideStatus)) {
+            return existing;
+        }
         if (existing.rideStatus !== "searching") {
-            throw new Error("This ride has already been assigned to another driver.");
+            throw new Error("This ride is assigned to another driver.");
         }
         throw new Error("You are not eligible for this ride.");
     }
