@@ -253,8 +253,11 @@ router.get("/drivers", authorize("driver:view"), adminController.getDriversList)
  */
 router.get("/drivers/:id", authorize("driver:view"), adminController.getDriverDetails);
 router.patch("/drivers/:id/profile", authorize("driver:update"), adminController.updateDriverProfile);
-router.post("/drivers/:id/wallet-adjust", authorize("wallet:adjust"), financialWriteGuard, adminController.adjustDriverWallet);
-router.post("/users/:id/wallet-adjust", authorize("wallet:adjust"), financialWriteGuard, adminController.adjustDriverWallet);
+// Manual staff adjustments use the transactional ledger in adjustDriverWallet and
+// do not call Paypack. Keep permission, idempotency and audit protections, while
+// allowing this audited operation when external financial integrations are paused.
+router.post("/drivers/:id/wallet-adjust", authorize("wallet:adjust"), adminController.adjustDriverWallet);
+router.post("/users/:id/wallet-adjust", authorize("wallet:adjust"), adminController.adjustDriverWallet);
 router.get("/rides", authorize("ride:view"), adminController.getRidesList);
 router.patch("/rides/:id/cancel", authorize("ride:cancel"), adminController.cancelRideAsAdmin);
 router.get("/support-cases", authorize("support:view"), adminController.getSupportCases);
