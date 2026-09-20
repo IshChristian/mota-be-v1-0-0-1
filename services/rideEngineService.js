@@ -352,15 +352,17 @@ const declineRide = async (driverId, rideId) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const driverArrived = async (driverId, rideId) => {
-    const ride = await Ride.findOne({ _id: rideId, driverId, rideStatus: { $in: ["accepted", "approaching"] } });
+    const ride = await Ride.findOne({ _id: rideId, driverId });
     if (!ride) throw new Error("No active ride found or you are not the assigned driver.");
+    if (["arrived", "start_requested", "in_progress", "stop_requested", "awaiting_payment", "completed"].includes(ride.rideStatus)) return ride;
+    if (!["accepted", "approaching"].includes(ride.rideStatus)) throw new Error(`Arrival cannot be confirmed while the ride status is ${ride.rideStatus}.`);
 
     ride.rideStatus = "arrived";
     ride.arrivedAt = new Date();
     await ride.save();
 
     const passenger = await User.findById(ride.passengerId).select("phone email firstName");
-    await notifyUser(passenger, "Driver arrived", "Your driver is at the pickup point. Open MOTA and confirm when you are together and ready to start.", "driverArrived", { rideId: ride._id, rideStatus: ride.rideStatus });
+    await notifyUser(passenger, "Driver arrived", "Your MOTA driver has arrived at the pickup point. Open the app and confirm only when you are together and ready to start.", "driverArrived", { rideId: ride._id, driverId, rideStatus: ride.rideStatus, arrivedAt: ride.arrivedAt });
 
     return ride;
 };
@@ -374,6 +376,9 @@ const getDriverRequests = async (driverId) => {
 };
 
 const requestStart = async (driverId, rideId) => {
+    const current = await Ride.findOne({ _id: rideId, driverId });
+    if (!current) throw new Error("Ride not found or you are not the assigned driver.");
+    if (["start_requested", "in_progress", "stop_requested", "awaiting_payment", "completed"].includes(current.rideStatus)) return current;
     const ride = await Ride.findOneAndUpdate(
         { _id: rideId, driverId, rideStatus: "arrived" },
         { $set: { rideStatus: "start_requested", startRequestedAt: new Date() } },
@@ -381,7 +386,7 @@ const requestStart = async (driverId, rideId) => {
     );
     if (!ride) throw new Error("Ride must be at the pickup stage.");
     const passenger = await User.findById(ride.passengerId).select("phone email");
-    await notifyUser(passenger, "Confirm ride start", "Your driver is ready. Confirm the ride start in the app.", "rideStartRequested", { rideId: ride._id, rideStatus: ride.rideStatus });
+    await notifyUser(passenger, "Confirm ride start", "Your driver says you are together and ready. Open MOTA to confirm the ride start. The trip will not begin until you approve it.", "rideStartRequested", { rideId: ride._id, driverId, rideStatus: ride.rideStatus, startRequestedAt: ride.startRequestedAt });
     return ride;
 };
 
