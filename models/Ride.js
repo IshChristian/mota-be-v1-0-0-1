@@ -115,6 +115,7 @@ const rideSchema = new mongoose.Schema({
     matchedAt: { type: Date },
     acceptedAt: { type: Date },
     arrivedAt: { type: Date },
+    approachAlertSentAt: { type: Date },
     startedAt: { type: Date },
     startRequestedAt: { type: Date },
     startConfirmedAt: { type: Date },
