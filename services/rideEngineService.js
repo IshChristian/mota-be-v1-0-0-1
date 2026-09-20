@@ -2,6 +2,7 @@ const Ride = require("../models/Ride");
 const User = require("../models/User");
 const Transaction = require("../models/Transaction");
 const Wallet = require("../models/Wallet");
+const SupportCase = require("../models/SupportCase");
 const walletService = require("./walletService");
 const paymentService = require("./paymentService");
 const auditService = require("./auditService");
@@ -126,17 +127,13 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
         throw new Error("You already have an active ride. Complete or cancel it first.");
     }
 
-    // Immediate requests use the configured search window. Scheduled requests
-    // remain available until their requested pickup time plus the same grace.
-    const expiryMinutes = await systemSettingService.getSetting("ride_request_expiry_minutes", 2);
-    let requestDeadline = Date.now();
+    // Requests remain active until a passenger, driver, or authorized support
+    // operator explicitly resolves them. Scheduled times are validated only.
     if (scheduledDate && scheduledTime) {
         const scheduledAt = new Date(`${scheduledDate}T${scheduledTime}:00`);
         if (Number.isNaN(scheduledAt.getTime())) throw new Error("Invalid scheduled ride date or time.");
         if (scheduledAt.getTime() <= Date.now()) throw new Error("Scheduled ride time must be in the future.");
-        requestDeadline = scheduledAt.getTime();
     }
-    const expiresAt = new Date(requestDeadline + expiryMinutes * 60 * 1000);
 
     // Create ride
     const ride = await Ride.create({
@@ -157,7 +154,6 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
         rideStatus: "requested",
         ridePin: generatePin(),
         requestedAt: new Date(),
-        expiresAt,
     });
 
     // Find nearby online drivers
@@ -181,8 +177,6 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
     await ride.save();
 
     // Notify drivers via SMS and SSE
-    const expiresInSeconds = expiryMinutes * 60;
-    
     for (const driver of nearbyDrivers) {
         const pickupDist = haversine(
             driver.lastLocation.latitude, driver.lastLocation.longitude,
@@ -203,8 +197,7 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
             offeredFare: offeredFare,
             passengers: passengers,
             scheduledDate: scheduledDate,
-            scheduledTime: scheduledTime,
-            expiresInSeconds: expiresInSeconds
+            scheduledTime: scheduledTime
         };
 
         // Send real-time SSE event
@@ -225,7 +218,6 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
             estimatedDistanceKm: ride.estimatedDistanceKm,
             estimatedDurationMin: ride.estimatedDurationMin,
             driversNotified: nearbyDrivers.length,
-            expiresAt: ride.expiresAt,
         },
     };
 };
@@ -340,18 +332,11 @@ const declineRide = async (driverId, rideId) => {
     ride.declinedDrivers.push(driverId);
     await ride.save();
 
-    // If all notified drivers declined, expire the ride
+    // Keep the request open for other drivers and caller-support assignment.
     if (ride.declinedDrivers.length >= ride.notifiedDrivers.length) {
-        ride.rideStatus = "expired";
-        await ride.save();
-
-        const passenger = await User.findById(ride.passengerId).select("phone");
+        const passenger = await User.findById(ride.passengerId).select("phone email firstName");
         if (passenger) {
-            await sendSMS(
-                passenger.phone,
-                "MOTA: No drivers accepted your ride. Please try again with a different fare or wait a moment.",
-                "ride_expired"
-            );
+            await notifyUser(passenger, "Still finding a driver", "The first nearby drivers declined, but your request remains active and support can assign another driver.", "rideStillSearching", { rideId: ride._id, rideStatus: ride.rideStatus });
         }
     }
 
@@ -381,8 +366,7 @@ const getDriverRequests = async (driverId) => {
         rideStatus: "searching",
         notifiedDrivers: driverId,
         declinedDrivers: { $ne: driverId },
-        expiresAt: { $gt: new Date() },
-    }).select("pickup destination offeredFare estimatedDistanceKm estimatedDurationMin passengers scheduledDate scheduledTime expiresAt requestedAt").sort({ requestedAt: -1 });
+    }).select("pickup destination offeredFare estimatedDistanceKm estimatedDurationMin passengers scheduledDate scheduledTime requestedAt").sort({ requestedAt: -1 });
 };
 
 const requestStart = async (driverId, rideId) => {
@@ -548,7 +532,7 @@ const cancelRide = async (userId, rideId, reason) => {
     const ride = await Ride.findById(rideId);
     if (!ride) throw new Error("Ride not found.");
 
-    const cancellableStatuses = ["requested", "searching", "accepted", "approaching", "arrived"];
+    const cancellableStatuses = ["requested", "searching", "accepted", "approaching", "arrived", "start_requested", "in_progress"];
     if (!cancellableStatuses.includes(ride.rideStatus)) {
         throw new Error("This ride cannot be cancelled at its current stage.");
     }
@@ -560,10 +544,38 @@ const cancelRide = async (userId, rideId, reason) => {
         throw new Error("You are not authorized to cancel this ride.");
     }
 
+    const startedCancellation = isPassenger && ride.rideStatus === "in_progress";
+    if (startedCancellation && String(reason || "").trim().length < 10) {
+        throw new Error("A clear cancellation or driver-report reason of at least 10 characters is required after the ride starts.");
+    }
+
+    if (startedCancellation && ride.paymentMethod === "wallet" && ride.paymentStatus !== "successful") {
+        const session = await mongoose.startSession();
+        try {
+            await session.withTransaction(async () => {
+                const wallet = await Wallet.findOneAndUpdate(
+                    { driverId: ride.passengerId, balance: { $gte: ride.fare } },
+                    { $inc: { balance: -ride.fare, heldBalance: ride.fare } },
+                    { new: true, session }
+                );
+                if (!wallet) throw new Error("The ride fare cannot be placed on hold because the wallet balance is insufficient.");
+                await Transaction.create([{ driverId: ride.passengerId, rideId: ride._id, amount: -ride.fare, type: "ride_payment", status: "pending", description: `Fare held for cancelled ride ${ride._id}` }], { session });
+                ride.paymentStatus = "held";
+                ride.heldAmount = ride.fare;
+                await ride.save({ session });
+            });
+        } finally { await session.endSession(); }
+    }
+
     ride.rideStatus = "cancelled";
     ride.cancelledBy = userId;
     ride.cancellationReason = reason || "No reason provided";
     ride.cancelledAt = new Date();
+    ride.cancellationRequiresReview = startedCancellation;
+    if (startedCancellation) {
+        const supportCase = await SupportCase.create({ customerId: ride.passengerId, driverId: ride.driverId, rideId: ride._id, category: "cancellation", subject: "Passenger cancelled an in-progress ride", description: ride.cancellationReason, priority: "high", status: "open", createdBy: userId, escalated: true });
+        ride.supportCaseId = supportCase._id;
+    }
     await ride.save();
 
     // Notify the other party
@@ -716,25 +728,7 @@ const updateDriverLocation = async (driverId, latitude, longitude, heading, spee
 // ═══════════════════════════════════════════════════════════════════════════
 
 const expireStaleRequests = async () => {
-    const stale = await Ride.find({
-        rideStatus: { $in: ["requested", "searching"] },
-        expiresAt: { $lt: new Date() },
-    }).select("_id passengerId");
-    let expired = 0;
-    for (const item of stale) {
-        const ride = await Ride.findOneAndUpdate(
-            { _id: item._id, rideStatus: { $in: ["requested", "searching"] } },
-            { $set: { rideStatus: "expired", expiredAt: new Date() } },
-            { new: true }
-        );
-        if (!ride) continue;
-        expired += 1;
-        const passenger = await User.findById(ride.passengerId).select("phone email firstName");
-        if (passenger) {
-            await notifyUser(passenger, "Ride request expired", "No driver accepted before your request deadline. The request remains available in ride history.", "rideExpired", { rideId: ride._id, rideStatus: "expired" });
-        }
-    }
-    return expired;
+    return 0;
 };
 
 module.exports = {
