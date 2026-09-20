@@ -34,6 +34,7 @@ const normalizeOrigin = (value) => {
 };
 const allowedOrigins = new Set([
   "https://mota-admin-web-app.vercel.app",
+  "http://localhost:8081",
   ...(process.env.CORS_ALLOWED_ORIGINS || "").split(/[\n,]/),
 ].map(normalizeOrigin).filter(Boolean));
 app.use(cors({
