@@ -409,8 +409,12 @@ const requestStop = async (driverId, rideId) => {
 };
 
 const confirmStop = async (passengerId, rideId) => {
-    const ride = await Ride.findOne({ _id: rideId, passengerId, rideStatus: "stop_requested" });
-    if (!ride) throw new Error("No stop confirmation is pending.");
+    const ride = await Ride.findOne({ _id: rideId, passengerId });
+    if (!ride) throw new Error("Ride not found or you are not its passenger.");
+    // A retry can arrive after the first request has already completed. Return
+    // the current state instead of rejecting a successful confirmation.
+    if (["awaiting_payment", "completed"].includes(ride.rideStatus)) return ride;
+    if (ride.rideStatus !== "stop_requested") throw new Error(`The ride cannot be completed while its status is ${ride.rideStatus}. Wait for the driver to request the stop.`);
     ride.rideStatus = "awaiting_payment";
     ride.stopConfirmedAt = new Date();
     ride.actualDurationMin = Math.max(1, Math.round((Date.now() - new Date(ride.startedAt).getTime()) / 60000));
