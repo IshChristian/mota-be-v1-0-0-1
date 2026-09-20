@@ -77,7 +77,7 @@ const adjustDriverWallet = async (req, res) => {
     try {
         let result;
         await session.withTransaction(async () => {
-            const driver = await User.findOne({ _id: req.params.id, role: "driver" }).session(session); if (!driver) throw Object.assign(new Error("Driver not found"), { status: 404 });
+            const driver = await User.findById(req.params.id).session(session); if (!driver) throw Object.assign(new Error("User not found"), { status: 404 });
             let wallet = await Wallet.findOne({ driverId: driver._id }).session(session); if (!wallet) [wallet] = await Wallet.create([{ driverId: driver._id, balance: 0 }], { session });
             if (wallet.balance + amount < 0) throw Object.assign(new Error("Adjustment would make the wallet balance negative"), { status: 409 });
             wallet.balance += amount; await wallet.save({ session });
