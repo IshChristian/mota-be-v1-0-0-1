@@ -356,6 +356,12 @@ const driverArrived = async (driverId, rideId) => {
     if (!ride) throw new Error("No active ride found or you are not the assigned driver.");
     if (["arrived", "start_requested", "in_progress", "stop_requested", "awaiting_payment", "completed"].includes(ride.rideStatus)) return ride;
     if (!["accepted", "approaching"].includes(ride.rideStatus)) throw new Error(`Arrival cannot be confirmed while the ride status is ${ride.rideStatus}.`);
+    const driver = await User.findById(driverId).select("lastLocation");
+    const pickupLat = ride.pickup?.latitude ?? ride.pickup?.lat;
+    const pickupLng = ride.pickup?.longitude ?? ride.pickup?.lng;
+    if (!driver?.lastLocation?.latitude || !Number.isFinite(pickupLat) || !Number.isFinite(pickupLng)) throw new Error("A current driver GPS location is required to confirm arrival.");
+    const distanceKm = haversine(driver.lastLocation.latitude, driver.lastLocation.longitude, pickupLat, pickupLng);
+    if (distanceKm > 2) throw new Error(`You are ${distanceKm.toFixed(1)} km from the passenger. Arrival can be confirmed within 2 km.`);
 
     ride.rideStatus = "arrived";
     ride.arrivedAt = new Date();
@@ -734,6 +740,16 @@ const updateDriverLocation = async (driverId, latitude, longitude, heading, spee
         lastLocation: { latitude, longitude, heading, speed },
         lastLocationAt: new Date(),
     });
+    const ride = await Ride.findOne({ driverId, rideStatus: "approaching", approachAlertSentAt: null });
+    if (!ride) return;
+    const pickupLat = ride.pickup?.latitude ?? ride.pickup?.lat; const pickupLng = ride.pickup?.longitude ?? ride.pickup?.lng;
+    if (!Number.isFinite(pickupLat) || !Number.isFinite(pickupLng)) return;
+    const distanceKm = haversine(latitude, longitude, pickupLat, pickupLng);
+    if (distanceKm >= 2 && distanceKm <= 10) {
+        const passenger = await User.findById(ride.passengerId).select("phone email firstName");
+        await notifyUser(passenger, "Driver approaching", `Your MOTA driver is ${distanceKm.toFixed(1)} km from the pickup point. Track the live movement in the app.`, "driverApproaching", { rideId: ride._id, driverId, rideStatus: ride.rideStatus, distanceKm: Number(distanceKm.toFixed(1)) });
+        ride.approachAlertSentAt = new Date(); await ride.save();
+    }
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
