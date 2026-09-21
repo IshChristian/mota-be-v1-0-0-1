@@ -34,7 +34,6 @@ const normalizeOrigin = (value) => {
 };
 const allowedOrigins = new Set([
   "https://mota-admin-web-app.vercel.app",
-  "http://localhost:8081",
   ...(process.env.CORS_ALLOWED_ORIGINS || "").split(/[\n,]/),
 ].map(normalizeOrigin).filter(Boolean));
 app.use(cors({
@@ -116,6 +115,8 @@ const financeRoutes = require("./routes/financeRoutes");
 const rideEngineRoutes = require("./routes/rideEngineRoutes");
 const realtimeRoutes = require("./routes/realtimeRoutes");
 const fuelVoucherRoutes = require("./routes/fuelVoucherRoutes");
+const kycRoutes = require("./routes/kycRoutes");
+const driverFinanceRoutes = require("./routes/driverFinanceRoutes");
 
 // ─── API Routes ─────────────────────────────────────────
 // (Auth moved to new module below)
@@ -146,6 +147,8 @@ app.use("/api/rides", rideEngineRoutes);
 app.use("/api/maps", mapRoutes);
 app.use("/api/realtime", realtimeRoutes);
 app.use("/api/fuel-vouchers", fuelVoucherRoutes);
+app.use("/api/kyc", kycRoutes);
+app.use("/api/driver-finance", driverFinanceRoutes);
 
 // ─── Root Endpoint ──────────────────────────────────────
 app.get("/", (req, res) => {
