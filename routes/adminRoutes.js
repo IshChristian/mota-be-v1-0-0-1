@@ -3,10 +3,14 @@ const router = express.Router();
 const adminController = require("../controllers/adminController");
 const { protect, authorize } = require("../middleware/authMiddleware");
 const financialWriteGuard = require("../middleware/financialWriteGuard");
+const kycController = require("../controllers/kycController");
 
 // Require authentication and RBAC for all admin routes, forcing them to have "admin:access"
 router.use(protect);
 router.use(authorize("admin:access"));
+
+router.get("/kyc", authorize("kyc:view"), kycController.adminList);
+router.patch("/kyc/:type/:id/review", authorize("kyc:approve"), kycController.adminReview);
 
 /**
  * @swagger
