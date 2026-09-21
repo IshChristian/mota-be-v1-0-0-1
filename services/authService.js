@@ -1,5 +1,6 @@
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
 const speakeasy = require("speakeasy");
 const qrcode = require("qrcode");
 const User = require("../models/User");
@@ -7,7 +8,7 @@ const { sendEmail } = require("../services/notificationService");
 
 const generateToken = (user) => {
     return jwt.sign(
-        { id: user._id, role: user.role, phone: user.phone },
+        { id: user._id, role: user.role, phone: user.phone, tokenVersion: user.tokenVersion || 0 },
         process.env.JWT_SECRET,
         { expiresIn: "7d" }
     );
@@ -30,8 +31,11 @@ const sendVerificationEmail = async (user, otp) => {
 const sendPasswordResetEmail = async (user) => {
     if (!user.email) return false;
 
-    const token = jwt.sign({ id: user._id, action: "reset_password" }, process.env.JWT_SECRET, { expiresIn: "1h" });
-    const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5000'}/api/auth/reset-password?token=${token}`;
+    const token = crypto.randomBytes(32).toString("hex");
+    user.passwordResetTokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    user.passwordResetExpiresAt = new Date(Date.now() + 30 * 60 * 1000);
+    await user.save();
+    const resetUrl = `${process.env.MOBILE_DEEP_LINK || "mota://reset-password"}?token=${token}`;
 
     const html = `
         <h2>Reset Password</h2>

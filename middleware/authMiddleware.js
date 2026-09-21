@@ -18,9 +18,12 @@ const protect = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const user = await User.findById(decoded.id).select("-password -otpToken").populate("roleId", "name permissions");
+    const user = await User.findById(decoded.id).select("-password -otpToken +tokenVersion").populate("roleId", "name permissions");
     if (!user) {
       return res.status(401).json({ message: "Invalid token. User not found." });
+    }
+    if ((decoded.tokenVersion || 0) !== (user.tokenVersion || 0)) {
+      return res.status(401).json({ message: "Session has been revoked. Please login again." });
     }
 
     if (!user.isActive) {

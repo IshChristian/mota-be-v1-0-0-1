@@ -151,7 +151,9 @@ const login = async (req, res) => {
             ? { email: identifier }
             : { phone: identifier };
 
-        const user = await User.findOne(query).populate("roleId", "name permissions");
+        const user = await User.findOne(query)
+            .select("+tokenVersion")
+            .populate("roleId", "name permissions");
 
         if (!user || (!user.password && !user.googleId)) {
             return res.status(401).json({ message: "Invalid credentials" });
@@ -181,8 +183,8 @@ const login = async (req, res) => {
 };
 
 const logout = async (req, res) => {
-    // In stateless JWT, we simply tell client to clear token.
-    res.status(200).json({ message: "Logged out successfully. Clear your token." });
+    await User.findByIdAndUpdate(req.user.id, { $inc: { tokenVersion: 1 } });
+    res.status(200).json({ message: "Logged out successfully from all devices." });
 };
 
 const refreshToken = async (req, res) => {
@@ -247,13 +249,11 @@ const resendEmailOTP = async (req, res) => {
 
 const forgotPassword = async (req, res) => {
     try {
-        const { email } = req.body;
-        const user = await User.findOne({ email });
-
-        if (!user) return res.status(404).json({ message: "Account not found" });
-
-        await authService.sendPasswordResetEmail(user);
-        res.status(200).json({ message: "Password reset email sent" });
+        const email = String(req.body.email || "").trim().toLowerCase();
+        if (!email) return res.status(400).json({ message: "Email is required" });
+        const user = await User.findOne({ email }).select("+passwordResetTokenHash +passwordResetExpiresAt");
+        if (user) await authService.sendPasswordResetEmail(user);
+        res.status(200).json({ message: "If an account exists for that email, a password reset link has been sent." });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
     }
@@ -262,17 +262,22 @@ const forgotPassword = async (req, res) => {
 const resetPassword = async (req, res) => {
     try {
         const { token, newPassword } = req.body;
-
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        if (decoded.action !== "reset_password") throw new Error("Invalid token");
-
-        const user = await User.findById(decoded.id);
-        user.password = await bcrypt.hash(newPassword, 10);
+        if (!token || typeof newPassword !== "string" || newPassword.length < 10) {
+            return res.status(400).json({ message: "A valid token and password of at least 10 characters are required" });
+        }
+        const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+        const user = await User.findOne({ passwordResetTokenHash: tokenHash, passwordResetExpiresAt: { $gt: new Date() } })
+            .select("+passwordResetTokenHash +passwordResetExpiresAt +tokenVersion");
+        if (!user) return res.status(400).json({ message: "Invalid or expired reset request" });
+        user.password = await bcrypt.hash(newPassword, 12);
+        user.passwordResetTokenHash = undefined;
+        user.passwordResetExpiresAt = undefined;
+        user.tokenVersion = (user.tokenVersion || 0) + 1;
         await user.save();
 
         res.status(200).json({ message: "Password successfully reset" });
     } catch (error) {
-        res.status(400).json({ message: "Invalid or expired request", error: error.message });
+        res.status(400).json({ message: "Invalid or expired request" });
     }
 };
 
@@ -293,7 +298,7 @@ const verify2FA = async (req, res) => {
 
         // If coming from login, we might not have req.user yet, so we pass userId
         const targetUserId = req.user ? req.user.id : userId;
-        const user = await User.findById(targetUserId);
+        const user = await User.findById(targetUserId).select("+tokenVersion");
 
         const isValid = authService.verify2FA(user.twoFactorSecret, token);
         if (!isValid) return res.status(401).json({ message: "Invalid 2FA code" });

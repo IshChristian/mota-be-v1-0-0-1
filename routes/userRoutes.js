@@ -68,6 +68,10 @@ router.put("/me", userController.updateMe);
  */
 router.post("/avatar", uploadService.uploadMiddleware.single("avatar"), userController.uploadAvatar);
 
+router.post("/me/change-password", userController.changePassword);
+router.get("/me/export", userController.exportMyData);
+router.post("/me/contact-change/request", userController.requestContactChange);
+router.post("/me/contact-change/verify", userController.verifyContactChange);
 router.delete("/account", userController.deleteAccount);
 
 // Admin / elevated operation
