@@ -15,7 +15,7 @@ const auditLogSchema = new mongoose.Schema({
             "savings_deposit", "savings_withdrawal", "savings_reward",
             "admin_freeze", "admin_tier_adjust", "admin_reserve_update",
             "consent_captured", "consent_revoked",
-            "kyc_verified", "kyc_upgraded",
+            "kyc_submitted", "kyc_reviewed", "kyc_verified", "kyc_upgraded",
             "risk_score_calculated",
             "migration_stage_advanced",
             "account_blocked", "account_unblocked",

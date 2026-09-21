@@ -54,8 +54,9 @@ const createProfile = async (req, res) => {
 
         await profile.save();
 
-        // Update KYC level when profile is submitted
-        await User.findByIdAndUpdate(driverId, { kycLevel: "full" });
+        // Vehicle/profile creation is not KYC approval. Driver KYC is reviewed
+        // independently through /api/kyc/me and the admin KYC workspace.
+        await User.findByIdAndUpdate(driverId, { kycLevel: "basic" });
 
         res.status(201).json({
             message: "Driver profile created successfully",
