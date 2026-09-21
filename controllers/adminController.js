@@ -18,6 +18,8 @@ const FineRequest = require("../models/FineRequest");
 const Wallet = require("../models/Wallet");
 const AuditLog = require("../models/AuditLog");
 const AdminWalletAdjustment = require("../models/AdminWalletAdjustment");
+const PassengerKyc = require("../models/PassengerKyc");
+const DriverKyc = require("../models/DriverKyc");
 const mongoose = require("mongoose");
 const notificationService = require("../services/notificationService");
 const { sendSMS } = require("../services/smsService");
@@ -45,15 +47,18 @@ const getUserOverview = async (req, res) => {
         const id = new mongoose.Types.ObjectId(req.params.id);
         const user = await User.findById(id).select("-password -otpToken -emailOtpToken -twoFactorSecret -pushTokens").populate("roleId", "name permissions").populate("avatarId", "url format");
         if (!user) return res.status(404).json({ message: "User not found" });
-        const [driverProfile, uploads, rides, transactions, loans, fines, fineRequests, wallet, auditLogs] = await Promise.all([
-            DriverProfile.findOne({ driverId: id }), Upload.find({ userId: id }).sort({ createdAt: -1 }),
+        const [driverProfile, passengerKyc, driverKyc, uploads, rides, transactions, loans, fines, fineRequests, wallet, auditLogs] = await Promise.all([
+            DriverProfile.findOne({ driverId: id }),
+            PassengerKyc.findOne({ userId: id }),
+            DriverKyc.findOne({ userId: id }),
+            Upload.find({ userId: id }).sort({ createdAt: -1 }),
             Ride.find({ $or: [{ passengerId: id }, { driverId: id }] }).populate("passengerId driverId", "firstName lastName phone").sort({ createdAt: -1 }).limit(100),
             Transaction.find({ $or: [{ userId: id }, { driverId: id }, { agentId: id }] }).sort({ createdAt: -1 }).limit(100),
             Loan.find({ driverId: id }).sort({ createdAt: -1 }).limit(100), Fine.find({ driverId: id }).sort({ createdAt: -1 }).limit(100),
             FineRequest.find({ driverId: id }).sort({ createdAt: -1 }).limit(100), Wallet.findOne({ driverId: id }),
             AuditLog.find({ $or: [{ actorId: id }, { targetId: id }] }).populate("actorId", "firstName lastName role").sort({ timestamp: -1 }).limit(100),
         ]);
-        res.json({ data: { user, driverProfile, uploads, rides, transactions, loans, fines, fineRequests, wallet, auditLogs } });
+        res.json({ data: { user, driverProfile, passengerKyc, driverKyc, uploads, rides, transactions, loans, fines, fineRequests, wallet, auditLogs } });
     } catch (error) { res.status(500).json({ message: "Server error", error: error.message }); }
 };
 
