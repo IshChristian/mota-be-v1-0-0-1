@@ -54,6 +54,12 @@ const userSchema = new mongoose.Schema({
         default: [],
         select: false,
     },
+    notificationPreferences: {
+        rides: { type: Boolean, default: true },
+        wallet: { type: Boolean, default: true },
+        promotions: { type: Boolean, default: false },
+        security: { type: Boolean, default: true },
+    },
     // 2FA Fields
     twoFactorEnabled: { type: Boolean, default: false },
     twoFactorSecret: { type: String },

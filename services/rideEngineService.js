@@ -3,6 +3,7 @@ const User = require("../models/User");
 const Transaction = require("../models/Transaction");
 const Wallet = require("../models/Wallet");
 const SupportCase = require("../models/SupportCase");
+const DriverKyc = require("../models/DriverKyc");
 const walletService = require("./walletService");
 const paymentService = require("./paymentService");
 const auditService = require("./auditService");
@@ -713,6 +714,12 @@ const setDriverAvailability = async (driverId, isOnline) => {
     const driver = await User.findById(driverId);
     if (!driver) throw new Error("Driver not found.");
     if (driver.role !== "driver") throw new Error("Only drivers can toggle availability.");
+    if (isOnline) {
+        const kyc = await DriverKyc.findOne({ userId: driverId, status: "approved" });
+        if (!kyc) throw new Error("Approved driver documents are required before going online.");
+        const expiryDates = [kyc.drivingLicenseExpiresAt, kyc.transportPermitExpiresAt, kyc.insuranceExpiresAt, kyc.vehicleRegistrationExpiresAt];
+        if (expiryDates.some((date) => !date || date <= new Date())) throw new Error("A required driver document is missing an expiry date or has expired. Renew it before going online.");
+    }
 
     // Cannot go offline while in an active ride
     if (!isOnline) {

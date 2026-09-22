@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const Session = require("../models/Session");
 const { STAFF_ROLE_TEMPLATES } = require("../constants/staffRoles");
 
 /**
@@ -24,6 +25,14 @@ const protect = async (req, res, next) => {
     }
     if ((decoded.tokenVersion || 0) !== (user.tokenVersion || 0)) {
       return res.status(401).json({ message: "Session has been revoked. Please login again." });
+    }
+    if (decoded.sid) {
+      const session = await Session.findOne({ userId: user._id, sessionId: decoded.sid, revokedAt: null, expiresAt: { $gt: new Date() } });
+      if (!session) return res.status(401).json({ message: "Session has expired or been revoked." });
+      req.sessionId = decoded.sid;
+      if (!session.lastSeenAt || Date.now() - session.lastSeenAt.getTime() > 60000) {
+        Session.updateOne({ _id: session._id }, { $set: { lastSeenAt: new Date() } }).catch(() => {});
+      }
     }
 
     if (!user.isActive) {

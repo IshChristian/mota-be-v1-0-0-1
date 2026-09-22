@@ -117,6 +117,7 @@ const realtimeRoutes = require("./routes/realtimeRoutes");
 const fuelVoucherRoutes = require("./routes/fuelVoucherRoutes");
 const kycRoutes = require("./routes/kycRoutes");
 const driverFinanceRoutes = require("./routes/driverFinanceRoutes");
+const productionRoutes = require("./routes/productionRoutes");
 
 // ─── API Routes ─────────────────────────────────────────
 // (Auth moved to new module below)
@@ -149,6 +150,7 @@ app.use("/api/realtime", realtimeRoutes);
 app.use("/api/fuel-vouchers", fuelVoucherRoutes);
 app.use("/api/kyc", kycRoutes);
 app.use("/api/driver-finance", driverFinanceRoutes);
+app.use("/api/production", productionRoutes);
 
 // ─── Root Endpoint ──────────────────────────────────────
 app.get("/", (req, res) => {
