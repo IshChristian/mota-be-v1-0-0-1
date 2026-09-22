@@ -6,9 +6,9 @@ const qrcode = require("qrcode");
 const User = require("../models/User");
 const { sendEmail } = require("../services/notificationService");
 
-const generateToken = (user) => {
+const generateToken = (user, sessionId) => {
     return jwt.sign(
-        { id: user._id, role: user.role, phone: user.phone, tokenVersion: user.tokenVersion || 0 },
+        { id: user._id, role: user.role, phone: user.phone, tokenVersion: user.tokenVersion || 0, ...(sessionId ? { sid: sessionId } : {}) },
         process.env.JWT_SECRET,
         { expiresIn: "7d" }
     );

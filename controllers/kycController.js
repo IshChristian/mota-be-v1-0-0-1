@@ -4,7 +4,7 @@ const User = require("../models/User");
 const auditService = require("../services/auditService");
 
 const passengerFields = ["nationalIdNumber", "nationalIdFront", "nationalIdBack", "selfie", "dateOfBirth", "residentialAddress", "emergencyContactName", "emergencyContactPhone"];
-const driverFields = ["nationalIdNumber", "nationalIdFront", "nationalIdBack", "selfie", "drivingLicenseNumber", "drivingLicenseDocument", "transportPermitNumber", "transportPermitDocument", "insuranceDocument", "vehicleRegistrationDocument", "plateNumber", "cooperativeName"];
+const driverFields = ["nationalIdNumber", "nationalIdFront", "nationalIdBack", "selfie", "drivingLicenseNumber", "drivingLicenseDocument", "drivingLicenseExpiresAt", "transportPermitNumber", "transportPermitDocument", "transportPermitExpiresAt", "insuranceDocument", "insuranceExpiresAt", "vehicleRegistrationDocument", "vehicleRegistrationExpiresAt", "plateNumber", "cooperativeName"];
 const pick = (source, fields) => fields.reduce((out, key) => { if (source[key] !== undefined) out[key] = source[key]; return out; }, {});
 const isPassenger = (role) => role === "client" || role === "passenger";
 
@@ -25,6 +25,10 @@ async function submitMine(req, res) {
     const payload = pick(req.body, fields);
     const missing = fields.filter((field) => !["dateOfBirth", "residentialAddress", "emergencyContactName", "emergencyContactPhone", "cooperativeName"].includes(field) && !payload[field]);
     if (missing.length) return res.status(400).json({ message: `Missing required KYC fields: ${missing.join(", ")}` });
+    if (driver) {
+      const invalidExpiry = ["drivingLicenseExpiresAt", "transportPermitExpiresAt", "insuranceExpiresAt", "vehicleRegistrationExpiresAt"].find((field) => !Number.isFinite(Date.parse(payload[field])) || Date.parse(payload[field]) <= Date.now());
+      if (invalidExpiry) return res.status(400).json({ message: `${invalidExpiry} must be a future date` });
+    }
     const previous = await Model.findOne({ userId: req.user.id });
     if (previous?.status === "approved") return res.status(409).json({ message: "Approved KYC cannot be replaced; contact support for a reviewed correction" });
     const record = await Model.findOneAndUpdate(

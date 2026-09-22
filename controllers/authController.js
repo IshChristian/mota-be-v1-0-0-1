@@ -5,6 +5,7 @@ const User = require("../models/User");
 const Referral = require("../models/Referral");
 const { sendSMS } = require("../services/smsService");
 const authService = require("../services/authService");
+const Session = require("../models/Session");
 const { generateOTPToken } = require("../utils/jwt");
 const paymentService = require("../services/paymentService");
 const Transaction = require("../models/Transaction");
@@ -175,7 +176,9 @@ const login = async (req, res) => {
             });
         }
 
-        const token = authService.generateToken(user);
+        const sessionId = crypto.randomUUID();
+        await Session.create({ userId: user._id, sessionId, userAgent: req.get('user-agent'), ipAddress: req.ip, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) });
+        const token = authService.generateToken(user, sessionId);
         res.status(200).json({ message: "Login success", token, user: { id: user._id, firstName: user.firstName, lastName: user.lastName, role: user.role, permissions: user.roleId?.permissions || [] } });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
@@ -184,12 +187,13 @@ const login = async (req, res) => {
 
 const logout = async (req, res) => {
     await User.findByIdAndUpdate(req.user.id, { $inc: { tokenVersion: 1 } });
+    await Session.updateMany({ userId: req.user.id, revokedAt: null }, { $set: { revokedAt: new Date() } });
     res.status(200).json({ message: "Logged out successfully from all devices." });
 };
 
 const refreshToken = async (req, res) => {
     // Basic rotation assuming valid current token
-    const token = authService.generateToken(req.user);
+    const token = authService.generateToken(req.user, req.sessionId);
     res.status(200).json({ token });
 };
 
