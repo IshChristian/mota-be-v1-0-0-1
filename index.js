@@ -47,7 +47,14 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key"],
   optionsSuccessStatus: 204,
 }));
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({
+  limit: "1mb",
+  verify(req, _res, buffer) {
+    // Paypack signs the exact bytes it sends. Keep them only for the webhook
+    // verifier; JSON parsing alone cannot reproduce the signed byte stream.
+    if (req.originalUrl?.startsWith("/api/payment/webhook")) req.rawBody = Buffer.from(buffer);
+  },
+}));
 app.use(morgan("dev"));
 app.use("/api", rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: "draft-8", legacyHeaders: false }));
 app.use("/api/auth", rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: "draft-8", legacyHeaders: false }));
@@ -133,8 +140,10 @@ app.use("/api/driver", driverRoutes);
 app.use("/api/ride", rideRoutes);
 app.use("/api/agent", agentRoutes);
 app.use("/api/ussd", ussdRoutes);
-app.use("/api/wallet", financialWriteGuard, walletRoutes);
-app.use("/api/payment", financialWriteGuard, paymentRoutes);
+// Wallet cash-in/out uses idempotency keys, MongoDB transactions, held funds,
+// and webhook settlement. Other financial modules remain behind the release gate.
+app.use("/api/wallet", walletRoutes);
+app.use("/api/payment", paymentRoutes);
 app.use("/api/system-settings", systemSettingRoutes);
 app.use("/api/loans", financialWriteGuard, loanRoutes);
 app.use("/api/lookup", lookupRoutes);

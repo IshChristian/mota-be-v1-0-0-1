@@ -222,6 +222,7 @@ const getWalletSummary = async (driverId) => {
     return {
         // ── Core balance ────────────────────────────────────────────
         balance: wallet.balance,
+        heldBalance: wallet.heldBalance || 0,
         fuelCredits: wallet.fuelCredits || 0,
 
         // ── Today ───────────────────────────────────────────────────
@@ -329,6 +330,31 @@ const debitWallet = async (driverId, amount, type, meta = {}) => {
     });
 
     return wallet;
+};
+
+/**
+ * Idempotently settle a confirmed, non-ride Paypack cash-in.
+ * The pending transaction status and wallet credit change in one MongoDB
+ * transaction so webhook retries cannot credit the wallet twice.
+ */
+const settleCashInTransaction = async (transactionId, payload) => {
+    let credited = false;
+    let wallet = null;
+    await mongoose.connection.transaction(async (session) => {
+        const tx = await Transaction.findOneAndUpdate(
+            { _id: transactionId, type: "cash_in", status: "pending", rideId: null },
+            { $set: { status: "successful", paypackEvent: payload } },
+            { new: true, session },
+        );
+        if (!tx) return;
+        wallet = await Wallet.findOneAndUpdate(
+            { driverId: tx.driverId },
+            { $inc: { balance: Math.abs(tx.amount) }, $setOnInsert: { driverId: tx.driverId } },
+            { new: true, upsert: true, session, setDefaultsOnInsert: true },
+        );
+        credited = true;
+    });
+    return { credited, wallet };
 };
 
 /**
@@ -517,6 +543,7 @@ module.exports = {
     getWalletSummary,
     creditWallet,
     debitWallet,
+    settleCashInTransaction,
     calculateCommission,
     creditRidePayment,
     agentCashIn,

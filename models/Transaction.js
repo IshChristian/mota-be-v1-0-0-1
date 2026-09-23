@@ -69,6 +69,15 @@ const transactionSchema = new mongoose.Schema({
         type: String,
         trim: true,
     },
+    idempotencyKey: {
+        type: String,
+        trim: true,
+    },
+    batchId: {
+        type: String,
+        trim: true,
+        index: true,
+    },
     senderPhone: {
         type: String,
         trim: true,
@@ -88,6 +97,7 @@ const transactionSchema = new mongoose.Schema({
 });
 
 transactionSchema.index({ driverId: 1, createdAt: -1 });
+transactionSchema.index({ idempotencyKey: 1 }, { unique: true, sparse: true });
 
 const Transaction = mongoose.model("Transaction", transactionSchema);
 

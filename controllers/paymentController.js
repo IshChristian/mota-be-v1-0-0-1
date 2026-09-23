@@ -8,6 +8,7 @@ const loanService = require("../services/loanService");
 const { sendSMS } = require("../services/smsService");
 const { sendEmail } = require("../services/notificationService");
 const EventEmitter = require("events");
+const withdrawalService = require("../services/withdrawalService");
 
 // ── In-process SSE bus ─────────────────────────────────────────────────────
 // Emits  "tx:<paypackRef>"  with the updated transaction document
@@ -86,6 +87,19 @@ const handleWebhook = async (req, res) => {
         }
 
         const { ref, status, amount, kind } = payload;
+        const normalizedStatus = String(status || "").toLowerCase();
+        if (!["successful", "failed", "pending"].includes(normalizedStatus)) {
+            return res.status(400).json({ message: "Unsupported Paypack event status." });
+        }
+
+        // Cash-out batches have their own held-funds settlement. Handle them
+        // before the generic transaction lookup because several individual
+        // withdrawal records can share one Paypack reference.
+        const cashOutSettlement = await withdrawalService.settleWebhook(ref, normalizedStatus, kind, amount, payload);
+        if (cashOutSettlement.handled) {
+            txBus.emit(`tx:${ref}`);
+            return res.status(200).json({ message: "Cash-out webhook processed" });
+        }
 
         // Find pending transaction by paypackRef
         const tx = await Transaction.findOne({ paypackRef: ref, status: "pending" });
@@ -94,7 +108,7 @@ const handleWebhook = async (req, res) => {
             // It might be a registration payment (which doesn't create a Transaction record yet)
             const user = await User.findOne({ registrationPaypackRef: ref });
             if (user && !user.registrationPaid) {
-                if (status === "successful" || status === "successful") {
+                if (normalizedStatus === "successful") {
                     user.registrationPaid = true;
                     user.registrationStatus = "pending";
                     if (user.role === "agent") {
@@ -110,7 +124,27 @@ const handleWebhook = async (req, res) => {
             return res.status(200).json({ message: "Webhook received" });
         }
 
-        if (status === "successful" || status === "successful") {
+        if (normalizedStatus === "successful") {
+            // A direct wallet cash-in must credit the wallet and change the
+            // pending ledger row atomically. Webhook retries become no-ops.
+            if (tx.type === "cash_in" && !tx.rideId) {
+                if (String(kind).toUpperCase() !== "CASHIN" || Number(amount) !== Math.abs(tx.amount)) {
+                    return res.status(409).json({ message: "Paypack event does not match the pending cash-in." });
+                }
+                const settlement = await walletService.settleCashInTransaction(tx._id, payload);
+                txBus.emit(`tx:${ref}`);
+                if (settlement.credited) {
+                    const user = await User.findById(tx.driverId);
+                    if (user) {
+                        await sendSMS(
+                            user.phone,
+                            `MOTA Wallet\nCash-in confirmed.\nAmount: ${Math.abs(tx.amount)} RWF\nNew Balance: ${settlement.wallet?.balance || 0} RWF`,
+                            "cash_in",
+                        );
+                    }
+                }
+                return res.status(200).json({ message: "Cash-in webhook processed" });
+            }
             tx.status = "successful";
             tx.paypackEvent = payload;
             await tx.save();
@@ -216,25 +250,9 @@ const handleWebhook = async (req, res) => {
                         console.error("Loan auto-deduction error:", loanErr.message);
                     }
 
-                } else if (tx.type === "cash_in") {
-                    // Pure wallet deposit → credit full amount
-                    await walletService.creditWallet(
-                        tx.driverId.toString(),
-                        Math.abs(amount),
-                        "cash_in",
-                        { paypackRef: ref, description: `Wallet Cash-in via Paypack. ${amount} RWF` }
-                    );
-                    const wallet = await Wallet.findOne({ driverId: tx.driverId });
-                    if (user) {
-                        await sendSMS(
-                            user.phone,
-                            `MOTA Wallet\nCash-in confirmed.\nAmount: ${amount} RWF\nNew Balance: ${wallet?.balance || 0} RWF`,
-                            "cash_in"
-                        );
-                    }
                 }
             }
-        } else if (status === "failed") {
+        } else if (normalizedStatus === "failed") {
             tx.status = "failed";
             tx.paypackEvent = payload;
             await tx.save();

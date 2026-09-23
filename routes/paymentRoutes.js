@@ -3,6 +3,8 @@ const router = express.Router();
 const paymentController = require("../controllers/paymentController");
 const { protect: authMiddleware } = require("../middleware/authMiddleware");
 const roleMiddleware = require("../middleware/roleMiddleware");
+const financialWriteGuard = require("../middleware/financialWriteGuard");
+const paypackWebhookAuth = require("../middleware/paypackWebhookAuth");
 
 /**
  * @swagger
@@ -46,7 +48,7 @@ const roleMiddleware = require("../middleware/roleMiddleware");
  *       502:
  *         description: Payment gateway error
  */
-router.post("/request", authMiddleware, roleMiddleware("driver"), paymentController.requestPayment);
+router.post("/request", authMiddleware, roleMiddleware("driver"), financialWriteGuard, paymentController.requestPayment);
 
 /**
  * @swagger
@@ -73,7 +75,7 @@ router.post("/request", authMiddleware, roleMiddleware("driver"), paymentControl
  *       200:
  *         description: Webhook processed
  */
-router.post("/webhook", paymentController.handleWebhook);
+router.post("/webhook", paypackWebhookAuth, paymentController.handleWebhook);
 
 /**
  * @swagger

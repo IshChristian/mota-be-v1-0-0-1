@@ -191,6 +191,7 @@ router.get("/summary", walletController.getSummary);
  *         description: Paginated transaction list
  */
 router.get("/transactions", walletController.getTransactions);
+router.get("/withdrawals", walletController.getWithdrawals);
 
 /**
  * @swagger

@@ -4,6 +4,8 @@ const walletService = require("../services/walletService");
 const paymentService = require("../services/paymentService");
 const User = require("../models/User");
 const { sendSMS } = require("../services/smsService");
+const WithdrawalRequest = require("../models/WithdrawalRequest");
+const withdrawalService = require("../services/withdrawalService");
 
 /**
  * GET /api/wallet/balance
@@ -46,42 +48,80 @@ const cashIn = async (req, res) => {
     try {
         const driverId = req.user.id;
         const { amount, phone } = req.body;
+        const idempotencyKey = req.get("Idempotency-Key");
 
-        if (!amount || amount <= 0) {
-            return res.status(400).json({ message: "Valid amount is required" });
+        if (!Number.isInteger(Number(amount)) || Number(amount) < 100) {
+            return res.status(400).json({ message: "Cash-in amount must be a whole number of at least 100 RWF." });
+        }
+        if (!idempotencyKey || idempotencyKey.length < 12 || idempotencyKey.length > 32) {
+            return res.status(400).json({ message: "A valid Idempotency-Key header is required." });
         }
 
         const user = await User.findById(driverId);
+        if (!user) return res.status(404).json({ message: "User not found." });
         const recipientPhone = phone || user.phone;
-
-        const result = await paymentService.requestCashIn(
-            recipientPhone,
-            amount,
-            process.env.PAYPACK_ENV || "development"
-        );
-
-        if (!result.success) {
-            return res.status(502).json({ message: "Payment gateway error", error: result.error });
+        const existing = await Transaction.findOne({ idempotencyKey, driverId, type: "cash_in" });
+        if (existing) {
+            return res.status(existing.paypackRef ? 200 : 409).json({
+                message: existing.paypackRef
+                    ? "Cash-in request already initiated."
+                    : "The previous cash-in attempt did not reach Paypack. Submit again to create a new request.",
+                ref: existing.paypackRef,
+                amount: existing.amount,
+                status: existing.status,
+                replayed: true,
+            });
         }
 
-        // Record pending transaction
-        await Transaction.create({
+        const pending = await Transaction.create({
             driverId,
-            amount,
+            amount: Number(amount),
             type: "cash_in",
             status: "pending",
-            paypackRef: result.data?.ref,
+            idempotencyKey,
             senderPhone: recipientPhone,
             receiverPhone: "MOTA",
             description: `Digital cash-in request. Amount: ${amount} RWF`,
         });
 
-        res.status(200).json({
+        const result = await paymentService.requestCashIn(
+            recipientPhone,
+            Number(amount),
+            process.env.PAYPACK_ENV || "development"
+        );
+
+        if (!result.success) {
+            pending.status = "failed";
+            pending.description = `Cash-in initiation failed. Amount: ${amount} RWF`;
+            await pending.save();
+            return res.status(502).json({ message: "Payment gateway error", error: result.error });
+        }
+
+        pending.paypackRef = result.data?.ref;
+        await pending.save();
+
+        return res.status(200).json({
             message: "Cash-in request initiated. Complete payment on your phone.",
             ref: result.data?.ref,
             amount,
         });
     } catch (error) {
+        if (error?.code === 11000) {
+            const existing = await Transaction.findOne({
+                idempotencyKey: req.get("Idempotency-Key"),
+                driverId: req.user.id,
+                type: "cash_in",
+            });
+            if (existing) {
+                return res.status(200).json({
+                    message: "Cash-in request already initiated.",
+                    ref: existing.paypackRef,
+                    amount: existing.amount,
+                    status: existing.status,
+                    replayed: true,
+                });
+            }
+        }
         res.status(500).json({ message: "Server error", error: error.message });
     }
 };
@@ -94,9 +134,10 @@ const requestCashOut = async (req, res) => {
     try {
         const driverId = req.user.id;
         const { amount } = req.body;
+        const idempotencyKey = req.get("Idempotency-Key");
 
-        if (!amount || amount <= 0) {
-            return res.status(400).json({ message: "Valid amount is required" });
+        if (!idempotencyKey || idempotencyKey.length < 12 || idempotencyKey.length > 32) {
+            return res.status(400).json({ message: "A valid Idempotency-Key header is required." });
         }
 
         const user = await User.findById(driverId);
@@ -104,48 +145,40 @@ const requestCashOut = async (req, res) => {
             return res.status(400).json({ message: "Driver phone number not found." });
         }
 
-        // Process cash-out with fee deduction
-        let cashOutResult;
-        try {
-            cashOutResult = await walletService.processCashOut(driverId.toString(), amount);
-        } catch (err) {
-            return res.status(400).json({ message: err.message });
-        }
-
-        // Paypack Cash Out to driver's phone
-        const result = await paymentService.requestCashOut(
-            user.phone,
+        const result = await withdrawalService.requestWithdrawal({
+            driverId: driverId.toString(),
             amount,
-            process.env.PAYPACK_ENV || "development"
-        );
-
-        if (result.success) {
-            // Update transaction with paypack info
-            if (cashOutResult.transactionId) {
-                await Transaction.findByIdAndUpdate(cashOutResult.transactionId, {
-                    paypackRef: result.data?.ref,
-                    senderPhone: "MOTA",
-                    receiverPhone: user.phone
-                });
-            }
-
-            return res.status(200).json({
-                message: `Success! ${amount} RWF has been sent to your MoMo account (${user.phone}). Fee: ${cashOutResult.fee} RWF.`,
-                amount,
-                fee: cashOutResult.fee,
-                totalDeducted: cashOutResult.totalDeduction,
-                newBalance: cashOutResult.wallet.balance,
-            });
-        } else {
-            // Rollback on failure
-            await walletService.creditWallet(driverId.toString(), cashOutResult.totalDeduction, "cash_out_refund", {
-                description: "Refund for failed cash-out (includes fee)"
-            });
-            return res.status(502).json({ message: "Gateway error. Cash-out failed. Your balance is restored." });
-        }
+            phone: user.phone,
+            idempotencyKey,
+        });
+        const queued = result.dispatch.status === "queued";
+        return res.status(202).json({
+            message: queued
+                ? `${amount} RWF is reserved and queued. Paypack payout starts when this account's queued withdrawals reach ${withdrawalService.PAYPACK_MINIMUM} RWF.`
+                : `Withdrawal reserved. Paypack payout of ${result.dispatch.payoutAmount} RWF is pending.`,
+            data: {
+                requestId: result.request._id,
+                requestedAmount: result.request.amount,
+                fee: result.request.fee,
+                status: result.dispatch.status,
+                queuedTotal: result.dispatch.queuedTotal,
+                remainingToDispatch: result.dispatch.remainingToDispatch,
+                paypackRef: result.dispatch.paypackRef,
+                replayed: result.replayed,
+            },
+        });
     } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+        const clientError = /amount|balance|idempotency|Paypack|queue changed/i.test(error.message);
+        res.status(clientError ? 400 : 500).json({
+            message: clientError ? error.message : "Server error",
+            ...(clientError ? {} : { error: error.message }),
+        });
     }
+};
+
+const getWithdrawals = async (req, res) => {
+    const items = await WithdrawalRequest.find({ driverId: req.user.id }).sort({ createdAt: -1 }).limit(50);
+    res.status(200).json({ data: items, paypackMinimum: withdrawalService.PAYPACK_MINIMUM });
 };
 
 /**
@@ -187,6 +220,6 @@ module.exports = {
     getSummary,
     cashIn,
     requestCashOut,
+    getWithdrawals,
     getTransactions,
 };
-
