@@ -1,5 +1,6 @@
 const rideEngineService = require("../services/rideEngineService");
 const Ride = require("../models/Ride");
+const DriverProfile = require("../models/DriverProfile");
 
 // ── PASSENGER ENDPOINTS ────────────────────────────────────────────────
 
@@ -233,29 +234,64 @@ const reportRide = async (req, res) => {
 const getRideById = async (req, res) => {
     try {
         const ride = await Ride.findById(req.params.id)
-            .populate("driverId", "firstName lastName phone lastLocation lastLocationAt")
-            .populate("passengerId", "firstName lastName phone");
+            .populate("driverId", "firstName lastName phone avatarUrl lastLocation lastLocationAt")
+            .populate("passengerId", "firstName lastName phone avatarUrl");
 
         if (!ride) return res.status(404).json({ status: "error", message: "Ride not found" });
-        
-        // Map to exact spec structure
+
+        const userId = req.user.id.toString();
+        const passengerId = ride.passengerId?._id?.toString();
+        const driverId = ride.driverId?._id?.toString();
+        const isPassenger = passengerId === userId;
+        const isAssignedDriver = driverId === userId;
+        const isNotifiedDriver = ride.notifiedDrivers.some((id) => id.toString() === userId);
+        if (!isPassenger && !isAssignedDriver && !isNotifiedDriver) {
+            return res.status(403).json({ status: "error", message: "Not authorized to view this ride." });
+        }
+
+        const driverProfile = ride.driverId
+            ? await DriverProfile.findOne({ driverId: ride.driverId._id }).select("plateNumber cooperativeName")
+            : null;
         const mappedRide = {
             _id: ride._id,
             status: ride.rideStatus,
+            rideStatus: ride.rideStatus,
             offeredFare: ride.offeredFare,
+            fare: ride.fare,
+            minimumFare: ride.minimumFare,
+            maximumFare: ride.maximumFare,
             passengers: ride.passengers,
+            paymentMethod: ride.paymentMethod,
+            paymentStatus: ride.paymentStatus,
+            estimatedDistanceKm: ride.estimatedDistanceKm,
+            estimatedDurationMin: ride.estimatedDurationMin,
             scheduledDate: ride.scheduledDate,
             scheduledTime: ride.scheduledTime,
             pickup: ride.pickup,
             destination: ride.destination,
+            requestedAt: ride.requestedAt,
+            acceptedAt: ride.acceptedAt,
+            arrivedAt: ride.arrivedAt,
+            startedAt: ride.startedAt,
+            completedAt: ride.completedAt,
+            cancelledAt: ride.cancelledAt,
+            cancellationReason: ride.cancellationReason,
+            passengerRating: ride.passengerRating,
+            passengerComment: ride.passengerComment,
+            driverRating: ride.driverRating,
+            driverComment: ride.driverComment,
+            createdAt: ride.createdAt,
         };
 
         if (ride.driverId) {
             mappedRide.driver = {
                 _id: ride.driverId._id,
                 firstName: ride.driverId.firstName,
-                phone: ride.driverId.phone,
-                plate: ride.driverId.plateNumber || "N/A",
+                lastName: ride.driverId.lastName,
+                phone: isPassenger || isAssignedDriver ? ride.driverId.phone : undefined,
+                avatarUrl: ride.driverId.avatarUrl,
+                plate: driverProfile?.plateNumber || "N/A",
+                cooperativeName: driverProfile?.cooperativeName,
                 lastLocation: ride.driverId.lastLocation
             };
         }
@@ -264,7 +300,9 @@ const getRideById = async (req, res) => {
             mappedRide.passenger = {
                 _id: ride.passengerId._id,
                 firstName: ride.passengerId.firstName,
-                phone: ride.passengerId.phone
+                lastName: ride.passengerId.lastName,
+                avatarUrl: ride.passengerId.avatarUrl,
+                phone: isPassenger || isAssignedDriver ? ride.passengerId.phone : undefined,
             };
         }
 
