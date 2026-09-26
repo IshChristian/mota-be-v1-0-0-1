@@ -50,7 +50,15 @@ const sendPushNotification = async (userId, title, body, data = {}) => {
     const tokens = (user?.pushTokens || []).map((item) => item.token);
     if (!tokens.length) return { sent: 0 };
 
-    const messages = tokens.map((to) => ({ to, sound: "default", title, body, data }));
+    const messages = tokens.map((to) => ({
+        to,
+        sound: "default",
+        channelId: data.event === "rideRequest" ? "rides" : "default",
+        priority: data.event === "rideRequest" ? "high" : "default",
+        title,
+        body,
+        data,
+    }));
     const response = await fetch("https://exp.host/--/api/v2/push/send", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
