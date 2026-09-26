@@ -119,8 +119,8 @@ router.post("/register-driver", async (req, res) => {
         await Referral.create({
             referrerId: agentId,
             referredUserId: newUser._id,
-            reward: 500,
-            status: "successful",
+            reward: 3000,
+            status: "pending",
         });
 
         // An agent can start registration; KYC and activation require the normal review flow.
