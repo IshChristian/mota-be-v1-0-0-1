@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const User = require("../models/User");
 const DriverProfile = require("../models/DriverProfile");
 const Referral = require("../models/Referral");
+const SupportCase = require("../models/SupportCase");
 const { protect: authMiddleware } = require("../middleware/authMiddleware");
 const roleMiddleware = require("../middleware/roleMiddleware");
 const { sendSMS } = require("../services/smsService");
@@ -108,7 +109,8 @@ router.post("/register-driver", async (req, res) => {
             nationalId,
             role: "driver",
             referralCode,
-            isVerified: true,
+            isVerified: false,
+            registrationStatus: "pending",
         });
 
         await newUser.save();
@@ -121,25 +123,12 @@ router.post("/register-driver", async (req, res) => {
             status: "successful",
         });
 
-        // Create driver profile if data provided
-        if (plateNumber && nid && insuranceAttachment && permitAttachment && permitId) {
-            await DriverProfile.create({
-                driverId: newUser._id,
-                plateNumber,
-                cooperativeName,
-                nid,
-                insuranceAttachment,
-                permitAttachment,
-                permitId,
-            });
-            newUser.kycLevel = "full";
-            await newUser.save();
-        }
+        // An agent can start registration; KYC and activation require the normal review flow.
 
         // Send welcome SMS
         await sendSMS(
             phone,
-            `Welcome to MOTA, ${firstName}! Your account has been created by agent. Download the app to get started.`,
+            `Welcome to MOTA, ${firstName}! An agent submitted your registration. Verify your phone and await review before driving.`,
             "registration"
         );
 
@@ -219,6 +208,19 @@ router.get("/drivers", async (req, res) => {
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
     }
+});
+
+router.post("/drivers/:id/update-request", async (req, res) => {
+    try {
+        const driver = await User.findOne({ _id: req.params.id, role: "driver" });
+        if (!driver) return res.status(404).json({ message: "Driver not found" });
+        const referral = await Referral.findOne({ referrerId: req.user.id, referredUserId: driver._id });
+        if (!referral && req.user.role !== "admin") return res.status(403).json({ message: "Only the registering agent can request this update" });
+        const description = String(req.body.description || "").trim();
+        if (description.length < 10 || description.length > 2000) return res.status(400).json({ message: "Describe the requested change in 10 to 2000 characters" });
+        const request = await SupportCase.create({ driverId: driver._id, createdBy: req.user.id, category: "other", subject: "Agent requested driver account update", description, status: "open" });
+        res.status(201).json({ message: "Update request sent for administrator review", data: { id: request._id, status: request.status } });
+    } catch (error) { res.status(400).json({ message: error.message }); }
 });
 
 /**
