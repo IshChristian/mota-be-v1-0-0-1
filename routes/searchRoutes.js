@@ -28,7 +28,7 @@ router.use(protect);
  *       200:
  *         description: Search results
  */
-router.get("/", authorize("search:universal"), searchController.getUniversalSearch);
+router.get("/", searchController.getUniversalSearch);
 
 /**
  * @swagger
