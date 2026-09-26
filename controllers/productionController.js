@@ -6,6 +6,7 @@ const RideDispute = require('../models/RideDispute');
 const ConsentRecord = require('../models/ConsentRecord');
 const Ride = require('../models/Ride');
 const User = require('../models/User');
+const DriverProfile = require('../models/DriverProfile');
 const Session = require('../models/Session');
 const { sendSMS } = require('../services/smsService');
 const notificationService = require('../services/notificationService');
@@ -68,6 +69,37 @@ exports.createDispute = async (req, res) => {
   const reportedUserId = String(ride.passengerId) === String(req.user.id) ? ride.driverId : ride.passengerId;
   try { const item = await RideDispute.create({ rideId: ride._id, openedBy: req.user.id, reportedUserId, category: req.body.category, description: req.body.description, evidence: req.body.evidence || [], refund: { requested: Boolean(req.body.requestRefund), amount: req.body.requestRefund ? ride.heldAmount || ride.fare : undefined, status: req.body.requestRefund ? 'requested' : 'not_requested' } }); res.status(201).json({ message: 'Dispute submitted', data: item }); }
   catch (error) { res.status(error.code === 11000 ? 409 : 400).json({ message: error.code === 11000 ? 'A dispute already exists for this ride' : error.message }); }
+};
+exports.createDisputeByPlate = async (req, res) => {
+  const plateNumber = String(req.body.plateNumber || '').trim().toUpperCase().replace(/\s+/g, ' ');
+  if (!plateNumber) return res.status(400).json({ message: 'Plate number is required' });
+  const escaped = plateNumber.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const profile = await DriverProfile.findOne({ plateNumber: { $regex: `^${escaped}$`, $options: 'i' } }).select('driverId plateNumber');
+  if (!profile) return res.status(404).json({ message: 'No verified MOTA driver was found with that plate number' });
+  const ride = await Ride.findOne({
+    passengerId: req.user.id,
+    driverId: profile.driverId,
+    rideStatus: { $in: ['completed', 'cancelled', 'awaiting_payment'] },
+  }).sort({ createdAt: -1 });
+  if (!ride) return res.status(404).json({ message: 'No refundable ride with this driver was found in your account' });
+  try {
+    const item = await RideDispute.create({
+      rideId: ride._id,
+      openedBy: req.user.id,
+      reportedUserId: profile.driverId,
+      category: req.body.category,
+      description: req.body.description,
+      evidence: req.body.evidence || [],
+      refund: {
+        requested: Boolean(req.body.requestRefund),
+        amount: req.body.requestRefund ? ride.heldAmount || ride.fare : undefined,
+        status: req.body.requestRefund ? 'requested' : 'not_requested',
+      },
+    });
+    return res.status(201).json({ message: 'Dispute submitted', data: item, rideId: ride._id, plateNumber: profile.plateNumber });
+  } catch (error) {
+    return res.status(error.code === 11000 ? 409 : 400).json({ message: error.code === 11000 ? 'A dispute already exists for your latest ride with this driver' : error.message });
+  }
 };
 exports.listDisputes = async (req, res) => res.json({ data: await RideDispute.find({ openedBy: req.user.id }).populate('rideId').sort({ createdAt: -1 }) });
 exports.replyDispute = async (req, res) => { const message = String(req.body.message || '').trim(); if (!message) return res.status(400).json({ message: 'Reply is required' }); const item = await RideDispute.findOneAndUpdate({ _id: req.params.id, openedBy: req.user.id, status: { $nin: ['resolved', 'rejected'] } }, { $push: { replies: { authorId: req.user.id, message } } }, { new: true, runValidators: true }); if (!item) return res.status(409).json({ message: 'Dispute is closed or unavailable' }); res.json({ data: item }); };
