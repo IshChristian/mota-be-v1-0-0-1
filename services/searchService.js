@@ -4,7 +4,7 @@ const Transaction = require("../models/Transaction");
 
 const buildSearchRegex = (query) => {
     // Basic case-insensitive search
-    return new RegExp(query, "i");
+    return new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
 };
 
 const searchUsers = async (query, page = 1, limit = 20) => {
@@ -38,13 +38,16 @@ const searchUsers = async (query, page = 1, limit = 20) => {
 };
 
 // Universal search covering multiple collections and combining them
-const universalSearch = async (query) => {
+const universalSearch = async (query, actor) => {
     const regex = buildSearchRegex(query);
-    
-    // Quick limit for universal drop-down type search
-    const users = await User.find({
+    const role = actor.role;
+    const selfService = !["admin", "superadmin"].includes(role);
+    if (selfService && !["client", "passenger", "driver"].includes(role)) return [];
+    const scopedRide = role === "driver" ? { driverId: actor._id } : { passengerId: actor._id };
+    const scopedTransaction = { $or: [{ userId: actor._id }, { driverId: actor._id }] };
+    const users = selfService ? [] : await User.find({
         $or: [{ firstName: regex }, { lastName: regex }, { phone: regex }]
-    }).select("firstName lastName phone role _id").limit(10);
+    }).select("firstName lastName phone role _id").limit(10).lean();
     
     // Try to parse query into number for fare/amount search
     const queryNumber = parseInt(query);
@@ -59,13 +62,24 @@ const universalSearch = async (query) => {
         transactionFilter.$or.push({ amount: queryNumber });
     }
     
-    const transactions = await Transaction.find(transactionFilter).limit(10);
-    
-    return {
-        users,
-        transactions,
-        // Depending on ride schema, they might search by pickup/dropoff
-    };
+    const rideFilter = { $or: [
+        { "pickup.name": regex }, { "pickup.address": regex },
+        { "destination.name": regex }, { "destination.address": regex },
+        { pickupLocation: regex }, { dropoffLocation: regex }, { rideStatus: regex }
+    ] };
+    const [rides, transactions] = await Promise.all([
+        Ride.find(selfService ? { $and: [scopedRide, rideFilter] } : rideFilter)
+            .select("pickup destination pickupLocation dropoffLocation rideStatus createdAt")
+            .sort({ createdAt: -1 }).limit(20).lean(),
+        Transaction.find(selfService ? { $and: [scopedTransaction, transactionFilter] } : transactionFilter)
+            .select("type status description amount createdAt reference")
+            .sort({ createdAt: -1 }).limit(20).lean()
+    ]);
+    return [
+        ...rides.map(ride => ({ id: ride._id, type: "ride", title: ride.destination?.name || ride.dropoffLocation || "Ride", description: ride.rideStatus || "Ride", createdAt: ride.createdAt })),
+        ...transactions.map(tx => ({ id: tx._id, type: "transaction", title: tx.description || tx.type, description: `${tx.amount} RWF · ${tx.status}`, createdAt: tx.createdAt })),
+        ...users.map(user => ({ id: user._id, type: "user", title: `${user.firstName} ${user.lastName}`, description: user.role }))
+    ];
 };
 
 module.exports = {
