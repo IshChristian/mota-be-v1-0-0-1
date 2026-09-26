@@ -4,6 +4,7 @@ const adminController = require("../controllers/adminController");
 const { protect, authorize } = require("../middleware/authMiddleware");
 const financialWriteGuard = require("../middleware/financialWriteGuard");
 const kycController = require("../controllers/kycController");
+const operationsInsightsController = require("../controllers/operationsInsightsController");
 
 // Require authentication and RBAC for all admin routes, forcing them to have "admin:access"
 router.use(protect);
@@ -111,6 +112,7 @@ router.delete("/users/:id", authorize("user:delete"), adminController.deleteUser
  *         description: System stats
  */
 router.get("/stats", authorize("analytics:view"), adminController.getStats);
+router.get("/operations-insights", authorize("analytics:view"), operationsInsightsController.getOperationsInsights);
 
 /**
  * @swagger
