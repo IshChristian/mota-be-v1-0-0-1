@@ -11,13 +11,15 @@ async function notifyNewSupportCase(item) {
     const title = "New MOTA support request";
     const message = `A new ${source} request is awaiting review in the support queue.`;
     const metadata = { supportCaseId: String(item._id), event: "support_case_created" };
-    await Promise.allSettled(recipients.map(async user => {
+    const results = await Promise.allSettled(recipients.map(async user => {
         await notifications.createNotification(user._id, title, message, "in_app", metadata);
-        await Promise.allSettled([
+        const deliveries = await Promise.allSettled([
             notifications.sendPushNotification(user._id, title, message, metadata),
             user.email ? notifications.sendEmail(user.email, title, message) : Promise.resolve(),
         ]);
+        if (deliveries.some(result => result.status === "rejected")) console.warn("A support alert channel failed", String(item._id), String(user._id));
     }));
+    if (results.some(result => result.status === "rejected")) console.warn("Some support staff could not be notified", String(item._id));
 }
 
 module.exports = { notifyNewSupportCase };
