@@ -1,5 +1,6 @@
 const roleService = require("../services/roleService");
 const auditService = require("../services/auditService");
+const User = require("../models/User");
 
 const createRole = async (req, res) => {
     try {
@@ -44,6 +45,7 @@ const deleteRole = async (req, res) => {
         const role = await roleService.getRoleById(req.params.id);
         if (!role) return res.status(404).json({ message: "Role not found" });
         if (["superadmin", "admin"].includes(role.name)) return res.status(400).json({ message: "Core administrative roles cannot be deleted" });
+        if (await User.exists({ roleId: role._id })) return res.status(409).json({ message: "Reassign accounts before deleting this role" });
         await roleService.deleteRole(req.params.id);
         await auditService.log({ actorId: req.user.id, actorRole: req.user.role, action: "role_deleted", targetType: "Role", targetId: role._id, metadata: { name: role.name }, ipAddress: req.ip });
         res.status(200).json({ message: "Role deleted" });
