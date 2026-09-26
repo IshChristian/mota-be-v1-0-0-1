@@ -3,6 +3,19 @@ const router = express.Router();
 const algorithmController = require("../controllers/algorithmController");
 const { protect: authMiddleware } = require("../middleware/authMiddleware");
 const roleMiddleware = require("../middleware/roleMiddleware");
+const SystemConfig = require("../models/SystemConfig");
+
+// Public release metadata contains only version and administrator-approved HTTPS destinations.
+router.get("/mobile-release", async (_req, res) => {
+    try {
+        const config = await SystemConfig.findOne({ key: "mobile_release" }).lean();
+        const value = config?.value || {};
+        const safeUrl = (url) => typeof url === "string" && /^https:\/\//i.test(url) ? url : null;
+        res.json({ version: typeof value.version === "string" ? value.version : null, downloaderUrl: safeUrl(value.downloaderUrl), websiteUrl: safeUrl(value.websiteUrl) });
+    } catch (_error) {
+        res.status(503).json({ message: "Release information is unavailable" });
+    }
+});
 
 /**
  * @swagger

@@ -4,7 +4,7 @@ const User = require("../models/User");
 const auditService = require("../services/auditService");
 
 const passengerFields = ["nationalIdNumber", "nationalIdFront", "nationalIdBack", "selfie", "dateOfBirth", "residentialAddress", "emergencyContactName", "emergencyContactPhone"];
-const driverFields = ["nationalIdNumber", "nationalIdFront", "nationalIdBack", "selfie", "drivingLicenseNumber", "drivingLicenseDocument", "drivingLicenseExpiresAt", "transportPermitNumber", "transportPermitDocument", "transportPermitExpiresAt", "insuranceDocument", "insuranceExpiresAt", "vehicleRegistrationDocument", "vehicleRegistrationExpiresAt", "plateNumber", "cooperativeName"];
+const driverFields = ["nationalIdNumber", "nationalIdFront", "nationalIdBack", "selfie", "drivingLicenseNumber", "drivingLicenseDocument", "drivingLicenseExpiresAt", "transportPermitNumber", "transportPermitDocument", "transportPermitExpiresAt", "insuranceDocument", "insuranceExpiresAt", "vehicleRegistrationDocument", "vehicleRegistrationExpiresAt", "plateNumber", "vehicleType", "powertrain", "cooperativeName"];
 const pick = (source, fields) => fields.reduce((out, key) => { if (source[key] !== undefined) out[key] = source[key]; return out; }, {});
 const isPassenger = (role) => role === "client" || role === "passenger";
 
@@ -26,6 +26,7 @@ async function submitMine(req, res) {
     const missing = fields.filter((field) => !["dateOfBirth", "residentialAddress", "emergencyContactName", "emergencyContactPhone", "cooperativeName"].includes(field) && !payload[field]);
     if (missing.length) return res.status(400).json({ message: `Missing required KYC fields: ${missing.join(", ")}` });
     if (driver) {
+      if (!["car", "moto"].includes(payload.vehicleType) || !["electric", "diesel", "petrol"].includes(payload.powertrain)) return res.status(400).json({ message: "Select a valid vehicle and power type" });
       const invalidExpiry = ["drivingLicenseExpiresAt", "transportPermitExpiresAt", "insuranceExpiresAt", "vehicleRegistrationExpiresAt"].find((field) => !Number.isFinite(Date.parse(payload[field])) || Date.parse(payload[field]) <= Date.now());
       if (invalidExpiry) return res.status(400).json({ message: `${invalidExpiry} must be a future date` });
     }

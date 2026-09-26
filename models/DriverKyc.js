@@ -13,6 +13,8 @@ const driverKycSchema = new mongoose.Schema({
   insuranceDocument: { type: String, required: true, trim: true },
   vehicleRegistrationDocument: { type: String, required: true, trim: true },
   plateNumber: { type: String, required: true, trim: true },
+  vehicleType: { type: String, enum: ["car", "moto"], required: true },
+  powertrain: { type: String, enum: ["electric", "diesel", "petrol"], required: true },
   cooperativeName: { type: String, trim: true },
   drivingLicenseExpiresAt: Date,
   transportPermitExpiresAt: Date,
