@@ -5,6 +5,8 @@ const User = require("../models/User");
 const DriverProfile = require("../models/DriverProfile");
 const Referral = require("../models/Referral");
 const SupportCase = require("../models/SupportCase");
+const DriverKyc = require("../models/DriverKyc");
+const auditService = require("../services/auditService");
 const { protect: authMiddleware } = require("../middleware/authMiddleware");
 const roleMiddleware = require("../middleware/roleMiddleware");
 const { sendSMS } = require("../services/smsService");
@@ -177,20 +179,24 @@ router.post("/register-driver", async (req, res) => {
 router.get("/drivers", async (req, res) => {
     try {
         const agentId = req.user.id;
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 20;
+        const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+        const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 20));
         const skip = (page - 1) * limit;
 
         const referrals = await Referral.find({ referrerId: agentId })
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(limit)
-            .populate("referredUserId", "firstName lastName phone nationalId isVerified isActive kycLevel createdAt");
+            .populate("referredUserId", "firstName lastName phone isVerified isActive kycLevel registrationStatus registrationPaid createdAt");
 
         const total = await Referral.countDocuments({ referrerId: agentId });
 
-        const drivers = referrals.map((ref) => ({
+        const ids = referrals.map((ref) => ref.referredUserId?._id).filter(Boolean);
+        const kyc = await DriverKyc.find({ userId: { $in: ids } }).select("userId status remarks").lean();
+        const kycByDriver = new Map(kyc.map((row) => [String(row.userId), { status: row.status, remarks: row.remarks }]));
+        const drivers = referrals.filter((ref) => ref.referredUserId).map((ref) => ({
             ...ref.referredUserId?.toObject(),
+            kyc: kycByDriver.get(String(ref.referredUserId._id)) || null,
             registeredAt: ref.createdAt,
             referralStatus: ref.status,
             reward: ref.reward,
@@ -210,6 +216,15 @@ router.get("/drivers", async (req, res) => {
     }
 });
 
+router.get("/update-requests", async (req, res) => {
+    try {
+        const data = await SupportCase.find({ createdBy: req.user.id, $or: [{ subject: /^Agent assistance:/ }, { subject: "Agent requested driver account update" }] })
+            .select("driverId subject description status resolution createdAt updatedAt")
+            .sort({ createdAt: -1 }).limit(100).lean();
+        res.json({ data });
+    } catch (error) { res.status(500).json({ message: "Unable to load requests" }); }
+});
+
 router.post("/drivers/:id/update-request", async (req, res) => {
     try {
         const driver = await User.findOne({ _id: req.params.id, role: "driver" });
@@ -218,7 +233,11 @@ router.post("/drivers/:id/update-request", async (req, res) => {
         if (!referral && req.user.role !== "admin") return res.status(403).json({ message: "Only the registering agent can request this update" });
         const description = String(req.body.description || "").trim();
         if (description.length < 10 || description.length > 2000) return res.status(400).json({ message: "Describe the requested change in 10 to 2000 characters" });
-        const request = await SupportCase.create({ driverId: driver._id, createdBy: req.user.id, category: "other", subject: "Agent requested driver account update", description, status: "open" });
+        const kinds = { profile_update: "Profile update", kyc_help: "KYC assistance", fee_help: "Fee assistance", account_access: "Account access" };
+        const kind = req.body.kind || "profile_update";
+        if (!Object.hasOwn(kinds, kind)) return res.status(400).json({ message: "Invalid assistance type" });
+        const request = await SupportCase.create({ driverId: driver._id, createdBy: req.user.id, category: kind === "fee_help" ? "payment" : "other", subject: `Agent assistance: ${kinds[kind]}`, description, status: "open" });
+        await auditService.log({ actorId: req.user.id, actorRole: req.user.role, action: "support_case_created", targetType: "SupportCase", targetId: request._id, ipAddress: req.ip, metadata: { driverId: String(driver._id), source: "agent_update_request" } });
         res.status(201).json({ message: "Update request sent for administrator review", data: { id: request._id, status: request.status } });
     } catch (error) { res.status(400).json({ message: error.message }); }
 });
