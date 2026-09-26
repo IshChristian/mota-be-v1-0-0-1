@@ -16,4 +16,13 @@ const supportCaseSchema = new mongoose.Schema({
     lastPassengerNotificationAt: { type: Date },
 }, { timestamps: true });
 supportCaseSchema.index({ status: 1, priority: 1, createdAt: -1 });
+supportCaseSchema.pre("save", function () { this.$locals.createdNow = this.isNew; });
+supportCaseSchema.post("save", async function (item) {
+    if (!this.$locals.createdNow) return;
+    try {
+        await require("../services/supportCaseNotificationService").notifyNewSupportCase(item);
+    } catch (error) {
+        console.error("Unable to notify support staff of new case", error);
+    }
+});
 module.exports = mongoose.model("SupportCase", supportCaseSchema);
