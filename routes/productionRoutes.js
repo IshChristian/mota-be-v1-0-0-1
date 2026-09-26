@@ -16,6 +16,7 @@ router.get('/safety-events', ctrl.listSafetyEvents);
 router.post('/safety-events', ctrl.createSafetyEvent);
 router.get('/disputes', ctrl.listDisputes);
 router.post('/rides/:rideId/disputes', ctrl.createDispute);
+router.post('/disputes/by-plate', ctrl.createDisputeByPlate);
 router.post('/disputes/:id/replies', ctrl.replyDispute);
 router.get('/notification-preferences', ctrl.getPreferences);
 router.put('/notification-preferences', ctrl.updatePreferences);
