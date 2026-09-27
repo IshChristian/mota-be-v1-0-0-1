@@ -648,7 +648,7 @@ const rateRide = async (userId, rideId, rating, comment) => {
 
 const getRideStatus = async (rideId, userId) => {
     const ride = await Ride.findById(rideId)
-        .populate("driverId", "firstName lastName phone lastLocation")
+        .populate("driverId", "firstName lastName phone lastLocation lastLocationAt")
         .populate("passengerId", "firstName lastName phone");
 
     if (!ride) throw new Error("Ride not found.");
