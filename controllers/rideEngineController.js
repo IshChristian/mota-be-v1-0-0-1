@@ -38,9 +38,11 @@ const requestRide = async (req, res) => {
         // Required JSON response by specs
         res.status(201).json({
             status: "success",
-            message: "Ride request broadcasted to nearby drivers",
+            message: result.ride.rideStatus === "scheduled" ? "Ride scheduled. Driver matching begins shortly before pickup." : "Ride request broadcasted to nearby drivers",
             data: {
                 rideId: result.ride._id,
+                rideStatus: result.ride.rideStatus,
+                scheduledAt: result.ride.scheduledAt,
                 requiresSupport: result.requiresSupport === true,
                 notifiedDrivers: result.nearbyDrivers?.length || 0
             }
@@ -292,7 +294,8 @@ const getRideById = async (req, res) => {
                 avatarUrl: ride.driverId.avatarUrl,
                 plate: driverProfile?.plateNumber || "N/A",
                 cooperativeName: driverProfile?.cooperativeName,
-                lastLocation: ride.driverId.lastLocation
+                lastLocation: ride.driverId.lastLocation,
+                lastLocationAt: ride.driverId.lastLocationAt
             };
         }
 
