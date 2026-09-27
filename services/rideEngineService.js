@@ -128,12 +128,13 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
         throw new Error("You already have an active ride. Complete or cancel it first.");
     }
 
-    // Requests remain active until a passenger, driver, or authorized support
-    // operator explicitly resolves them. Scheduled times are validated only.
+    // Scheduled times are entered in Kigali local time (UTC+02:00).
+    let scheduledAt = null;
     if (scheduledDate && scheduledTime) {
-        const scheduledAt = new Date(`${scheduledDate}T${scheduledTime}:00`);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(scheduledDate) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(scheduledTime)) throw new Error("Invalid scheduled ride date or time.");
+        scheduledAt = new Date(`${scheduledDate}T${scheduledTime}:00+02:00`);
         if (Number.isNaN(scheduledAt.getTime())) throw new Error("Invalid scheduled ride date or time.");
-        if (scheduledAt.getTime() <= Date.now()) throw new Error("Scheduled ride time must be in the future.");
+        if (scheduledAt.getTime() <= Date.now() + 20 * 60 * 1000) throw new Error("Schedule a ride at least 20 minutes ahead.");
     }
 
     // Create ride
@@ -152,10 +153,21 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
         paymentMethod,
         scheduledDate,
         scheduledTime,
-        rideStatus: "requested",
+        scheduledAt,
+        rideStatus: scheduledAt ? "scheduled" : "requested",
         ridePin: generatePin(),
         requestedAt: new Date(),
     });
+
+    if (scheduledAt) return { ride: { _id: ride._id, rideStatus: ride.rideStatus, scheduledAt, offeredFare: ride.offeredFare } };
+
+    return dispatchRide(ride);
+};
+
+const dispatchRide = async (ride) => {
+    const { pickup, destination, offeredFare, passengers, scheduledDate, scheduledTime } = ride;
+    const backupDrivers = ride.backupDriverCount;
+    const estimate = { distanceKm: ride.estimatedDistanceKm };
 
     // Find nearby online drivers
     const nearbyDrivers = await findNearbyDrivers(
@@ -167,15 +179,19 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
     if (nearbyDrivers.length === 0) {
         // Keep the request available for caller-support intervention instead
         // of failing the passenger request when automatic matching is empty.
+        await Ride.updateOne({ _id: ride._id, rideStatus: { $in: ["requested", "searching"] } }, { $set: { rideStatus: "searching" } });
         ride.rideStatus = "searching";
-        await ride.save();
         return { ride, nearbyDrivers: [], requiresSupport: true };
     }
 
     // Mark as searching and record notified drivers
-    ride.rideStatus = "searching";
-    ride.notifiedDrivers = nearbyDrivers.map(d => d._id);
-    await ride.save();
+    const active = await Ride.findOneAndUpdate(
+        { _id: ride._id, rideStatus: { $in: ["requested", "searching"] } },
+        { $set: { rideStatus: "searching", notifiedDrivers: nearbyDrivers.map(d => d._id) } },
+        { new: true }
+    );
+    if (!active) return { ride, nearbyDrivers: [], cancelled: true };
+    ride.rideStatus = active.rideStatus;
 
     // Notify drivers via SMS and SSE
     for (const driver of nearbyDrivers) {
@@ -221,6 +237,42 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
             driversNotified: nearbyDrivers.length,
         },
     };
+};
+
+const processScheduledRides = async () => {
+    const now = new Date();
+    const reminderWindow = new Date(now.getTime() + 60 * 60 * 1000);
+    const dispatchWindow = new Date(now.getTime() + 15 * 60 * 1000);
+
+    // Atomic claims prevent duplicate reminders or driver dispatch in multi-instance deployments.
+    while (true) {
+        const ride = await Ride.findOneAndUpdate(
+            { rideStatus: "scheduled", scheduledAt: { $lte: reminderWindow }, reminderSentAt: null },
+            { $set: { reminderSentAt: now } }, { new: true, sort: { scheduledAt: 1 } }
+        );
+        if (!ride) break;
+        try {
+            const passenger = await User.findById(ride.passengerId);
+            await notifyUser(passenger, "Scheduled ride reminder", `Your MOTA ride is scheduled for ${ride.scheduledDate} at ${ride.scheduledTime}. Driver matching begins shortly before pickup.`, "scheduledRideReminder", { rideId: ride._id });
+        } catch (error) { console.error("Scheduled ride reminder failed:", error); }
+    }
+
+    while (true) {
+        const ride = await Ride.findOneAndUpdate(
+            { rideStatus: "scheduled", scheduledAt: { $lte: dispatchWindow } },
+            { $set: { rideStatus: "searching" } }, { new: true, sort: { scheduledAt: 1 } }
+        );
+        if (!ride) break;
+        try {
+            await dispatchRide(ride);
+            const passenger = await User.findById(ride.passengerId);
+            await notifyUser(passenger, "Finding your scheduled driver", "MOTA is now looking for a driver for your scheduled ride.", "scheduledRideDispatch", { rideId: ride._id });
+        } catch (error) {
+            console.error("Scheduled ride dispatch failed:", error);
+            await Ride.updateOne({ _id: ride._id, rideStatus: "searching", notifiedDrivers: { $size: 0 } }, { $set: { rideStatus: "scheduled" } });
+            break;
+        }
+    }
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -552,7 +604,7 @@ const cancelRide = async (userId, rideId, reason) => {
     const ride = await Ride.findById(rideId);
     if (!ride) throw new Error("Ride not found.");
 
-    const cancellableStatuses = ["requested", "searching", "accepted", "approaching", "arrived", "start_requested", "in_progress"];
+    const cancellableStatuses = ["scheduled", "requested", "searching", "accepted", "approaching", "arrived", "start_requested", "in_progress"];
     if (!cancellableStatuses.includes(ride.rideStatus)) {
         throw new Error("This ride cannot be cancelled at its current stage.");
     }
@@ -770,6 +822,7 @@ const expireStaleRequests = async () => {
 module.exports = {
     estimateFare,
     requestRide,
+    processScheduledRides,
     findNearbyDrivers,
     acceptRide,
     declineRide,
