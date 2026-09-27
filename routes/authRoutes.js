@@ -1,6 +1,8 @@
 const express = require("express");
 const router = express.Router();
 const authController = require("../controllers/authController");
+const { recoverRegistration } = require("../controllers/registrationRecoveryController");
+const { rateLimit } = require("express-rate-limit");
 const { protect } = require("../middleware/authMiddleware");
 
 // Public routes
@@ -38,6 +40,7 @@ const { protect } = require("../middleware/authMiddleware");
  *         description: User registered. MoMo payment initiated if driver or agent.
  */
 router.post("/register", authController.register);
+router.post("/recover-registration", rateLimit({ windowMs: 15 * 60 * 1000, limit: 5, standardHeaders: "draft-8", legacyHeaders: false }), recoverRegistration);
 
 /**
  * @swagger
