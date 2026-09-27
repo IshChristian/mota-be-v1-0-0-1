@@ -127,6 +127,9 @@ const initCron = () => {
 
     // Expire stale ride requests every 10 seconds
     const rideEngineService = require("./rideEngineService");
+    const processScheduled = () => rideEngineService.processScheduledRides().catch((error) => console.error("Scheduled rides failed:", error));
+    void processScheduled();
+    setInterval(processScheduled, 60 * 1000);
     setInterval(async () => {
         try {
             await rideEngineService.expireStaleRequests();

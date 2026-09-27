@@ -16,6 +16,8 @@ const rideSchema = new mongoose.Schema({
     passengers: { type: Number, default: 1 },
     scheduledDate: { type: String },
     scheduledTime: { type: String },
+    scheduledAt: { type: Date, index: true },
+    reminderSentAt: { type: Date },
 
     // ── Locations ──────────────────────────────────────────────────────
     pickup: {
@@ -69,6 +71,7 @@ const rideSchema = new mongoose.Schema({
     rideStatus: {
         type: String,
         enum: [
+            "scheduled",      // Booking awaits its dispatch window
             "requested",      // Passenger submitted request
             "searching",      // Finding drivers (renamed from matching)
             "accepted",       // Driver accepted
