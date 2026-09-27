@@ -12,6 +12,8 @@ const driverKycSchema = new mongoose.Schema({
   transportPermitDocument: { type: String, required: true, trim: true },
   insuranceDocument: { type: String, required: true, trim: true },
   vehicleRegistrationDocument: { type: String, required: true, trim: true },
+  technicalInspectionDocument: { type: String, required: true, trim: true },
+  vocationalCardDocument: { type: String, trim: true },
   plateNumber: { type: String, required: true, trim: true },
   vehicleType: { type: String, enum: ["car", "moto"], required: true },
   powertrain: { type: String, enum: ["electric", "diesel", "petrol"], required: true },
@@ -20,6 +22,8 @@ const driverKycSchema = new mongoose.Schema({
   transportPermitExpiresAt: Date,
   insuranceExpiresAt: Date,
   vehicleRegistrationExpiresAt: Date,
+  technicalInspectionExpiresAt: Date,
+  vocationalCardExpiresAt: Date,
   documentReviews: [{ key: String, status: { type: String, enum: ['approved', 'correction', 'rejected'] }, reason: String, reviewedAt: Date }],
   status: { type: String, enum: ["draft", "submitted", "approved", "correction", "rejected"], default: "draft", index: true },
   remarks: { type: String, trim: true },
@@ -30,7 +34,7 @@ const driverKycSchema = new mongoose.Schema({
 
 driverKycSchema.virtual('hasExpiredRequiredDocument').get(function () {
   const now = Date.now();
-  return [this.drivingLicenseExpiresAt, this.transportPermitExpiresAt, this.insuranceExpiresAt, this.vehicleRegistrationExpiresAt].some((date) => date && date.getTime() <= now);
+  return [this.drivingLicenseExpiresAt, this.transportPermitExpiresAt, this.insuranceExpiresAt, this.vehicleRegistrationExpiresAt, this.technicalInspectionExpiresAt].some((date) => date && date.getTime() <= now);
 });
 
 module.exports = mongoose.model("DriverKyc", driverKycSchema);
