@@ -3,7 +3,7 @@ const router = express.Router();
 const authController = require("../controllers/authController");
 const { recoverRegistration } = require("../controllers/registrationRecoveryController");
 const { rateLimit } = require("express-rate-limit");
-const { protect } = require("../middleware/authMiddleware");
+const { protect, protectOnboarding } = require("../middleware/authMiddleware");
 
 // Public routes
 /**
@@ -211,10 +211,9 @@ router.post("/resend-email-otp", authController.resendEmailOTP);
 router.post("/2fa/verify", authController.verify2FA);
 
 // Protected routes
+router.post("/submit-registration", protectOnboarding, authController.submitRegistration);
+router.get("/registration-approval", protectOnboarding, authController.getRegistrationApproval);
 router.use(protect);
-
-router.post("/submit-registration", authController.submitRegistration);
-router.get("/registration-approval", authController.getRegistrationApproval);
 
 /**
  * @swagger
