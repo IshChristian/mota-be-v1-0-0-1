@@ -74,6 +74,8 @@ const createProfile = async (req, res) => {
 const getDashboard = async (req, res) => {
     try {
         const driverId = req.user.id;
+        const driver = await User.findById(driverId).select("isOnline");
+        if (!driver) return res.status(404).json({ message: "Driver not found" });
 
         // Get tier info
         const tierInfo = await getTierInfo(driverId);
@@ -102,6 +104,7 @@ const getDashboard = async (req, res) => {
         });
 
         res.status(200).json({
+            isOnline: Boolean(driver.isOnline),
             tier: tierInfo.tier,
             multiplier: tierInfo.multiplier,
             ridesToday: streakInfo.todayRideCount,
