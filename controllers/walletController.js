@@ -154,9 +154,9 @@ const requestCashOut = async (req, res) => {
         if (!result.replayed) {
             const notificationService = require("../services/notificationService");
             const reviewers = await User.find({ role: { $in: ["admin", "superadmin"] }, isActive: true }).select("_id").lean();
-            const notice = `Withdrawal request ${result.request._id}: ${result.request.amount} RWF from ${user.firstName} ${user.lastName}. Status: ${result.dispatch.status}.`;
+            const notice = `Withdrawal request ${result.request._id} from ${user.firstName} ${user.lastName} (${user.phone}). Amount: ${result.request.amount} RWF; fee: ${result.request.fee} RWF; payout phone: ${result.request.phone}; status: ${result.dispatch.status}. Open Withdrawal requests to review and download CSV.`;
             await Promise.allSettled([
-                notificationService.createNotification(user._id, "Withdrawal received", `Your ${result.request.amount} RWF withdrawal request was received. Follow its status in your wallet; payout timing depends on the provider.`, "in_app", { requestId: String(result.request._id) }),
+                notificationService.createNotification(user._id, "Withdrawal request received", result.dispatch.status === "queued" ? `Your ${result.request.amount} RWF request is queued until your queued payouts reach ${withdrawalService.PAYPACK_MINIMUM} RWF. After payout starts, it usually arrives within 2 hours, depending on the provider. Track its status in your wallet.` : `Your ${result.request.amount} RWF request was received. Payout usually arrives within 2 hours, depending on the provider. Track its status in your wallet.`, "in_app", { requestId: String(result.request._id) }),
                 ...reviewers.map(reviewer => notificationService.createNotification(reviewer._id, "Driver withdrawal request", notice, "in_app", { requestId: String(result.request._id) })),
             ]);
         }
