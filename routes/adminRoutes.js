@@ -18,11 +18,32 @@ router.get("/withdrawals", authorize("finance:view"), async (req, res) => {
         const allowed = ["queued", "processing", "provider_pending", "successful", "failed"];
         if (status && !allowed.includes(status)) return res.status(400).json({ message: "Invalid withdrawal status" });
         const rows = await WithdrawalRequest.find(status ? { status } : {})
-            .select("driverId amount fee totalHeld phone status batchId paypackRef failureReason createdAt updatedAt")
+            .select("driverId amount fee totalHeld phone status batchId paypackRef failureReason reviewStatus reviewNote reviewedAt createdAt updatedAt")
             .populate("driverId", "firstName lastName phone")
             .sort({ createdAt: -1 }).limit(250).lean();
         res.json({ data: rows });
     } catch (error) { res.status(500).json({ message: "Unable to load withdrawals" }); }
+});
+router.patch("/withdrawals/:id/review", authorize("transaction:sync"), async (req, res) => {
+    try {
+        const mongoose = require("mongoose");
+        const WithdrawalRequest = require("../models/WithdrawalRequest");
+        if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: "Invalid withdrawal ID" });
+        const { reviewStatus, reviewNote } = req.body;
+        if (!["new", "in_review", "resolved"].includes(reviewStatus)) return res.status(400).json({ message: "Invalid review status" });
+        if (reviewStatus !== "new" && String(reviewNote || "").trim().length < 5) return res.status(400).json({ message: "Add a review note of at least 5 characters" });
+        const record = await WithdrawalRequest.findById(req.params.id);
+        if (!record) return res.status(404).json({ message: "Withdrawal request not found" });
+        if (reviewStatus === "resolved" && !["successful", "failed"].includes(record.status)) return res.status(409).json({ message: "Wait for the provider's final payout status before resolving this review" });
+        const previous = record.reviewStatus || "new";
+        record.reviewStatus = reviewStatus;
+        record.reviewNote = String(reviewNote || "").trim();
+        record.reviewedBy = req.user.id;
+        record.reviewedAt = new Date();
+        await record.save();
+        await require("../services/auditService").log({ actorId: req.user.id, actorRole: req.user.role, action: "withdrawal_reviewed", targetType: "WithdrawalRequest", targetId: record._id, ipAddress: req.ip, metadata: { previous, reviewStatus, reviewNote: record.reviewNote } });
+        res.json({ message: "Withdrawal review updated", data: { id: record._id, reviewStatus: record.reviewStatus, reviewNote: record.reviewNote } });
+    } catch { res.status(500).json({ message: "Unable to update withdrawal review" }); }
 });
 router.patch("/kyc/:type/:id/review", authorize("kyc:approve"), kycController.adminReview);
 
