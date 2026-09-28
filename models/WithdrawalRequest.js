@@ -6,6 +6,10 @@ const withdrawalRequestSchema = new mongoose.Schema({
     fee: { type: Number, required: true, min: 0 },
     totalHeld: { type: Number, required: true, min: 100 },
     phone: { type: String, required: true, trim: true },
+    reviewStatus: { type: String, enum: ["new", "in_review", "resolved"], default: "new", index: true },
+    reviewNote: { type: String, trim: true },
+    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    reviewedAt: Date,
     status: {
         type: String,
         enum: ["queued", "processing", "provider_pending", "successful", "failed"],
