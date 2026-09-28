@@ -165,7 +165,7 @@ const login = async (req, res) => {
             if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
         }
 
-        const onboardingDriver = user.role === "driver" && user.isVerified && user.registrationStatus !== "approved" && !user.deletedAt;
+        const onboardingDriver = user.role === "driver" && user.registrationStatus !== "approved" && !user.deletedAt;
         if (!user.isActive && !onboardingDriver) return res.status(403).json({ message: user.isVerified ? "Account disabled" : "Verify your phone to continue", userId: user._id, phone: user.phone, user: { isVerified: user.isVerified } });
 
         // Check if 2FA is active
