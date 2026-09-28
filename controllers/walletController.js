@@ -151,6 +151,15 @@ const requestCashOut = async (req, res) => {
             phone: user.phone,
             idempotencyKey,
         });
+        if (!result.replayed) {
+            const notificationService = require("../services/notificationService");
+            const reviewers = await User.find({ role: { $in: ["admin", "superadmin"] }, isActive: true }).select("_id").lean();
+            const notice = `Withdrawal request ${result.request._id}: ${result.request.amount} RWF from ${user.firstName} ${user.lastName}. Status: ${result.dispatch.status}.`;
+            await Promise.allSettled([
+                notificationService.createNotification(user._id, "Withdrawal received", `Your ${result.request.amount} RWF withdrawal request was received. Follow its status in your wallet; payout timing depends on the provider.`, "in_app", { requestId: String(result.request._id) }),
+                ...reviewers.map(reviewer => notificationService.createNotification(reviewer._id, "Driver withdrawal request", notice, "in_app", { requestId: String(result.request._id) })),
+            ]);
+        }
         const queued = result.dispatch.status === "queued";
         return res.status(202).json({
             message: queued

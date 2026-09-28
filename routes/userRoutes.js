@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const userController = require("../controllers/userController");
 const uploadService = require("../services/uploadService");
-const { protect } = require("../middleware/authMiddleware");
+const { protect, protectOnboardingStatus } = require("../middleware/authMiddleware");
 
 /**
  * @swagger
@@ -11,6 +11,7 @@ const { protect } = require("../middleware/authMiddleware");
  *   description: User profile and account management
  */
 
+router.get("/me", protectOnboardingStatus, userController.getMe);
 router.use(protect);
 
 /**
@@ -24,7 +25,6 @@ router.use(protect);
  *       200:
  *         description: User profile data
  */
-router.get("/me", userController.getMe);
 
 /**
  * @swagger

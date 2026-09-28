@@ -61,12 +61,12 @@ const register = async (req, res) => {
             role: role || "client",
             referralCode: userReferralCode,
             password: hashedPassword,
-            isActive: false, // Inactive until registration fee is paid
+            isActive: false, // Phone verification activates passengers; drivers await review.
         });
 
-        // If rider/driver or agent, trigger MoMo payment for registration fee
+        // Registration first: drivers start payment only after phone verification and KYC.
         let paymentInfo = null;
-        if (newUser.role === "driver" || newUser.role === "agent") {
+        if (newUser.role === "agent") {
             const isAgent = newUser.role === "agent";
             const configKey = isAgent ? "agent_registration_fee" : "registration_fee";
             const defaultFee = isAgent ? 10000 : 5000;
@@ -129,7 +129,7 @@ const register = async (req, res) => {
         }
 
         res.status(201).json({
-            message: "Registered successful. Complete payment & verification to activate.",
+            message: "Registered successfully. Verify your phone to continue.",
             userId: newUser._id,
             payment: paymentInfo
         });
@@ -165,7 +165,8 @@ const login = async (req, res) => {
             if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
         }
 
-        if (!user.isActive) return res.status(403).json({ message: "Account disabled" });
+        const onboardingDriver = user.role === "driver" && user.registrationStatus !== "approved" && !user.deletedAt;
+        if (!user.isActive && !onboardingDriver) return res.status(403).json({ message: user.isVerified ? "Account disabled" : "Verify your phone to continue", userId: user._id, phone: user.phone, user: { isVerified: user.isVerified } });
 
         // Check if 2FA is active
         if (user.twoFactorEnabled) {
@@ -179,7 +180,7 @@ const login = async (req, res) => {
         const sessionId = crypto.randomUUID();
         await Session.create({ userId: user._id, sessionId, userAgent: req.get('user-agent'), ipAddress: req.ip, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) });
         const token = authService.generateToken(user, sessionId);
-        res.status(200).json({ message: "Login success", token, user: { id: user._id, firstName: user.firstName, lastName: user.lastName, role: user.role, permissions: user.roleId?.permissions || [] } });
+        res.status(200).json({ message: "Login success", token, user: { id: user._id, firstName: user.firstName, lastName: user.lastName, phone: user.phone, email: user.email, role: user.role, isVerified: user.isVerified, isEmailVerified: user.isEmailVerified, isActive: user.isActive, registrationPaid: user.registrationPaid, registrationStatus: user.registrationStatus, kycLevel: user.kycLevel, permissions: user.roleId?.permissions || [] } });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
     }
@@ -331,6 +332,7 @@ const verifyOTP = async (req, res) => {
         if (decoded.otp !== otp) return res.status(400).json({ message: "Invalid OTP" });
 
         user.isVerified = true;
+        if (["client", "passenger"].includes(user.role) && !user.deletedAt) user.isActive = true;
         user.otpToken = null;
         user.otpExpiry = null;
         await user.save();
@@ -348,7 +350,7 @@ const checkRegistrationPayment = async (req, res) => {
         const { userId } = req.body;
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: "User not found" });
-        if (user.registrationPaid) return res.status(200).json({ message: "Already paid and active", active: true });
+        if (user.registrationPaid) return res.status(200).json({ message: "Registration fee paid", paid: true, active: user.isActive });
 
         if (!user.registrationPaypackRef) {
             return res.status(400).json({ message: "No registration payment found for this user." });
@@ -366,9 +368,9 @@ const checkRegistrationPayment = async (req, res) => {
             }
             await user.save();
 
-            return res.status(200).json({ message: "Payment successful. Account pending admin approval.", active: false, status: user.registrationStatus });
+            return res.status(200).json({ message: "Payment successful. Account pending admin approval.", paid: true, active: false, status: user.registrationStatus });
         } else {
-            return res.status(200).json({ message: "Payment pending or failed.", active: false, status: result.data?.status });
+            return res.status(200).json({ message: "Payment pending or failed.", paid: false, active: false, status: result.data?.status });
         }
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
@@ -414,6 +416,11 @@ const payRegistration = async (req, res) => {
 
         if (user.role !== "driver" && user.role !== "agent") {
             return res.status(400).json({ message: "Payment only applies to driver or agent roles." });
+        }
+        if (user.role === "driver") {
+            const DriverKyc = require("../models/DriverKyc");
+            const kyc = await DriverKyc.findOne({ userId: user._id });
+            if (!user.isVerified || !kyc || !["submitted", "approved"].includes(kyc.status)) return res.status(409).json({ message: "Verify your phone and submit driver KYC before payment." });
         }
 
         const isAgent = user.role === "agent";

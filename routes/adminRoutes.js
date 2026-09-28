@@ -11,6 +11,19 @@ router.use(protect);
 router.use(authorize("admin:access"));
 
 router.get("/kyc", authorize("kyc:view"), kycController.adminList);
+router.get("/withdrawals", authorize("finance:view"), async (req, res) => {
+    try {
+        const WithdrawalRequest = require("../models/WithdrawalRequest");
+        const status = String(req.query.status || "");
+        const allowed = ["queued", "processing", "provider_pending", "successful", "failed"];
+        if (status && !allowed.includes(status)) return res.status(400).json({ message: "Invalid withdrawal status" });
+        const rows = await WithdrawalRequest.find(status ? { status } : {})
+            .select("driverId amount fee totalHeld phone status batchId paypackRef failureReason createdAt updatedAt")
+            .populate("driverId", "firstName lastName phone")
+            .sort({ createdAt: -1 }).limit(250).lean();
+        res.json({ data: rows });
+    } catch (error) { res.status(500).json({ message: "Unable to load withdrawals" }); }
+});
 router.patch("/kyc/:type/:id/review", authorize("kyc:approve"), kycController.adminReview);
 
 /**

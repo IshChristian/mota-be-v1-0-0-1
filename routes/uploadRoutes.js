@@ -2,10 +2,10 @@ const express = require("express");
 const router = express.Router();
 const uploadController = require("../controllers/uploadController");
 const uploadService = require("../services/uploadService");
-const { protect } = require("../middleware/authMiddleware");
+const { protectOnboarding } = require("../middleware/authMiddleware");
 
 // Require authentication for all upload routes
-router.use(protect);
+router.use(protectOnboarding);
 
 /**
  * @swagger

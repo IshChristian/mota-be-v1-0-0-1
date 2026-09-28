@@ -7,7 +7,7 @@ const { STAFF_ROLE_TEMPLATES } = require("../constants/staffRoles");
  * Middleware to authenticate JWT token
  * Extracts token from Authorization header and attaches user to request
  */
-const protect = async (req, res, next) => {
+const authenticate = (allowOnboarding = false, statusOnly = false) => async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
 
@@ -35,7 +35,9 @@ const protect = async (req, res, next) => {
       }
     }
 
-    if (!user.isActive) {
+    // Pending drivers may edit only the onboarding routes that explicitly opt in.
+    // Approved accounts disabled by an administrator never qualify.
+    if (!user.isActive && !((allowOnboarding || statusOnly) && user.role === "driver" && (statusOnly || user.isVerified) && user.registrationStatus !== "approved" && !user.deletedAt)) {
       return res.status(403).json({ message: "Account is deactivated. Contact admin." });
     }
 
@@ -51,6 +53,9 @@ const protect = async (req, res, next) => {
     return res.status(500).json({ message: "Authentication error", error: error.message });
   }
 };
+const protect = authenticate();
+const protectOnboarding = authenticate(true);
+const protectOnboardingStatus = authenticate(false, true);
 
 /**
  * RBAC authorization middleware
@@ -85,5 +90,7 @@ const authorize = (...permissions) => {
 
 module.exports = {
   protect,
+  protectOnboarding,
+  protectOnboardingStatus,
   authorize,
 };
