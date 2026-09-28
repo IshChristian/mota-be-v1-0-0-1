@@ -769,7 +769,7 @@ const setDriverAvailability = async (driverId, isOnline) => {
     if (isOnline) {
         const kyc = await DriverKyc.findOne({ userId: driverId, status: "approved" });
         if (!kyc) throw new Error("Approved driver documents are required before going online.");
-        const expiryDates = [kyc.drivingLicenseExpiresAt, kyc.transportPermitExpiresAt, kyc.insuranceExpiresAt, kyc.vehicleRegistrationExpiresAt];
+        const expiryDates = [kyc.drivingLicenseExpiresAt, kyc.transportPermitExpiresAt, kyc.insuranceExpiresAt, kyc.vehicleRegistrationExpiresAt, kyc.technicalInspectionExpiresAt];
         if (expiryDates.some((date) => !date || date <= new Date())) throw new Error("A required driver document is missing an expiry date or has expired. Renew it before going online.");
     }
 
