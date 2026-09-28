@@ -347,7 +347,7 @@ const verifyOTP = async (req, res) => {
  */
 const checkRegistrationPayment = async (req, res) => {
     try {
-        const { userId } = req.body;
+        const userId = req.user?.id || req.body?.userId;
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: "User not found" });
         if (user.registrationPaid) return res.status(200).json({ message: "Registration fee paid", paid: true, active: user.isActive });

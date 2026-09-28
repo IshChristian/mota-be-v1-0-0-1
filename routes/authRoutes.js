@@ -213,6 +213,7 @@ router.post("/2fa/verify", authController.verify2FA);
 // Protected routes
 router.post("/submit-registration", protectOnboarding, authController.submitRegistration);
 router.get("/registration-approval", protectOnboarding, authController.getRegistrationApproval);
+router.get("/my-registration-payment", protectOnboarding, authController.checkRegistrationPayment);
 router.use(protect);
 
 /**
