@@ -13,7 +13,7 @@ const storage = new CloudinaryStorage({
     cloudinary: cloudinary,
     params: {
         folder: "mota_uploads",
-        allowed_formats: ["jpg", "png", "jpeg", "pdf"],
+        allowed_formats: ["jpg", "png", "jpeg", "webp", "heic", "heif", "gif", "bmp", "tiff", "pdf"],
     },
 });
 
