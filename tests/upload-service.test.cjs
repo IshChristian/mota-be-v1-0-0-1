@@ -1,0 +1,17 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),{Writable}=require('node:stream');
+function setup(options={}) {
+ const calls=[],records=[];const fixture=Buffer.from([0,255,128,42]);
+ const cloudinary={config:()=>options.unconfigured?{}:{cloud_name:'test',api_key:'test',api_secret:'test'},uploader:{upload_stream:(params,callback)=>{calls.push(params);return new Writable({write(chunk,encoding,done){assert.deepEqual(chunk,fixture);done();},final(done){callback(options.failure || null,options.result || {secure_url:'https://res.cloudinary.com/test/raw/upload/document.docx',public_id:'document.docx',resource_type:'raw',bytes:4});done();}});},destroy:async(id,params)=>{calls.push({id,...params});}}};
+ const multer=()=>({single:()=> (req,res,next)=>{if(options.parserError)return next(options.parserError);req.file={buffer:fixture,originalname:'document.docx',mimetype:'application/octet-stream'};next();}});multer.memoryStorage=()=>({});
+ const Upload={create:async data=>{records.push(data);return data;},findById:async()=>({publicId:'document.docx',resourceType:'raw',deleteOne:async()=>calls.push('deleted')})};
+ const module={exports:{}};vm.runInNewContext(fs.readFileSync(require('node:path').join(__dirname,'../services/uploadService.js'),'utf8'),{module,exports:module.exports,require:name=>({'cloudinary':{v2:cloudinary},multer,'../models/Upload':Upload})[name],process:{env:{}},console:{error(){}}});
+ const invoke=(field='file')=>new Promise(resolve=>{const req={user:{id:'user'}};const res={status(status){this.code=status;return this;},json(body){resolve({status:this.code,body,req});}};module.exports.uploadMiddleware.single(field)(req,res,()=>resolve({status:200,req}));});
+ return {service:module.exports,invoke,calls,records};
+}
+test('streams bytes to Cloudinary with auto detection and persists confirmed secure URL',async()=>{const {invoke,service,calls,records}=setup();const result=await invoke();assert.equal(result.status,200);assert.equal(calls[0].resource_type,'auto');assert.equal(result.req.file.buffer,undefined);await service.saveUploadRecord('user',result.req.file);assert.equal(records[0].url,'https://res.cloudinary.com/test/raw/upload/document.docx');assert.equal(records[0].resourceType,'raw');});
+test('avatars request Cloudinary image handling',async()=>{const {invoke,calls}=setup();await invoke('avatar');assert.equal(calls[0].resource_type,'image');});
+test('does not continue when Cloudinary fails',async()=>{const {invoke,records}=setup({failure:{http_code:503}});const result=await invoke();assert.equal(result.status,502);assert.match(result.body.message,/Cloudinary/);assert.equal(records.length,0);});
+test('rejects Cloudinary responses without confirmed secure URL',async()=>{const {invoke}=setup({result:{public_id:'test',secure_url:'http://bad'}});assert.equal((await invoke()).status,502);});
+test('reports missing server configuration',async()=>{const {invoke}=setup({unconfigured:true});assert.equal((await invoke()).status,503);});
+test('oversized multipart is rejected',async()=>{const {invoke}=setup({parserError:{code:'LIMIT_FILE_SIZE'}});assert.equal((await invoke()).status,413);});
+test('deletes using the stored Cloudinary resource type',async()=>{const {service,calls}=setup();await service.deleteUpload('id');assert.equal(calls[0].resource_type,'raw');assert.equal(calls.at(-1),'deleted');});
