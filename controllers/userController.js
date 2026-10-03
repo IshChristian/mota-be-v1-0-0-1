@@ -46,15 +46,23 @@ const updateMe = async (req, res) => {
     try {
         const {
             firstName, lastName, emergencyContactName,
-            emergencyContactPhone, preferredPayment,
+            emergencyContactPhone, preferredPayment, avatarUrl,
         } = req.body;
         if (preferredPayment && !["CASH", "MOMO", "CARD"].includes(preferredPayment)) {
             return res.status(400).json({ message: "preferredPayment must be CASH, MOMO, or CARD" });
         }
+        if (avatarUrl !== undefined) {
+            const cloud = uploadService.cloudinary.config().cloud_name;
+            let parsed;
+            try { parsed = new URL(avatarUrl); } catch { /* invalid URL */ }
+            if (!cloud || typeof avatarUrl !== "string" || !parsed || parsed.protocol !== "https:" || parsed.hostname !== "res.cloudinary.com" || parsed.username || parsed.password || parsed.port || parsed.search || parsed.hash || !parsed.pathname.startsWith(`/${cloud}/image/upload/`)) {
+                return res.status(400).json({ message: "Use a confirmed Cloudinary profile image URL." });
+            }
+        }
         // Don't allow updating sensitive fields here directly
         const updates = {
             firstName, lastName, emergencyContactName,
-            emergencyContactPhone, preferredPayment,
+            emergencyContactPhone, preferredPayment, avatarUrl,
         };
         if (emergencyContactName && emergencyContactPhone && preferredPayment) {
             updates.passengerProfileCompleted = true;
