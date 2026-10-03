@@ -131,6 +131,7 @@ const productionRoutes = require("./routes/productionRoutes");
 // (Auth moved to new module below)
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
+app.use("/api/referrals", require("./routes/referralRoutes"));
 app.use("/api/roles", roleRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/settings", settingRoutes);

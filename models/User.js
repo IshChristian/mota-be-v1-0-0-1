@@ -71,6 +71,8 @@ const userSchema = new mongoose.Schema({
         enum: ["basic", "full"],
         default: "basic",
     },
+    referredBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    referralReward: { type: Number, min: 0 },
     referralCode: { type: String, unique: true, sparse: true },
     registrationPaid: { type: Boolean, default: false },
     registrationPaypackRef: { type: String },
