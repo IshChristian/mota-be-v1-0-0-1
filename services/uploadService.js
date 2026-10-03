@@ -42,7 +42,7 @@ const uploadBuffer = (file, field) => new Promise((resolve, reject) => {
 // Keep the existing routes' .single(field) interface, but wait for Cloudinary before continuing.
 const uploadMiddleware = {
     single: (field) => (req, res, next) => {
-        multipart.single(field)(req, res, async (error) => {
+        const finish = async (error) => {
             if (error) {
                 const tooLarge = error.code === "LIMIT_FILE_SIZE";
                 return res.status(tooLarge ? 413 : 400).json({ message: tooLarge ? "Choose a file smaller than 20 MB." : "Upload one file using the correct upload field." });
@@ -61,7 +61,19 @@ const uploadMiddleware = {
                 const message = status === 503 ? "Upload storage is not configured. Please contact support." : status === 400 ? "Cloudinary could not accept this file. Try another image or document." : "Cloudinary upload failed. Please check your connection and retry.";
                 return res.status(status).json({ message });
             }
-        });
+        };
+        if (req.is?.("application/json")) {
+            const value = req.body?.fileBase64;
+            if (req.body?.fieldName !== field || typeof value !== "string" || !value.length || !/^[A-Za-z0-9+/]+={0,2}$/.test(value) || value.length % 4 !== 0) {
+                return res.status(400).json({ message: "The selected image data is invalid. Select it again." });
+            }
+            if (value.length > Math.ceil(20 * 1024 * 1024 / 3) * 4) return res.status(413).json({ message: "Choose a file smaller than 20 MB." });
+            const buffer = Buffer.from(value, "base64");
+            if (buffer.length > 20 * 1024 * 1024) return res.status(413).json({ message: "Choose a file smaller than 20 MB." });
+            req.file = { buffer, originalname: req.body.fileName || "image.jpg", mimetype: "image/jpeg" };
+            return finish();
+        }
+        return multipart.single(field)(req, res, finish);
     },
 };
 
