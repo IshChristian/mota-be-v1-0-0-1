@@ -47,6 +47,7 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key"],
   optionsSuccessStatus: 204,
 }));
+app.use(["/api/uploads", "/api/users/avatar"], express.json({ limit: "30mb" }));
 app.use(express.json({
   limit: "1mb",
   verify(req, _res, buffer) {

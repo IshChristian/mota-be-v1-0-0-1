@@ -1,3 +1,4 @@
+const { getRoadRoute, valid: validCoordinates } = require("./roadRouteService");
 const Ride = require("../models/Ride");
 const User = require("../models/User");
 const Transaction = require("../models/Transaction");
@@ -57,13 +58,13 @@ function generatePin() {
  * The server is authoritative — frontend NEVER decides fare.
  */
 const estimateFare = async (pickup, destination) => {
-    if (!pickup?.latitude || !pickup?.longitude || !destination?.latitude || !destination?.longitude) {
+    if (!validCoordinates(pickup) || !validCoordinates(destination)) {
         throw new Error("Both pickup and destination coordinates are required.");
     }
 
-    const distanceKm = haversine(
-        pickup.latitude, pickup.longitude,
-        destination.latitude, destination.longitude
+    const road = await getRoadRoute(pickup, destination);
+    const distanceKm = road?.distanceKm ?? haversine(
+        pickup.latitude, pickup.longitude, destination.latitude, destination.longitude
     );
 
     // Base fare + per-km rate (configurable via system settings)
@@ -80,9 +81,10 @@ const estimateFare = async (pickup, destination) => {
 
     // Rough duration estimate: avg 20 km/h in Kigali traffic
     const avgSpeedKmh = await systemSettingService.getSetting("ride_avg_speed_kmh", 20);
-    const durationMinutes = Math.round((distanceKm / avgSpeedKmh) * 60);
+    const durationMinutes = road?.durationMinutes ?? Math.round((distanceKm / avgSpeedKmh) * 60);
 
     return {
+        distanceSource: road?.distanceSource || "straight_line_fallback",
         distanceKm: Math.round(distanceKm * 10) / 10,
         durationMinutes,
         minimumFare,
@@ -97,7 +99,7 @@ const estimateFare = async (pickup, destination) => {
 
 const requestRide = async (passengerId, pickup, destination, offeredFare, backupDrivers = 1, passengers = 1, paymentMethod = "momo", scheduledDate = null, scheduledTime = null) => {
     // Validate coordinates
-    if (!pickup?.latitude || !destination?.latitude) {
+    if (!validCoordinates(pickup) || !validCoordinates(destination)) {
         throw new Error("Pickup and destination coordinates are required.");
     }
 
@@ -193,6 +195,7 @@ const dispatchRide = async (ride) => {
     if (!active) return { ride, nearbyDrivers: [], cancelled: true };
     ride.rideStatus = active.rideStatus;
 
+    const earnings = await walletService.calculateCommission(offeredFare);
     // Notify drivers via SMS and SSE
     for (const driver of nearbyDrivers) {
         const pickupDist = haversine(
@@ -212,6 +215,8 @@ const dispatchRide = async (ride) => {
                 distanceKm: Math.round(estimate.distanceKm * 10) / 10
             },
             offeredFare: offeredFare,
+            driverEarning: earnings.driverEarning, commissionAmount: earnings.commission, commissionRate: earnings.commissionRate,
+            estimatedDurationMin: ride.estimatedDurationMin,
             passengers: passengers,
             scheduledDate: scheduledDate,
             scheduledTime: scheduledTime
@@ -427,11 +432,15 @@ const driverArrived = async (driverId, rideId) => {
 };
 
 const getDriverRequests = async (driverId) => {
-    return Ride.find({
+    const rides = await Ride.find({
         rideStatus: "searching",
         notifiedDrivers: driverId,
         declinedDrivers: { $ne: driverId },
-    }).select("pickup destination offeredFare estimatedDistanceKm estimatedDurationMin passengers scheduledDate scheduledTime requestedAt").sort({ requestedAt: -1 });
+    }).select("pickup destination offeredFare estimatedDistanceKm estimatedDurationMin passengers scheduledDate scheduledTime requestedAt").sort({ requestedAt: -1 }).lean();
+    return Promise.all(rides.map(async ride => {
+        const earning = await walletService.calculateCommission(ride.offeredFare);
+        return { ...ride, driverEarning: earning.driverEarning, commissionAmount: earning.commission, commissionRate: earning.commissionRate };
+    }));
 };
 
 const requestStart = async (driverId, rideId) => {

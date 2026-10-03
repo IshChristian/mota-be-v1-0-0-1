@@ -1,3 +1,4 @@
+const walletService = require("../services/walletService");
 const rideEngineService = require("../services/rideEngineService");
 const Ride = require("../models/Ride");
 const DriverProfile = require("../models/DriverProfile");
@@ -254,10 +255,12 @@ const getRideById = async (req, res) => {
         const driverProfile = ride.driverId
             ? await DriverProfile.findOne({ driverId: ride.driverId._id }).select("plateNumber cooperativeName")
             : null;
+        const earning = await walletService.calculateCommission(ride.fare ?? ride.offeredFare ?? 0);
         const mappedRide = {
             _id: ride._id,
             status: ride.rideStatus,
             rideStatus: ride.rideStatus,
+            driverEarning: earning.driverEarning, commissionAmount: earning.commission, commissionRate: earning.commissionRate,
             offeredFare: ride.offeredFare,
             fare: ride.fare,
             minimumFare: ride.minimumFare,
