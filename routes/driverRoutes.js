@@ -1,3 +1,4 @@
+const performanceService = require('../services/driverPerformanceService');
 const express = require("express");
 const router = express.Router();
 const driverController = require("../controllers/driverController");
@@ -520,4 +521,12 @@ router.get("/active-ride", authMiddleware, roleMiddleware("driver"), rideEngineC
  */
 router.put("/location", authMiddleware, roleMiddleware("driver"), rideEngineController.updateLocation);
 
+router.get('/performance', authMiddleware, roleMiddleware('driver'), async (req, res) => {
+    try { res.json({ data: await performanceService.getPerformance(req.user.id, req.query.days || 30) }); }
+    catch (error) { res.status(error.status || 500).json({ message: error.status === 400 ? error.message : 'Could not load performance. Please retry.' }); }
+});
+router.post('/offers/:rideId/received', authMiddleware, roleMiddleware('driver'), async (req, res) => {
+    try { await performanceService.acknowledgeOffer(req.user.id, req.params.rideId); res.json({ success: true }); }
+    catch (error) { res.status(error.status || 500).json({ message: error.status ? error.message : 'Offer acknowledgment failed.' }); }
+});
 module.exports = router;
