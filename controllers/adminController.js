@@ -522,23 +522,13 @@ const reviewRegistration = async (req, res) => {
         if (status === "approved") {
             user.isActive = true;
 
-            // Trigger referral reward (3000 RWF to wallet)
-            const Referral = require("../models/Referral");
-            const walletService = require("../services/walletService");
-            const pendingReferral = await Referral.findOne({ referredUserId: user._id, status: "pending" });
-            
-            if (pendingReferral) {
-                // Reward referrer visually 3000 RWF in their wallet
-                await walletService.rewardReferral(pendingReferral.referrerId, 3000);
-                pendingReferral.status = "successful";
-                await pendingReferral.save();
-            }
 
         } else {
             user.isActive = false; // suspend/pending if not approved
         }
 
         await user.save();
+        if (status === "approved") await require("../services/referralService").trySettleReferral(user._id);
 
         // Optionally send sms to driver using notificationService
         const { sendSMS } = require("../services/smsService");

@@ -1,3 +1,4 @@
+const referralService = require('../services/referralService');
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
@@ -45,6 +46,7 @@ const register = async (req, res) => {
             return res.status(400).json({ message: `User with this ${conflict} already exists`, conflict, value: conflictValue });
         }
 
+        const referral = await referralService.resolveReferral(referralCode, role || "client");
         const userReferralCode = `MOTA-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
 
         let hashedPassword = null;
@@ -60,6 +62,8 @@ const register = async (req, res) => {
             nationalId: cleanNationalId,
             role: role || "client",
             referralCode: userReferralCode,
+            referredBy: referral?.referrer._id,
+            referralReward: referral?.reward,
             password: hashedPassword,
             isActive: false, // Phone verification activates passengers; drivers await review.
         });
@@ -102,13 +106,12 @@ const register = async (req, res) => {
             }
         }
 
-        // Referral logic
-        if (referralCode) {
-            const referrer = await User.findOne({ referralCode });
-            if (referrer) {
-                await Referral.create({ referrerId: referrer._id, referredUserId: newUser._id, reward: 500, status: "pending" });
-                await sendSMS(referrer.phone, `${firstName.trim()} signed up using your code! Reward pending.`, "referral_reward");
-            }
+        if (referral) {
+            try { await referralService.recordReferral(newUser); }
+            catch { console.error("Referral record deferred; attribution is saved on the user."); }
+            // Delivery failures must not report a successful registration as failed.
+            try { await sendSMS(referral.referrer.phone, "Someone joined MOTA using your code. View referral status in the app.", "referral_reward"); }
+            catch (error) { console.error("Referral notification delivery failed"); }
         }
 
         // SMS Verification
@@ -134,7 +137,7 @@ const register = async (req, res) => {
             payment: paymentInfo
         });
     } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+        res.status(error.status || 500).json({ message: error.status === 400 ? error.message : "Server error", error: error.message });
     }
 };
 
@@ -336,6 +339,7 @@ const verifyOTP = async (req, res) => {
         user.otpToken = null;
         user.otpExpiry = null;
         await user.save();
+        await referralService.trySettleReferral(user._id);
         res.status(200).json({ message: "Phone verified" });
     } catch (err) {
         res.status(400).json({ message: "Code expired" });
