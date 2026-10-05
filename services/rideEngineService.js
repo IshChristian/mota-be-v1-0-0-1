@@ -1,3 +1,4 @@
+const rideDuration = require("./rideDuration");
 const { getRoadRoute, valid: validCoordinates } = require("./roadRouteService");
 const Ride = require("../models/Ride");
 const User = require("../models/User");
@@ -5,6 +6,7 @@ const Transaction = require("../models/Transaction");
 const Wallet = require("../models/Wallet");
 const SupportCase = require("../models/SupportCase");
 const DriverKyc = require("../models/DriverKyc");
+const DriverProfile = require("../models/DriverProfile");
 const walletService = require("./walletService");
 const paymentService = require("./paymentService");
 const auditService = require("./auditService");
@@ -490,7 +492,7 @@ const confirmStop = async (passengerId, rideId) => {
     if (ride.rideStatus !== "stop_requested") throw new Error(`The ride cannot be completed while its status is ${ride.rideStatus}. Wait for the driver to request the stop.`);
     ride.rideStatus = "awaiting_payment";
     ride.stopConfirmedAt = new Date();
-    ride.actualDurationMin = Math.max(1, Math.round((Date.now() - new Date(ride.startedAt).getTime()) / 60000));
+    ride.actualDurationMin = rideDuration(ride);
     if (ride.paymentMethod === "wallet" && ride.paymentStatus !== "successful") {
         const session = await mongoose.startSession();
         try {
@@ -572,7 +574,7 @@ const completeRide = async (driverId, rideId) => {
     if (!ride) throw new Error("No in-progress ride found.");
 
     // Calculate actual duration
-    const actualDuration = Math.round((Date.now() - new Date(ride.startedAt).getTime()) / 60000);
+    const actualDuration = rideDuration(ride);
 
     ride.rideStatus = "completed";
     ride.completedAt = new Date();
@@ -736,7 +738,12 @@ const getRideStatus = async (rideId, userId) => {
         };
     }
 
-    return ride;
+    const result = ride.toObject();
+    if (result.driverId?._id) {
+        const profile = await DriverProfile.findOne({ driverId: result.driverId._id }).select("plateNumber").lean();
+        if (profile?.plateNumber) result.driverId.plateNumber = profile.plateNumber;
+    }
+    return result;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
