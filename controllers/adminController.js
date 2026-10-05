@@ -7,6 +7,10 @@ const Role = require("../models/Role");
 const bcrypt = require("bcrypt");
 const auditService = require("../services/auditService");
 const { STAFF_ROLES } = require("../constants/staffRoles");
+const { effectivePermissions, validateGrant, scoped: reportScopes } = require("../services/reportAccess");
+const canAssignReports = (actor, role, roleRecord, reportPermissions) => {
+    try { validateGrant(actor, effectivePermissions({ role, roleId: roleRecord, reportPermissions }).filter(p => reportScopes.includes(p))); return true; } catch { return false; }
+};
 const Ride = require("../models/Ride");
 const SupportCase = require("../models/SupportCase");
 const DriverProfile = require("../models/DriverProfile");
@@ -110,6 +114,7 @@ const createUserAccount = async (req, res) => {
             selectedRole = await Role.findById(roleId);
             if (!selectedRole || selectedRole.name !== role) return res.status(400).json({ message: "Role record does not match the selected role" });
         } else if (STAFF_ROLES.includes(role)) selectedRole = await Role.findOne({ name: role });
+        if (!canAssignReports(req.user, role, selectedRole)) return res.status(403).json({ message: "You cannot grant this role’s reporting access. Ask superadmin to assign it." });
         const user = await User.create({ ...pickFields(req.body, editableUserFields), firstName, lastName, phone, email: email?.toLowerCase(), role, roleId: selectedRole?._id, password: await bcrypt.hash(password, 12) });
         await auditService.log({ ...auditContext(req), action: "user_created", targetType: "User", targetId: user._id, metadata: { after: publicUser(user) } });
         res.status(201).json({ message: "User created", data: publicUser(user) });
@@ -137,12 +142,15 @@ const assignUserRole = async (req, res) => {
         if (role === "superadmin" && req.user.role !== "superadmin") return res.status(403).json({ message: "Only a superadmin can assign the superadmin role" });
         const before = await User.findById(req.params.id);
         if (!before) return res.status(404).json({ message: "User not found" });
+        if (before.role === "superadmin" && req.user.role !== "superadmin") return res.status(403).json({ message: "Only superadmin can change another superadmin." });
         if (req.params.id === req.user.id && before.role !== role) return res.status(400).json({ message: "You cannot change your own role" });
         if (before.role === "superadmin" && role !== "superadmin" && await User.countDocuments({ role: "superadmin", isActive: true }) <= 1) return res.status(409).json({ message: "The last active superadmin cannot be demoted" });
         let selectedRole = null;
         if (roleId) selectedRole = await Role.findById(roleId);
         else if (STAFF_ROLES.includes(role)) selectedRole = await Role.findOne({ name: role });
         if (STAFF_ROLES.includes(role) && (!selectedRole || selectedRole.name !== role)) return res.status(400).json({ message: "A matching staff role record is required" });
+        if (selectedRole && selectedRole.name !== role) return res.status(400).json({ message: "Role record does not match the selected role." });
+        if (!canAssignReports(req.user, role, selectedRole, before.reportPermissions)) return res.status(403).json({ message: "You cannot grant this role’s reporting access. Ask superadmin to assign it." });
         const user = await userService.updateUser(req.params.id, { role, roleId: selectedRole?._id || null });
         await auditService.log({ ...auditContext(req), action: "user_role_assigned", targetType: "User", targetId: user._id, metadata: { before: before.role, after: role } });
         res.status(200).json({ message: "Role assigned", data: publicUser(user) });

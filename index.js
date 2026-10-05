@@ -129,11 +129,19 @@ const productionRoutes = require("./routes/productionRoutes");
 
 // ─── API Routes ─────────────────────────────────────────
 // (Auth moved to new module below)
+app.use('/api', (req, res, next) => {
+    res.on('finish', () => {
+        const failedLogin = req.originalUrl.split('?')[0] === '/api/auth/login' && [400,401,403].includes(res.statusCode);
+        if (res.statusCode >= 500 || failedLogin) void require('./services/auditService').log({ actorId: req.user?._id, actorRole: req.user?.role, action: failedLogin ? 'authentication_failed' : 'system_failure', targetType: 'Route', metadata: { path: req.originalUrl.split('?')[0], status: res.statusCode, method: req.method }, ipAddress: req.ip });
+    });
+    next();
+});
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/referrals", require("./routes/referralRoutes"));
 app.use("/api/roles", roleRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/reports", require("./routes/reportRoutes"));
 app.use("/api/settings", settingRoutes);
 app.use("/api/search", searchRoutes);
 app.use("/api/uploads", uploadRoutes);
