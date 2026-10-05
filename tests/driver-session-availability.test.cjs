@@ -50,6 +50,10 @@ function availability(options = {}) {
     calls = [],
     driver = {
       role: "driver",
+      kycLevel: "full",
+      isActive: true,
+      isVerified: true,
+      registrationPaid: true,
       isOnline: true,
       save: async () => calls.push("save"),
     };
@@ -79,9 +83,14 @@ function availability(options = {}) {
         return options.concurrentOffline ? null : driver;
       },
     },
-    DriverKyc: { findOne: async () => dates },
+    DriverKyc: {
+      findOne: async () =>
+        options.noRecord ? null : options.noDates ? {} : dates,
+    },
     Ride: { findOne: async () => null },
     Date,
+    assertDriverCanGoOnline: require("../services/driverOnlineEligibility")
+      .assertDriverCanGoOnline,
   });
   return { calls, driver, set: module.exports };
 }
@@ -116,4 +125,13 @@ test("automatic online supports legacy token version zero", async () => {
   const { filter } = h.calls[0];
   assert.equal(filter.$or[0].tokenVersion, 0);
   assert.equal(filter.$or[1].tokenVersion.$exists, false);
+});
+test("availability endpoint logic allows full KYC without a legacy record", async () => {
+  const h = availability({ noRecord: true });
+  assert.equal((await h.set("driver", true)).isOnline, true);
+  assert.ok(h.calls.includes("save"));
+});
+test("automatic availability allows full KYC without historical dates", async () => {
+  const h = availability({ noDates: true });
+  assert.equal((await h.set("driver", true, true, 0)).isOnline, true);
 });
