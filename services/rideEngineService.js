@@ -1,3 +1,4 @@
+const { assertDriverCanGoOnline } = require("./driverOnlineEligibility");
 const rideDuration = require("./rideDuration");
 const { getRoadRoute, valid: validCoordinates } = require("./roadRouteService");
 const Ride = require("../models/Ride");
@@ -783,10 +784,8 @@ const setDriverAvailability = async (driverId, isOnline, automatic = false, toke
     if (!driver) throw new Error("Driver not found.");
     if (driver.role !== "driver") throw new Error("Only drivers can toggle availability.");
     if (isOnline) {
-        const kyc = await DriverKyc.findOne({ userId: driverId, status: "approved" });
-        if (!kyc) throw new Error("Approved driver documents are required before going online.");
-        const expiryDates = [kyc.drivingLicenseExpiresAt, kyc.transportPermitExpiresAt, kyc.insuranceExpiresAt, kyc.vehicleRegistrationExpiresAt, kyc.technicalInspectionExpiresAt];
-        if (expiryDates.some((date) => !date || date <= new Date())) throw new Error("A required driver document is missing an expiry date or has expired. Renew it before going online.");
+        const kyc = await DriverKyc.findOne({ userId: driverId });
+        assertDriverCanGoOnline(driver, kyc);
     }
 
     // Cannot go offline while in an active ride
