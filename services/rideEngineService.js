@@ -778,7 +778,7 @@ const getDriverActiveRide = async (driverId) => {
 // 14. DRIVER AVAILABILITY
 // ═══════════════════════════════════════════════════════════════════════════
 
-const setDriverAvailability = async (driverId, isOnline) => {
+const setDriverAvailability = async (driverId, isOnline, automatic = false, tokenVersion) => {
     const driver = await User.findById(driverId);
     if (!driver) throw new Error("Driver not found.");
     if (driver.role !== "driver") throw new Error("Only drivers can toggle availability.");
@@ -800,10 +800,17 @@ const setDriverAvailability = async (driverId, isOnline) => {
         }
     }
 
+    if (automatic) {
+        if (!isOnline) throw new Error("Automatic availability can only go online.");
+        const versionFilter = (tokenVersion || 0) === 0 ? { $or: [{ tokenVersion: 0 }, { tokenVersion: { $exists: false } }] } : { tokenVersion };
+        const updated = await User.findOneAndUpdate({ ...versionFilter, deletedAt: null, activationBlocked: { $ne: true }, _id: driverId, role: "driver", kycLevel: "full", isActive: true, isVerified: true, registrationPaid: true, availabilityManuallyOffline: { $ne: true } }, { $set: { isOnline: true } }, { new: true });
+        return { isOnline: updated ? true : false, availabilityManuallyOffline: updated?.availabilityManuallyOffline === true };
+    }
     driver.isOnline = isOnline;
+    driver.availabilityManuallyOffline = !isOnline;
     await driver.save();
 
-    return { isOnline: driver.isOnline };
+    return { isOnline: driver.isOnline, availabilityManuallyOffline: driver.availabilityManuallyOffline };
 };
 
 // ═══════════════════════════════════════════════════════════════════════════

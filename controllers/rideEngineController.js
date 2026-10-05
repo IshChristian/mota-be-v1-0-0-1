@@ -335,7 +335,8 @@ const setAvailability = async (req, res) => {
         if (typeof isOnline !== "boolean") {
             return res.status(400).json({ message: "isOnline (boolean) is required." });
         }
-        const result = await rideEngineService.setDriverAvailability(req.user.id, isOnline);
+        if (req.body.automatic !== undefined && typeof req.body.automatic !== "boolean") return res.status(400).json({ message: "automatic must be a boolean." });
+        const result = await rideEngineService.setDriverAvailability(req.user.id, isOnline, req.body.automatic === true, req.user.tokenVersion);
         res.status(200).json(result);
     } catch (error) {
         res.status(400).json({ message: error.message });

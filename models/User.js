@@ -92,6 +92,7 @@ const userSchema = new mongoose.Schema({
     }],
     // ── Driver Availability & Location ──────────────────────────────
     isOnline: { type: Boolean, default: false },
+    availabilityManuallyOffline: { type: Boolean, default: false },
     lastLocation: {
         latitude: { type: Number },
         longitude: { type: Number },

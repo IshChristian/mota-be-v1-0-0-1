@@ -35,7 +35,7 @@ const getUser = async (req, res) => {
 
 const getMe = async (req, res) => {
     try {
-        const account = await User.findById(req.user.id).select("firstName lastName phone email nationalId avatarUrl avatarId role roleId tier isVerified isEmailVerified isActive activationBlocked kycLevel registrationPaid registrationStatus registrationRemarks registrationSubmittedAt emergencyContactName emergencyContactPhone preferredPayment passengerProfileCompleted isOnline lastLocation lastLocationAt referralCode referredBy createdAt updatedAt twoFactorEnabled notificationPreferences").populate("avatarId", "url format").populate("roleId", "name permissions");
+        const account = await User.findById(req.user.id).select("firstName lastName phone email nationalId avatarUrl avatarId role roleId tier isVerified isEmailVerified isActive activationBlocked kycLevel registrationPaid registrationStatus registrationRemarks registrationSubmittedAt emergencyContactName emergencyContactPhone preferredPayment passengerProfileCompleted isOnline availabilityManuallyOffline lastLocation lastLocationAt referralCode referredBy createdAt updatedAt twoFactorEnabled notificationPreferences").populate("avatarId", "url format").populate("roleId", "name permissions");
         if (!account) return res.status(404).json({message:"Account not found"});
         const driver = account.role === "driver";
         const [kyc, profile] = await Promise.all([
