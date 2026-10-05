@@ -27,9 +27,11 @@ const getUserById = async (id) => {
 };
 
 const updateUser = async (id, updateData) => {
-    return await User.findByIdAndUpdate(id, updateData, { new: true })
+    if (typeof updateData.isActive === "boolean") updateData = {...updateData, activationBlocked:!updateData.isActive};
+    const user = await User.findByIdAndUpdate(id, updateData, { new: true })
         .populate("roleId", "name permissions")
         .populate("avatarId", "url format");
+    return await require("./driverActivation").activateFullKycDriver(user);
 };
 
 const assignRole = async (userId, roleId) => {

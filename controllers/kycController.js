@@ -62,7 +62,8 @@ async function adminReview(req, res) {
   const Model = type === "driver" ? DriverKyc : PassengerKyc;
   const record = await Model.findByIdAndUpdate(req.params.id, { status, remarks: req.body.remarks, reviewedAt: new Date(), reviewedBy: req.user.id }, { new: true, runValidators: true });
   if (!record) return res.status(404).json({ message: "KYC record not found" });
-  await User.findByIdAndUpdate(record.userId, { kycLevel: status === "approved" ? "full" : "basic" });
+  const reviewedUser = await User.findByIdAndUpdate(record.userId, { kycLevel: status === "approved" ? "full" : "basic" }, {new:true});
+  if (status === "approved") await require("../services/driverActivation").activateFullKycDriver(reviewedUser);
   if (status === "approved") await require("../services/referralService").trySettleReferral(record.userId);
   await auditService.log({ actorId: req.user.id, actorRole: req.user.role, action: status === "approved" ? "kyc_verified" : "kyc_reviewed", targetType: type === "driver" ? "DriverKyc" : "PassengerKyc", targetId: record._id, ipAddress: req.ip, metadata: { kycType: type, status, remarks: req.body.remarks } });
   res.json({ message: `${type} KYC ${status}`, data: record });

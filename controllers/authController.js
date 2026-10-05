@@ -168,6 +168,7 @@ const login = async (req, res) => {
             if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
         }
 
+        await require('../services/driverActivation').activateFullKycDriver(user);
         const onboardingDriver = user.role === "driver" && user.registrationStatus !== "approved" && !user.deletedAt;
         if (!user.isActive && !onboardingDriver) return res.status(403).json({ message: user.isVerified ? "Account disabled" : "Verify your phone to continue", userId: user._id, phone: user.phone, user: { isVerified: user.isVerified } });
 
@@ -355,6 +356,7 @@ const checkRegistrationPayment = async (req, res) => {
         const { userId } = req.body;
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: "User not found" });
+        await require("../services/driverActivation").activateFullKycDriver(user);
         if (user.registrationPaid) return res.status(200).json({ message: "Registration fee paid", paid: true, active: user.isActive });
 
         if (!user.registrationPaypackRef) {
@@ -367,13 +369,14 @@ const checkRegistrationPayment = async (req, res) => {
             user.registrationPaid = true;
             // Removed: user.isActive = true;
             // Now we mark it as pending for admin approval
-            user.registrationStatus = "pending";
+            if (user.registrationStatus !== "approved") user.registrationStatus = "pending";
             if (user.role === "agent") {
                 user.kycLevel = "full";
             }
             await user.save();
 
-            return res.status(200).json({ message: "Payment successful. Account pending admin approval.", paid: true, active: false, status: user.registrationStatus });
+            await require("../services/driverActivation").activateFullKycDriver(user);
+            return res.status(200).json({ message: user.isActive ? "Payment confirmed. Account active." : "Payment confirmed. Complete verification to continue.", paid: true, active: user.isActive, status: user.registrationStatus });
         } else {
             return res.status(200).json({ message: "Payment pending or failed.", paid: false, active: false, status: result.data?.status });
         }
