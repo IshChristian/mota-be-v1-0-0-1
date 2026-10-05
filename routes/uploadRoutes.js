@@ -1,11 +1,16 @@
 const express = require("express");
 const router = express.Router();
+const { rateLimit } = require("express-rate-limit");
+const { createUploadSignature } = require("../controllers/uploadSignatureController");
 const uploadController = require("../controllers/uploadController");
 const uploadService = require("../services/uploadService");
 const { protectOnboarding } = require("../middleware/authMiddleware");
 
 // Require authentication for all upload routes
 router.use(protectOnboarding);
+
+// Authenticated onboarding accounts may upload their first identity documents.
+router.post("/signature", rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: "draft-8", legacyHeaders: false, message: { message: "Too many upload requests. Please wait and retry." } }), createUploadSignature);
 
 /**
  * @swagger
