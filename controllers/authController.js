@@ -181,6 +181,7 @@ const login = async (req, res) => {
             });
         }
 
+        await require("../services/driverSessionAvailability").beginDriverSession(user);
         const sessionId = crypto.randomUUID();
         await Session.create({ userId: user._id, sessionId, userAgent: req.get('user-agent'), ipAddress: req.ip, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) });
         const token = authService.generateToken(user, sessionId);
@@ -192,7 +193,7 @@ const login = async (req, res) => {
 };
 
 const logout = async (req, res) => {
-    await User.findByIdAndUpdate(req.user.id, { $inc: { tokenVersion: 1 } });
+    await require("../services/driverSessionAvailability").revokeSessionAndAvailability(req.user);
     await Session.updateMany({ userId: req.user.id, revokedAt: null }, { $set: { revokedAt: new Date() } });
     res.status(200).json({ message: "Logged out successfully from all devices." });
 };
@@ -318,6 +319,7 @@ const verify2FA = async (req, res) => {
             await user.save();
         }
 
+        if (!req.user) await require("../services/driverSessionAvailability").beginDriverSession(user);
         const jwtToken = authService.generateToken(user);
         res.status(200).json({ message: "2FA verified", token: jwtToken });
     } catch (error) {
