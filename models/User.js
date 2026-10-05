@@ -79,6 +79,7 @@ const userSchema = new mongoose.Schema({
     registrationPaypackRef: { type: String },
     fuelVouchers: [{
         code: String,
+        idempotencyKey: String,
         amount: Number,
         type: { type: String, enum: ["momo", "qr"], default: "qr" },
         status: { type: String, enum: ["pending", "active", "redeemed", "expired"], default: "active" },

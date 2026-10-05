@@ -24,7 +24,7 @@ const auditLogSchema = new mongoose.Schema({
             "support_contact_logged", "support_ride_assigned", "passenger_renotified",
             "ride_admin_cancelled",
             "driver_profile_updated", "wallet_adjusted",
-            "withdrawal_reviewed",
+            "withdrawal_reviewed", "fuel_voucher_redeemed",
             "report_exported", "report_access_updated", "access_denied", "authentication_failed", "authentication_succeeded", "system_failure",
             "role_created", "role_updated", "role_deleted",
         ],
