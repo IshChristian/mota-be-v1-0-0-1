@@ -183,6 +183,7 @@ const login = async (req, res) => {
         const sessionId = crypto.randomUUID();
         await Session.create({ userId: user._id, sessionId, userAgent: req.get('user-agent'), ipAddress: req.ip, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) });
         const token = authService.generateToken(user, sessionId);
+        await require("../services/auditService").log({actorId:user._id,actorRole:user.role,action:"authentication_succeeded",targetType:"Session",metadata:{method:"password"},ipAddress:req.ip});
         res.status(200).json({ message: "Login success", token, user: { id: user._id, firstName: user.firstName, lastName: user.lastName, phone: user.phone, email: user.email, role: user.role, isVerified: user.isVerified, isEmailVerified: user.isEmailVerified, isActive: user.isActive, registrationPaid: user.registrationPaid, registrationStatus: user.registrationStatus, kycLevel: user.kycLevel, permissions: user.roleId?.permissions || [] } });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });

@@ -14,6 +14,7 @@ const userSchema = new mongoose.Schema({
         enum: ["driver", "agent", "admin", "superadmin", "financial", "caller_support", "client", "manager", "moderator"],
         default: "driver",
     },
+    reportPermissions: { type: [String], default: undefined },
     roleId: { type: mongoose.Schema.Types.ObjectId, ref: "Role" },
     password: { type: String },
     tokenVersion: { type: Number, default: 0, select: false },

@@ -167,16 +167,15 @@ const verifyContactChange = async (req, res) => {
 };
 
 const assignRole = async (req, res) => {
-    try {
-        const { roleId } = req.body;
-        const user = await userService.assignRole(req.params.id, roleId);
-
-        if (!user) return res.status(404).json({ message: "User not found" });
-
-        res.status(200).json({ message: "Role assigned successfully", data: user });
-    } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+    // Preserve the legacy roleId-only API, but use the validated and audited admin path.
+    if (!req.body.role && req.body.roleId) {
+        try {
+            const role = await require('../models/Role').findById(req.body.roleId);
+            if (!role) return res.status(400).json({ message: 'Select an existing role.' });
+            req.body.role = role.name;
+        } catch { return res.status(400).json({ message: 'Invalid role ID.' }); }
     }
+    return require('./adminController').assignUserRole(req, res);
 };
 
 module.exports = {

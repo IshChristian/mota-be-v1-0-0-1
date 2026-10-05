@@ -53,7 +53,7 @@ const query = async (filters = {}, page = 1, limit = 50) => {
         AuditLog.countDocuments(query),
     ]);
 
-    return { logs, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
+    return { logs: logs.map(row => require("./reportService").safe(row.toObject ? row.toObject() : row, false)), pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
 };
 
 module.exports = { log, query };

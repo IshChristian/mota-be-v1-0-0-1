@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const userController = require("../controllers/userController");
 const uploadService = require("../services/uploadService");
-const { protect, protectOnboardingStatus } = require("../middleware/authMiddleware");
+const { protect, protectOnboardingStatus, authorize } = require("../middleware/authMiddleware");
 
 /**
  * @swagger
@@ -75,6 +75,6 @@ router.post("/me/contact-change/verify", userController.verifyContactChange);
 router.delete("/account", userController.deleteAccount);
 
 // Admin / elevated operation
-router.patch("/:id/role", userController.assignRole);
+router.patch("/:id/role", authorize("user:assign_role"), userController.assignRole);
 
 module.exports = router;
