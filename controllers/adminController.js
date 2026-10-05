@@ -314,7 +314,7 @@ const getDriverDetails = async (req, res) => {
 const updateUserStatus = async (req, res) => {
     try {
         const { isActive } = req.body;
-        const user = await User.findByIdAndUpdate(req.params.id, { isActive }, { new: true });
+        const user = await User.findByIdAndUpdate(req.params.id, { isActive, activationBlocked:!isActive }, { new: true });
         res.status(200).json({ message: "User status updated", data: user });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
@@ -529,10 +529,12 @@ const reviewRegistration = async (req, res) => {
 
         if (status === "approved") {
             user.isActive = true;
+            user.activationBlocked = false;
 
 
         } else {
             user.isActive = false; // suspend/pending if not approved
+            user.activationBlocked = true;
         }
 
         await user.save();

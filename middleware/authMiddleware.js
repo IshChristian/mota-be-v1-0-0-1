@@ -35,9 +35,14 @@ const authenticate = (allowOnboarding = false, statusOnly = false) => async (req
       }
     }
 
+    await require('../services/driverActivation').activateFullKycDriver(user);
+
     // Pending drivers may edit only the onboarding routes that explicitly opt in.
     // Approved accounts disabled by an administrator never qualify.
-    if (!user.isActive && !((allowOnboarding || statusOnly) && user.role === "driver" && (statusOnly || user.isVerified) && user.registrationStatus !== "approved" && !user.deletedAt)) {
+    if (!allowOnboarding && !statusOnly && user.role === "driver" && (!user.isVerified || !user.registrationPaid || user.kycLevel !== "full")) {
+      return res.status(403).json({message:!user.isVerified ? "Verify your phone to continue." : !user.registrationPaid ? "Complete your registration fee to continue." : "Complete KYC verification to continue."});
+    }
+    if (!user.isActive && !((statusOnly && !user.deletedAt) || (allowOnboarding || statusOnly) && user.role === "driver" && (statusOnly || user.isVerified) && user.registrationStatus !== "approved" && !user.deletedAt)) {
       return res.status(403).json({ message: "Account is deactivated. Contact admin." });
     }
 

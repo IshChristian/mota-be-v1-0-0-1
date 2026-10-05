@@ -31,6 +31,7 @@ const userSchema = new mongoose.Schema({
     isVerified: { type: Boolean, default: false }, // Phone verified
     isEmailVerified: { type: Boolean, default: false },
     isActive: { type: Boolean, default: false }, // Default to false until admin approves
+    activationBlocked: { type: Boolean, default: false },
     registrationStatus: { 
         type: String, 
         enum: ["pending", "correction", "approved"], 

@@ -35,10 +35,16 @@ const getUser = async (req, res) => {
 
 const getMe = async (req, res) => {
     try {
-        const user = await userService.getUserById(req.user.id);
-        res.status(200).json({ data: user });
+        const account = await User.findById(req.user.id).select("firstName lastName phone email nationalId avatarUrl avatarId role roleId tier isVerified isEmailVerified isActive activationBlocked kycLevel registrationPaid registrationStatus registrationRemarks registrationSubmittedAt emergencyContactName emergencyContactPhone preferredPayment passengerProfileCompleted isOnline lastLocation lastLocationAt referralCode referredBy createdAt updatedAt twoFactorEnabled notificationPreferences").populate("avatarId", "url format").populate("roleId", "name permissions");
+        if (!account) return res.status(404).json({message:"Account not found"});
+        const driver = account.role === "driver";
+        const [kyc, profile] = await Promise.all([
+            (driver ? require('../models/DriverKyc') : require('../models/PassengerKyc')).findOne({userId:account._id}).select("status remarks submittedAt reviewedAt").lean(),
+            driver ? require('../models/DriverProfile').findOne({driverId:account._id}).select("plateNumber cooperativeName permitId code").lean() : Promise.resolve(null)
+        ]);
+        res.json({data:{...account.toObject(),id:String(account._id),hasDriverProfile:!!profile,driverProfile:profile,onboarding:{phoneVerified:account.isVerified===true,emailVerified:account.isEmailVerified===true,emailOptional:true,kycStatus:kyc?.status || (account.kycLevel==='full'?'approved':'not_submitted'),kycRemarks:kyc?.remarks || '',registrationPaid:driver?account.registrationPaid===true:true,registrationFeeRequired:driver,isActive:account.isActive===true}}});
     } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+        res.status(500).json({ message: "Could not refresh your account. Please retry." });
     }
 };
 
