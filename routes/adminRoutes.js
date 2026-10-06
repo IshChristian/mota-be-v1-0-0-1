@@ -302,6 +302,7 @@ router.get("/rides", authorize("ride:view"), adminController.getRidesList);
 router.patch("/rides/:id/cancel", authorize("ride:cancel"), adminController.cancelRideAsAdmin);
 router.get("/support-cases", authorize("support:view"), adminController.getSupportCases);
 router.post("/support-cases", authorize("support:update"), adminController.createSupportCase);
+router.post("/support-cases/:id/messages", authorize("support:update"), require("../controllers/supportController").staffReply);
 router.get("/support-cases/:id", authorize("support:view"), adminController.getSupportCaseDetails);
 router.patch("/support-cases/:id", authorize("support:update"), adminController.updateSupportCase);
 router.delete("/support-cases/:id", authorize("support:update"), adminController.deleteSupportCase);
