@@ -45,6 +45,7 @@ router.patch("/withdrawals/:id/review", authorize("transaction:sync"), async (re
         res.json({ message: "Withdrawal review updated", data: { id: record._id, reviewStatus: record.reviewStatus, reviewNote: record.reviewNote } });
     } catch { res.status(500).json({ message: "Unable to update withdrawal review" }); }
 });
+router.get("/kyc/:type/:id", authorize("kyc:view"), kycController.adminDetail);
 router.patch("/kyc/:type/:id/review", authorize("kyc:approve"), kycController.adminReview);
 
 /**
@@ -479,8 +480,8 @@ router.post("/fines/approve", authorize("fines:update"), adminController.approve
  *       500:
  *         description: Server error
  */
-router.get("/registrations/pending", authorize("user:view"), adminController.getPendingRegistrations);
-router.get("/registrations", authorize("user:view"), adminController.getPendingRegistrations);
+router.get("/registrations/pending", authorize("registration:view"), adminController.getPendingRegistrations);
+router.get("/registrations", authorize("registration:view"), adminController.getPendingRegistrations);
 
 /**
  * @swagger
@@ -501,7 +502,7 @@ router.get("/registrations", authorize("user:view"), adminController.getPendingR
  *       404:
  *         description: User not found
  */
-router.get("/registrations/:id", authorize("user:view"), adminController.getRegistrationDetails);
+router.get("/registrations/:id", authorize("registration:view"), adminController.getRegistrationDetails);
 
 /**
  * @swagger
@@ -529,7 +530,7 @@ router.get("/registrations/:id", authorize("user:view"), adminController.getRegi
  *       200:
  *         description: Registration status updated
  */
-router.put("/registrations/:id/status", authorize("user:update"), adminController.reviewRegistration);
+router.put("/registrations/:id/status", authorize("registration:review"), adminController.reviewRegistration);
 
 /**
  * @swagger
