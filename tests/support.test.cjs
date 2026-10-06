@@ -4,7 +4,12 @@ const test = require("node:test"),
   vm = require("node:vm");
 const owner = "a".repeat(24),
   caseId = "b".repeat(24);
-function setup(overrides = {}) {
+function setup(
+  overrides = {},
+  delivery = async () => {
+    throw Error("delivery failure");
+  },
+) {
   const calls = [],
     model = {
       findOne: async (filter) => {
@@ -35,26 +40,30 @@ function setup(overrides = {}) {
       Date,
       process: { env: {} },
       require: (name) =>
-        name.includes("supportAlerts")
+        name.includes("supportReplyDelivery")
           ? {
-              responseDeadline: () => new Date(Date.now() + 86400000),
-              activeStatuses: ["open", "in_progress", "waiting", "reopened"],
+              deliverCase: delivery,
             }
-          : name.includes("SupportCase")
-            ? model
-            : name.includes("/Ride")
-              ? { findOne: async () => null }
-              : name.includes("constants")
-                ? require("../constants/support")
-                : name.includes("uploadService")
-                  ? { cloudinary: { config: () => ({ cloud_name: "test" }) } }
-                  : name.includes("notificationService")
-                    ? {
-                        createNotification: async () => {
-                          throw Error("delivery failure");
-                        },
-                      }
-                    : { log: async () => {} },
+          : name.includes("supportAlerts")
+            ? {
+                responseDeadline: () => new Date(Date.now() + 86400000),
+                activeStatuses: ["open", "in_progress", "waiting", "reopened"],
+              }
+            : name.includes("SupportCase")
+              ? model
+              : name.includes("/Ride")
+                ? { findOne: async () => null }
+                : name.includes("constants")
+                  ? require("../constants/support")
+                  : name.includes("uploadService")
+                    ? { cloudinary: { config: () => ({ cloud_name: "test" }) } }
+                    : name.includes("notificationService")
+                      ? {
+                          createNotification: async () => {
+                            throw Error("delivery failure");
+                          },
+                        }
+                      : { log: async () => {} },
     },
   );
   return {
@@ -237,10 +246,34 @@ test("public replies clear target; private notes leave target and alerts untouch
       (await s.invoke("staffReply", { text: "An update", internal })).status,
       200,
     );
+    assert.equal(update.$push.messages.notificationPending, !internal);
     if (internal) assert.equal(update.$set, undefined);
     else {
       assert.equal(update.$set.responseDueAt, null);
       assert.equal(update.$set.staffAlertCancelled, true);
     }
+  }
+});
+test("a saved reply responds without waiting for slow inbox storage", async () => {
+  let release;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  const s = setup({}, () => pending);
+  let timer;
+  try {
+    const result = await Promise.race([
+      s.invoke("staffReply", { text: "Saved reply" }),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(Error("Reply waited for notification storage")),
+          500,
+        );
+      }),
+    ]);
+    assert.equal(result.status, 200);
+  } finally {
+    clearTimeout(timer);
+    release();
   }
 });

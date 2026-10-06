@@ -66,6 +66,8 @@ const supportCaseSchema = new mongoose.Schema(
         authorId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
         authorType: { type: String, enum: ["user", "staff"], required: true },
         internal: { type: Boolean, default: false },
+        notificationPending: { type: Boolean, default: false },
+        notificationRecordedAt: Date,
         attachments: [{ url: String, name: String }],
         createdAt: { type: Date, default: Date.now },
       },
@@ -76,4 +78,5 @@ const supportCaseSchema = new mongoose.Schema(
 );
 supportCaseSchema.index({ status: 1, priority: 1, createdAt: -1 });
 supportCaseSchema.index({ status: 1, responseDueAt: 1 });
+supportCaseSchema.index({ "messages.notificationPending": 1, updatedAt: 1 });
 module.exports = mongoose.model("SupportCase", supportCaseSchema);

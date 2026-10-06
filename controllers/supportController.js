@@ -2,7 +2,7 @@ const SupportCase = require("../models/SupportCase");
 const Ride = require("../models/Ride");
 const { CATEGORIES, STATUSES } = require("../constants/support");
 const { cloudinary } = require("../services/uploadService");
-const notifications = require("../services/notificationService");
+const { deliverCase } = require("../services/supportReplyDelivery");
 const {
   responseDeadline,
   activeStatuses,
@@ -225,6 +225,7 @@ const staffReply = wrap(async (req, res) => {
         authorId: userId(req),
         authorType: "staff",
         internal: body.internal === true,
+        notificationPending: body.internal !== true,
         createdAt: new Date(),
       },
     },
@@ -251,16 +252,8 @@ const staffReply = wrap(async (req, res) => {
       metadata: { internal: body.internal === true, status: c.status },
     })
     .catch(() => {});
-  if (!body.internal && c.customerId)
-    await notifications
-      .createNotification(
-        c.customerId,
-        "MOTA support replied",
-        `Your support case ${c.subject} has an update.`,
-        "in_app",
-        { category: "support", supportCaseId: String(c._id) },
-      )
-      .catch(() => {});
+  // A delivery failure leaves the saved message pending for the next cron scan.
+  if (!body.internal && c.customerId) void deliverCase(c).catch(() => {});
   res.json({ data: c });
 });
 const staffList = wrap(async (req, res) => {

@@ -19,7 +19,17 @@ const responseDeadline = () =>
   );
 let running = false;
 let timer;
-let indexReady = false;
+let indexPromise;
+function ensureDedupeIndex() {
+  if (!indexPromise)
+    indexPromise = Notification.collection
+      .createIndex({ dedupeKey: 1 }, { unique: true, sparse: true })
+      .catch((error) => {
+        indexPromise = undefined;
+        throw error;
+      });
+  return indexPromise;
+}
 
 function canReceive(user) {
   const permissions = effectivePermissions(user);
@@ -79,13 +89,7 @@ async function runSupportAlerts(now = new Date()) {
   if (running) return { skipped: true };
   running = true;
   try {
-    if (!indexReady) {
-      await Notification.collection.createIndex(
-        { dedupeKey: 1 },
-        { unique: true, sparse: true },
-      );
-      indexReady = true;
-    }
+    await ensureDedupeIndex();
     const candidates = await User.find({
       isActive: true,
       deletedAt: null,
@@ -188,9 +192,12 @@ async function runSupportAlerts(now = new Date()) {
 function startSupportAlerts() {
   if (timer) return;
   const tick = () =>
-    runSupportAlerts()
-      .then((result) => {
-        if (result.failed)
+    Promise.all([
+      runSupportAlerts(),
+      require("./supportReplyDelivery").runSupportReplyDelivery(),
+    ])
+      .then((results) => {
+        if (results.some((result) => result.failed))
           console.warn(
             "Support alert delivery incomplete; retrying next minute.",
           );
@@ -203,6 +210,7 @@ function startSupportAlerts() {
   timer.unref?.();
 }
 module.exports = {
+  ensureDedupeIndex,
   runSupportAlerts,
   startSupportAlerts,
   canReceive,

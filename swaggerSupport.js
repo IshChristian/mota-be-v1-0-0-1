@@ -155,7 +155,7 @@ const paths = {
     post: operation("Staff reply or internal note", "SupportStaffReply", {
       parameters: [caseId],
       description:
-        "Requires support:update. Internal notes are excluded from user responses and cannot change public case status. Public replies create an operational notification. Resolution text is required via the reply when resolving/closing.",
+        "Requires support:update. Internal notes are excluded from user responses and cannot change public case status. Public replies save a per-message pending inbox update atomically with the reply. The reply response does not wait for inbox storage; a background attempt and one-minute retry queue record the notification. Closed cases are included. This is an inbox update, not proof of device delivery. Resolution text is required via the reply when resolving/closing.",
       responses: {
         200: response("Staff case with saved reply", {
           type: "object",
@@ -237,6 +237,17 @@ const schemas = {
           properties: {
             text: { type: "string" },
             internal: { type: "boolean" },
+            notificationPending: {
+              type: "boolean",
+              description:
+                "Staff-only inbox write state; private notes are never queued",
+            },
+            notificationRecordedAt: {
+              type: "string",
+              format: "date-time",
+              description:
+                "Inbox write acknowledged; not proof of device delivery or reading",
+            },
             authorType: { type: "string", enum: ["staff", "user"] },
             createdAt: { type: "string", format: "date-time" },
           },
