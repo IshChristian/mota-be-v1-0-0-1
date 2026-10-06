@@ -56,6 +56,10 @@ const supportCaseSchema = new mongoose.Schema(
     ],
     lastPassengerNotificationAt: { type: Date },
     responseDueAt: Date,
+    staffAlertCancelled: { type: Boolean, default: false },
+    staffAlertRevision: { type: Number, default: 0 },
+    staffAlertedRevision: { type: Number, default: -1 },
+    staffOverdueAlertedFor: Date,
     messages: [
       {
         text: { type: String, required: true, maxlength: 4000 },
@@ -71,4 +75,5 @@ const supportCaseSchema = new mongoose.Schema(
   { timestamps: true },
 );
 supportCaseSchema.index({ status: 1, priority: 1, createdAt: -1 });
+supportCaseSchema.index({ status: 1, responseDueAt: 1 });
 module.exports = mongoose.model("SupportCase", supportCaseSchema);

@@ -3,6 +3,10 @@ const Ride = require("../models/Ride");
 const { CATEGORIES, STATUSES } = require("../constants/support");
 const { cloudinary } = require("../services/uploadService");
 const notifications = require("../services/notificationService");
+const {
+  responseDeadline,
+  activeStatuses,
+} = require("../services/supportAlerts");
 const audit = require("../services/auditService");
 const id = (value) => /^[a-f0-9]{24}$/i.test(String(value || ""));
 const userId = (req) => String(req.user.id || req.user._id);
@@ -131,17 +135,7 @@ const create = wrap(async (req, res) => {
     description: text(body.description, "Description", 4000),
     attachments: attachments(body.attachments, userId(req)),
     priority: category === "safety" ? "urgent" : "normal",
-    responseDueAt: new Date(
-      Date.now() +
-        Math.max(
-          15,
-          Math.min(
-            10080,
-            Number(process.env.SUPPORT_RESPONSE_TARGET_MINUTES) || 1440,
-          ),
-        ) *
-          60000,
-    ),
+    responseDueAt: responseDeadline(),
   });
   res.status(201).json({
     message: "Support request received. Follow replies here.",
@@ -164,7 +158,15 @@ const reply = wrap(async (req, res) => {
       customerId: userId(req),
       status: { $nin: ["closed", "resolved"] },
     },
-    { $push: { messages: message }, $set: { status: "open" } },
+    {
+      $push: { messages: message },
+      $set: {
+        status: "open",
+        responseDueAt: responseDeadline(),
+        staffAlertCancelled: false,
+      },
+      $inc: { staffAlertRevision: 1 },
+    },
     { new: true, runValidators: true },
   );
   if (!c)
@@ -184,7 +186,13 @@ const reopen = wrap(async (req, res) => {
       status: { $in: ["resolved", "closed"] },
     },
     {
-      $set: { status: "reopened", resolution: "" },
+      $set: {
+        status: "reopened",
+        resolution: "",
+        responseDueAt: responseDeadline(),
+        staffAlertCancelled: false,
+      },
+      $inc: { staffAlertRevision: 1 },
       $push: {
         messages: {
           text: message,
@@ -221,8 +229,10 @@ const staffReply = wrap(async (req, res) => {
       },
     },
   };
+  if (!body.internal)
+    update.$set = { responseDueAt: null, staffAlertCancelled: true };
   if (body.status) {
-    update.$set = { status: body.status };
+    update.$set = { ...update.$set, status: body.status };
     if (["resolved", "closed"].includes(body.status))
       update.$set.resolution = message;
   }
@@ -253,7 +263,65 @@ const staffReply = wrap(async (req, res) => {
       .catch(() => {});
   res.json({ data: c });
 });
+const staffList = wrap(async (req, res) => {
+  const page = Math.max(1, Math.min(1000, parseInt(req.query.page) || 1));
+  const limit = Math.max(1, Math.min(200, parseInt(req.query.limit) || 50));
+  const filter = {};
+  if (req.query.status) {
+    if (!STATUSES.includes(req.query.status))
+      fail(400, "Invalid support status.");
+    filter.status = req.query.status;
+  }
+  const queue = req.query.queue || "all";
+  if (!["all", "overdue", "urgent", "active"].includes(queue))
+    fail(400, "Invalid support queue.");
+  if (queue !== "all") {
+    if (req.query.status && !activeStatuses.includes(req.query.status))
+      fail(400, "This queue requires an active case status.");
+    filter.status = req.query.status || { $in: activeStatuses };
+  }
+  if (queue === "overdue")
+    filter.responseDueAt = { $lte: new Date(), $ne: null };
+  if (queue === "urgent") filter.priority = "urgent";
+  const [data, total] = await Promise.all([
+    SupportCase.find(filter)
+      .select("-messages")
+      .populate(
+        "customerId driverId assignedTo createdBy",
+        "firstName lastName phone email role",
+      )
+      .populate("rideId")
+      .sort(
+        queue === "overdue"
+          ? { responseDueAt: 1, _id: 1 }
+          : { createdAt: -1, _id: -1 },
+      )
+      .skip((page - 1) * limit)
+      .limit(limit),
+    SupportCase.countDocuments(filter),
+  ]);
+  const rows = data.map((item) => {
+    const { contactHistory, ...row } = item.toObject ? item.toObject() : item;
+    return { ...row, contactCount: contactHistory?.length || 0 };
+  });
+  res.json({ data: rows, page, limit, total });
+});
+const staffSummary = wrap(async (req, res) => {
+  const active = { status: { $in: activeStatuses } };
+  const [activeCount, overdue, urgent, waiting] = await Promise.all([
+    SupportCase.countDocuments(active),
+    SupportCase.countDocuments({
+      ...active,
+      responseDueAt: { $lte: new Date(), $ne: null },
+    }),
+    SupportCase.countDocuments({ ...active, priority: "urgent" }),
+    SupportCase.countDocuments({ status: "waiting" }),
+  ]);
+  res.json({ data: { active: activeCount, overdue, urgent, waiting } });
+});
 module.exports = {
+  staffList,
+  staffSummary,
   list,
   details,
   create,

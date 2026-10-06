@@ -12,6 +12,17 @@ This is a proposal and implementation roadmap based on reported MOTA issues, not
 - Public staff replies create persistent operational inbox notifications. Notification taps route to the case; failed inbox requests show retry feedback instead of a false empty inbox. Push delivery is not newly enabled by this change.
 - Swagger contracts for support creation, listing, case details, replies, reopening, staff replies and signed upload authorization. Automatic availability behavior is clarified.
 
+## Staff queue and inbox continuation (6 October 2026)
+
+- Authorized active staff (admin:access + support:view, using effective role permissions) receive generic inbox alerts for new cases, user replies/reopening and passed response targets. No personal details are placed in these alert messages.
+- The existing server cron initialization starts a one-minute support scan. A sparse unique notification deduplication index is ensured before scanning. Upserts deduplicate per case/event/revision/recipient; partial write failures leave the revision pending for retry. Each pass handles at most 200 cases and writes recipient batches of 25. Existing active cases without the new revision field are not announced as new requests; their stored overdue targets can still be escalated. This is in-app delivery, not push/SMS.
+- Public staff replies clear the pending response target; new user replies/reopening start another estimated target. Private notes do not reset the target or notify users. Existing manual escalation is preserved until staff changes it.
+- Admin notification bell links to a paginated inbox with unread count, unread-only filtering, mark-as-read and permission-aware support case links. Failed count fetches display an unavailable indicator instead of a false zero.
+- Staff queue has all/active/overdue/urgent views, pagination and whole-queue counts. Source filtering is explicitly labelled as applying to the current page.
+- Support action prompts/confirmations use custom labelled dialogs with keyboard focus handling; resolving/closing sends a public reply rather than silently changing status.
+- Own inbox reads and marking/deleting notifications remain authenticated but work during onboarding/deactivation. Push-token registration still uses the full account gate.
+- Swagger documents staff queue/summary, bounded inbox pagination and updated conversation behavior.
+
 ## Existing components reused
 
 Code includes admin support case CRUD, ride support operations, notification storage/inbox, safety requests, withdrawal review, permission assignment and reporting/export infrastructure. This change reuses those components; it does not assert their production completeness.
@@ -19,7 +30,7 @@ Code includes admin support case CRUD, ride support operations, notification sto
 ## Proposed next work, in order
 
 1. Real Android/iOS upload acceptance checks covering camera, gallery, downloads, cloud document providers, revoked access and 20 MB limits; provider configuration and uploaded-asset checks with a controlled test account.
-2. Support response escalation and staff queue alerts, notification retries and unread badges. Define owners and response targets before automated escalation.
+2. Push/SMS escalation channels, retries for user reply notifications, mobile unread badges and response ownership playbooks. The admin inbox, staff inbox-write retries and target-based queue escalation are included; they do not guarantee a staffed response.
 3. Payment/withdrawal reconciliation timelines: provider-confirmed status, settlement references, duplicate prevention and failed-payment recovery. Display the two-hour withdrawal target as an estimate, not a guarantee.
 4. Document expiry reminders and renewal actions with configurable reminder windows; preserve driver suspension and manually offline preferences.
 5. Safety escalation playbooks, trusted-contact trip sharing and suspicious-activity review, with explicit response ownership and audited access.

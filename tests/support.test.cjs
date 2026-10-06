@@ -35,21 +35,26 @@ function setup(overrides = {}) {
       Date,
       process: { env: {} },
       require: (name) =>
-        name.includes("SupportCase")
-          ? model
-          : name.includes("/Ride")
-            ? { findOne: async () => null }
-            : name.includes("constants")
-              ? require("../constants/support")
-              : name.includes("uploadService")
-                ? { cloudinary: { config: () => ({ cloud_name: "test" }) } }
-                : name.includes("notificationService")
-                  ? {
-                      createNotification: async () => {
-                        throw Error("delivery failure");
-                      },
-                    }
-                  : { log: async () => {} },
+        name.includes("supportAlerts")
+          ? {
+              responseDeadline: () => new Date(Date.now() + 86400000),
+              activeStatuses: ["open", "in_progress", "waiting", "reopened"],
+            }
+          : name.includes("SupportCase")
+            ? model
+            : name.includes("/Ride")
+              ? { findOne: async () => null }
+              : name.includes("constants")
+                ? require("../constants/support")
+                : name.includes("uploadService")
+                  ? { cloudinary: { config: () => ({ cloud_name: "test" }) } }
+                  : name.includes("notificationService")
+                    ? {
+                        createNotification: async () => {
+                          throw Error("delivery failure");
+                        },
+                      }
+                    : { log: async () => {} },
     },
   );
   return {
@@ -200,5 +205,42 @@ test("swagger documents secured support and upload contracts", () => {
     assert.ok(spec.paths[path]);
     for (const op of Object.values(spec.paths[path]))
       assert.equal(op.security[0].bearerAuth.length, 0);
+  }
+});
+test("user replies schedule staff review without clearing manual escalation", async () => {
+  let update;
+  const s = setup({
+    findOneAndUpdate: async (filter, changes) => {
+      update = changes;
+      return { _id: caseId, status: "open" };
+    },
+  });
+  assert.equal(
+    (await s.invoke("reply", { text: "Additional details" })).status,
+    200,
+  );
+  assert.equal(update.$inc.staffAlertRevision, 1);
+  assert.equal(update.$set.staffAlertCancelled, false);
+  assert.equal(update.$set.escalated, undefined);
+  assert.ok(update.$set.responseDueAt instanceof Date);
+});
+test("public replies clear target; private notes leave target and alerts untouched", async () => {
+  for (const internal of [true, false]) {
+    let update;
+    const s = setup({
+      findByIdAndUpdate: async (id, changes) => {
+        update = changes;
+        return { _id: caseId, customerId: owner, status: "open" };
+      },
+    });
+    assert.equal(
+      (await s.invoke("staffReply", { text: "An update", internal })).status,
+      200,
+    );
+    if (internal) assert.equal(update.$set, undefined);
+    else {
+      assert.equal(update.$set.responseDueAt, null);
+      assert.equal(update.$set.staffAlertCancelled, true);
+    }
   }
 });
