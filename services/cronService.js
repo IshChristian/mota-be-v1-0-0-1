@@ -111,6 +111,7 @@ const runTransactionSync = async () => {
 };
 
 const initCron = () => {
+    require("./supportAlerts").startSupportAlerts();
     // Basic polling cron - checks every hour if the day has changed since last run
     setInterval(() => {
         const today = new Date().toDateString();

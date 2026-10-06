@@ -144,6 +144,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/reports", require("./routes/reportRoutes"));
 app.use("/api/settings", settingRoutes);
 app.use("/api/search", searchRoutes);
+app.use("/api/support", require("./routes/supportRoutes"));
 app.use("/api/uploads", uploadRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/driver", driverRoutes);
