@@ -18,6 +18,25 @@ router.use(protect);
  *       200:
  *         description: List of roles
  */
+/**
+ * @swagger
+ * /api/roles/permissions:
+ *   get:
+ *     summary: List the authoritative permission catalog and grantable permissions
+ *     tags: [Roles & Permissions]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: Permissions grouped by system domain }
+ * /api/roles/assignable:
+ *   get:
+ *     summary: List roles assignable by the authenticated user creator or role assigner
+ *     tags: [Roles & Permissions]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: Assignable roles with supported account types }
+ */
+router.get("/permissions", authorize("role:view"), roleController.permissionCatalog);
+router.get("/assignable", roleController.assignableRoles);
 router.get("/", authorize("role:view"), roleController.getRoles);
 
 /**

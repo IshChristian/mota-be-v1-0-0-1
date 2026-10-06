@@ -25,6 +25,7 @@ const driverKycSchema = new mongoose.Schema({
   technicalInspectionExpiresAt: Date,
   vocationalCardExpiresAt: Date,
   documentReviews: [{ key: String, status: { type: String, enum: ['approved', 'correction', 'rejected'] }, reason: String, reviewedAt: Date }],
+  fieldReviews: [{ key: String, status: { type: String, enum: ["approved", "correction"] }, reason: String, reviewedAt: Date, reviewedBy: {type:mongoose.Schema.Types.ObjectId,ref:"User"} }],
   status: { type: String, enum: ["draft", "submitted", "approved", "correction", "rejected"], default: "draft", index: true },
   remarks: { type: String, trim: true },
   submittedAt: Date,

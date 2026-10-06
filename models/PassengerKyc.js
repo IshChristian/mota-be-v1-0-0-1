@@ -10,6 +10,7 @@ const passengerKycSchema = new mongoose.Schema({
   residentialAddress: { type: String, trim: true },
   emergencyContactName: { type: String, trim: true },
   emergencyContactPhone: { type: String, trim: true },
+  fieldReviews: [{ key: String, status: { type: String, enum: ["approved", "correction"] }, reason: String, reviewedAt: Date, reviewedBy: {type:mongoose.Schema.Types.ObjectId,ref:"User"} }],
   status: { type: String, enum: ["draft", "submitted", "approved", "correction", "rejected"], default: "draft", index: true },
   remarks: { type: String, trim: true },
   submittedAt: Date,

@@ -222,7 +222,11 @@ test("role creation cannot bypass reporting grants or delegate access-management
     {
       module,
       require: (name) =>
-        name.includes("reportAccess")
+        name.includes("rolePermissions")
+          ? require("../services/rolePermissions")
+          : name.includes("staffRoles")
+            ? require("../constants/staffRoles")
+            : name.includes("reportAccess")
           ? access
           : name.includes("roleService")
             ? roles
