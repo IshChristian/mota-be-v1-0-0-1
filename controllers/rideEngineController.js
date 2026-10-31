@@ -1,6 +1,9 @@
 const rideEngineService = require("../services/rideEngineService");
 const Ride = require("../models/Ride");
-const DriverProfile = require("../models/DriverProfile");
+const riderFeatures = require("../services/riderFeaturesService");
+
+/** Errors from the feature service carry an HTTP status; ride-engine errors are client errors. */
+const fail = (res, error, fallback = 400) => res.status(error.status || fallback).json({ message: error.message, ...(error.code ? { code: error.code } : {}) });
 
 // ── PASSENGER ENDPOINTS ────────────────────────────────────────────────
 
@@ -10,9 +13,12 @@ const DriverProfile = require("../models/DriverProfile");
  */
 const estimateFare = async (req, res) => {
     try {
-        const { pickup, destination } = req.body;
-        const estimate = await rideEngineService.estimateFare(pickup, destination);
-        res.status(200).json(estimate);
+        const { pickup, destination, vehicleType, rideType } = req.body;
+        if (vehicleType) return res.status(200).json(await rideEngineService.estimateFare(pickup, destination, { vehicleType, rideType }));
+        // No vehicle chosen yet: price every option. Top-level fields stay the moto
+        // estimate so older app versions keep working.
+        const options = await rideEngineService.estimateOptions(pickup, destination, rideType);
+        res.status(200).json({ ...options[0], options, data: { options } });
     } catch (error) {
         res.status(400).json({ message: error.message });
     }
@@ -25,14 +31,14 @@ const estimateFare = async (req, res) => {
 const requestRide = async (req, res) => {
     try {
         const passengerId = req.user.id;
-        const { pickup, destination, offeredFare, backupDrivers, passengers, paymentMethod, scheduledDate, scheduledTime } = req.body;
+        const { pickup, destination, offeredFare, backupDrivers, passengers, paymentMethod, scheduledDate, scheduledTime, vehicleType, rideType, parcel } = req.body;
 
         if (!pickup || !destination || !offeredFare) {
             return res.status(400).json({ status: "error", message: "pickup, destination, and offeredFare are required." });
         }
 
         const result = await rideEngineService.requestRide(
-            passengerId, pickup, destination, offeredFare, backupDrivers || 3, passengers || 1, paymentMethod, scheduledDate, scheduledTime
+            passengerId, pickup, destination, offeredFare, backupDrivers || 3, passengers || 1, paymentMethod || "cash", scheduledDate, scheduledTime, { vehicleType, rideType, parcel }
         );
 
         // Required JSON response by specs
@@ -48,7 +54,12 @@ const requestRide = async (req, res) => {
             }
         });
     } catch (error) {
-        res.status(400).json({ status: "error", message: error.message });
+        if (/already have an active ride/.test(error.message)) {
+            const active = await Ride.findOne({ passengerId: req.user.id, rideStatus: { $in: ["requested", "searching", ...rideEngineService.DRIVER_ACTIVE] } }).select("_id rideStatus");
+            return res.status(409).json({ status: "error", message: error.message, rideId: active?._id, rideStatus: active?.rideStatus });
+        }
+        const status = error.code === "INSUFFICIENT_WALLET_BALANCE" ? 402 : 400;
+        res.status(status).json({ status: "error", message: error.message, ...(error.code ? { code: error.code } : {}) });
     }
 };
 
@@ -83,7 +94,7 @@ const confirmStart = async (req, res) => {
 };
 
 const requestStop = async (req, res) => {
-    try { res.status(200).json({ data: await rideEngineService.requestStop(req.user.id, req.params.id) }); }
+    try { res.status(200).json({ data: await rideEngineService.requestStop(req.user.id, req.params.id, req.body?.deliveryPin) }); }
     catch (error) { res.status(400).json({ message: error.message }); }
 };
 
@@ -205,10 +216,15 @@ const getRideStatus = async (req, res) => {
  */
 const rateRide = async (req, res) => {
     try {
-        const { rating, comment } = req.body;
+        const { rating, comment, tip } = req.body;
         if (!rating) return res.status(400).json({ message: "Rating is required (1-5)." });
 
-        const ride = await rideEngineService.rateRide(req.user.id, req.params.id, rating, comment);
+        const ride = await rideEngineService.rateRide(req.user.id, req.params.id, Number(rating), comment);
+        // Optional thank-you from the passenger's wallet.
+        if (Number(tip) > 0 && String(ride.passengerId) === String(req.user.id)) {
+            try { await riderFeatures.tipDriver(req.user.id, req.params.id, tip); }
+            catch (error) { return res.status(200).json({ message: `Rating saved, but the tip failed: ${error.message}`, ride, tipError: error.message }); }
+        }
         res.status(200).json({ message: "Rating submitted.", ride });
     } catch (error) {
         res.status(400).json({ message: error.message });
@@ -221,9 +237,24 @@ const rateRide = async (req, res) => {
  */
 const reportRide = async (req, res) => {
     try {
-        const { issue, description } = req.body;
-        // For now, just log it. Can be expanded to a support ticket system.
-        res.status(200).json({ message: "Report submitted. Our team will review it.", rideId: req.params.id, issue });
+        const SupportCase = require("../models/SupportCase");
+        const ride = await Ride.findOne({ _id: req.params.id, $or: [{ passengerId: req.user.id }, { driverId: req.user.id }] });
+        if (!ride) return res.status(404).json({ message: "Ride not found." });
+        const description = String(req.body.description || req.body.reason || req.body.issue || "").trim();
+        if (description.length < 5) return res.status(400).json({ message: "Describe the problem in a few words." });
+        const categories = ["ride_assignment", "acceptance_notification", "driver_arrival", "ride_start", "ride_stop", "payment", "cancellation", "other"];
+        const supportCase = await SupportCase.create({
+            customerId: ride.passengerId,
+            driverId: ride.driverId,
+            rideId: ride._id,
+            category: categories.includes(req.body.category) ? req.body.category : "other",
+            subject: String(req.body.issue || "Ride problem report").slice(0, 160),
+            description: description.slice(0, 4000),
+            priority: req.body.category === "payment" ? "high" : "normal",
+            status: "open",
+            createdBy: req.user.id,
+        });
+        res.status(201).json({ message: "Report submitted. Our team will review it.", rideId: req.params.id, data: { caseId: supportCase._id } });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -235,92 +266,54 @@ const reportRide = async (req, res) => {
  */
 const getRideById = async (req, res) => {
     try {
-        const ride = await Ride.findById(req.params.id)
-            .populate("driverId", "firstName lastName phone avatarUrl lastLocation lastLocationAt")
-            .populate("passengerId", "firstName lastName phone avatarUrl");
-
+        const ride = await Ride.findById(req.params.id);
         if (!ride) return res.status(404).json({ status: "error", message: "Ride not found" });
-
         const userId = req.user.id.toString();
-        const passengerId = ride.passengerId?._id?.toString();
-        const driverId = ride.driverId?._id?.toString();
-        const isPassenger = passengerId === userId;
-        const isAssignedDriver = driverId === userId;
-        const isNotifiedDriver = ride.notifiedDrivers.some((id) => id.toString() === userId);
-        if (!isPassenger && !isAssignedDriver && !isNotifiedDriver) {
-            return res.status(403).json({ status: "error", message: "Not authorized to view this ride." });
-        }
-
-        const driverProfile = ride.driverId
-            ? await DriverProfile.findOne({ driverId: ride.driverId._id }).select("plateNumber cooperativeName")
-            : null;
-        const mappedRide = {
-            _id: ride._id,
-            status: ride.rideStatus,
-            rideStatus: ride.rideStatus,
-            offeredFare: ride.offeredFare,
-            fare: ride.fare,
-            minimumFare: ride.minimumFare,
-            maximumFare: ride.maximumFare,
-            passengers: ride.passengers,
-            paymentMethod: ride.paymentMethod,
-            paymentStatus: ride.paymentStatus,
-            estimatedDistanceKm: ride.estimatedDistanceKm,
-            estimatedDurationMin: ride.estimatedDurationMin,
-            scheduledDate: ride.scheduledDate,
-            scheduledTime: ride.scheduledTime,
-            pickup: ride.pickup,
-            destination: ride.destination,
-            requestedAt: ride.requestedAt,
-            acceptedAt: ride.acceptedAt,
-            arrivedAt: ride.arrivedAt,
-            startedAt: ride.startedAt,
-            completedAt: ride.completedAt,
-            cancelledAt: ride.cancelledAt,
-            cancellationReason: ride.cancellationReason,
-            passengerRating: ride.passengerRating,
-            passengerComment: ride.passengerComment,
-            driverRating: ride.driverRating,
-            driverComment: ride.driverComment,
-            createdAt: ride.createdAt,
-        };
-
-        if (ride.driverId) {
-            mappedRide.driver = {
-                _id: ride.driverId._id,
-                firstName: ride.driverId.firstName,
-                lastName: ride.driverId.lastName,
-                phone: isPassenger || isAssignedDriver ? ride.driverId.phone : undefined,
-                avatarUrl: ride.driverId.avatarUrl,
-                plate: driverProfile?.plateNumber || "N/A",
-                cooperativeName: driverProfile?.cooperativeName,
-                lastLocation: ride.driverId.lastLocation,
-                lastLocationAt: ride.driverId.lastLocationAt
-            };
-        }
-
-        if (ride.passengerId) {
-            mappedRide.passenger = {
-                _id: ride.passengerId._id,
-                firstName: ride.passengerId.firstName,
-                lastName: ride.passengerId.lastName,
-                avatarUrl: ride.passengerId.avatarUrl,
-                phone: isPassenger || isAssignedDriver ? ride.passengerId.phone : undefined,
-            };
-        }
-
-        res.status(200).json({
-            status: "success",
-            data: {
-                ride: mappedRide
-            }
-        });
+        const allowed = String(ride.passengerId) === userId || String(ride.driverId) === userId || ride.notifiedDrivers.some((id) => id.toString() === userId);
+        if (!allowed) return res.status(403).json({ status: "error", message: "Not authorized to view this ride." });
+        res.status(200).json({ status: "success", data: { ride: await riderFeatures.rideView(ride, userId) } });
     } catch (error) {
         res.status(500).json({ status: "error", message: error.message });
     }
 };
 
-// ── DRIVER AVAILABILITY ────────────────────────────────────────────────
+// ── PASSENGER EXPERIENCE ───────────────────────────────────────────────
+
+/** GET /api/rides/active — the passenger's current ride, so the app can restore it after a restart. */
+const getPassengerActiveRide = async (req, res) => {
+    try { res.status(200).json({ data: await riderFeatures.passengerActiveRide(req.user.id) }); }
+    catch (error) { fail(res, error, 500); }
+};
+const raiseOffer = async (req, res) => {
+    try { res.status(200).json({ data: await riderFeatures.raiseOffer(req.user.id, req.params.id, req.body.amount) }); }
+    catch (error) { fail(res, error); }
+};
+const counterOffer = async (req, res) => {
+    try { res.status(200).json({ data: await riderFeatures.counterOffer(req.user.id, req.params.id, req.body.amount) }); }
+    catch (error) { fail(res, error); }
+};
+const acceptCounterOffer = async (req, res) => {
+    try {
+        const ride = await riderFeatures.acceptCounterOffer(req.user.id, req.params.id, req.params.offerId);
+        res.status(200).json({ data: await riderFeatures.rideView(ride, req.user.id) });
+    } catch (error) { fail(res, error); }
+};
+const shareRide = async (req, res) => {
+    try { res.status(200).json({ data: await riderFeatures.createShareLink(req.user.id, req.params.id) }); }
+    catch (error) { fail(res, error); }
+};
+const listMessages = async (req, res) => {
+    try { res.status(200).json({ data: await riderFeatures.listMessages(req.params.id, req.user.id) }); }
+    catch (error) { fail(res, error); }
+};
+const sendMessage = async (req, res) => {
+    try { res.status(201).json({ data: await riderFeatures.sendMessage(req.params.id, req.user, req.body?.text) }); }
+    catch (error) { fail(res, error); }
+};
+const callParty = async (req, res) => {
+    try { res.status(200).json({ data: await riderFeatures.callInfo(req.params.id, req.user.id) }); }
+    catch (error) { fail(res, error); }
+};
 
 /**
  * PUT /api/driver/availability
@@ -374,6 +367,14 @@ const updateLocation = async (req, res) => {
 };
 
 module.exports = {
+    getPassengerActiveRide,
+    raiseOffer,
+    counterOffer,
+    acceptCounterOffer,
+    shareRide,
+    listMessages,
+    sendMessage,
+    callParty,
     estimateFare,
     requestRide,
     getMyRides,

@@ -72,9 +72,8 @@ const authorize = (...permissions) => {
       return next();
     }
 
-    // Transitional fallback prevents legacy staff lockout before roleId migration.
-    // Once a roleId is assigned, its stored permissions are authoritative.
-    const userPermissions = req.user.roleId?.permissions || STAFF_ROLE_TEMPLATES[req.user.role] || [];
+    // Role document (or role template) plus per-user report grants; see services/accessService.js.
+    const userPermissions = require("../services/accessService").effectivePermissions(req.user);
 
     // Check if user has ALL required permissions (or at least one? Let's go with ALL required for this route, or we can use ANY. Let's do ANY for flexibility or require exact).
     // Usually, you might want to check if user has at least one of the required permissions, or all. Let's check for ALL permissions passed.

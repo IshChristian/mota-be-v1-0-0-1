@@ -35,7 +35,7 @@ async function submitMine(req, res) {
     const record = await Model.findOneAndUpdate(
       { userId: req.user.id },
       { ...payload, status: "submitted", submittedAt: new Date(), remarks: undefined, reviewedAt: undefined, reviewedBy: undefined },
-      { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
+      { upsert: true, returnDocument: "after", runValidators: true, setDefaultsOnInsert: true }
     );
     await User.findByIdAndUpdate(req.user.id, { kycLevel: "basic" });
     await auditService.log({ actorId: req.user.id, actorRole: req.user.role, action: "kyc_submitted", targetType: driver ? "DriverKyc" : "PassengerKyc", targetId: record._id, ipAddress: req.ip, metadata: { kycType: driver ? "driver" : "passenger" } });
@@ -53,6 +53,15 @@ async function adminList(req, res) {
   res.json({ data, kycType: type });
 }
 
+async function adminDetail(req, res) {
+  const type = req.params.type;
+  if (!["driver", "passenger"].includes(type)) return res.status(400).json({ message: "KYC type must be driver or passenger" });
+  const Model = type === "driver" ? DriverKyc : PassengerKyc;
+  const record = await Model.findById(req.params.id).populate("userId", "firstName lastName phone email role").catch(() => null);
+  if (!record) return res.status(404).json({ message: "KYC record not found" });
+  res.json({ data: record, kycType: type, requirements: type === "driver" ? driverFields : passengerFields });
+}
+
 async function adminReview(req, res) {
   const type = req.params.type;
   if (!['driver', 'passenger'].includes(type)) return res.status(400).json({ message: "KYC type must be driver or passenger" });
@@ -60,11 +69,26 @@ async function adminReview(req, res) {
   if (!["approved", "correction", "rejected"].includes(status)) return res.status(400).json({ message: "Invalid KYC review status" });
   if (status !== "approved" && String(req.body.remarks || "").trim().length < 5) return res.status(400).json({ message: "Remarks are required for correction or rejection" });
   const Model = type === "driver" ? DriverKyc : PassengerKyc;
-  const record = await Model.findByIdAndUpdate(req.params.id, { status, remarks: req.body.remarks, reviewedAt: new Date(), reviewedBy: req.user.id }, { new: true, runValidators: true });
-  if (!record) return res.status(404).json({ message: "KYC record not found" });
+  const fieldReviews = Array.isArray(req.body.fieldReviews)
+    ? req.body.fieldReviews.filter((r) => r && typeof r.key === "string").slice(0, 60).map((r) => ({ key: r.key, status: String(r.status || ""), reason: String(r.reason || "").slice(0, 500) }))
+    : undefined;
+  // Two reviewers on the same record: the second save must not silently overwrite the first.
+  const filter = { _id: req.params.id };
+  if (req.body.expectedUpdatedAt) {
+    const expected = new Date(req.body.expectedUpdatedAt);
+    if (!Number.isNaN(expected.getTime())) filter.updatedAt = expected;
+  }
+  const update = { status, remarks: req.body.remarks, reviewedAt: new Date(), reviewedBy: req.user.id, ...(fieldReviews ? { fieldReviews } : {}) };
+  const record = await Model.findOneAndUpdate(filter, update, { returnDocument: "after", runValidators: true }).catch(() => null);
+  if (!record) {
+    const exists = await Model.exists({ _id: req.params.id }).catch(() => null);
+    return res.status(exists ? 409 : 404).json({ message: exists ? "This KYC record changed since you opened it. Reload it and review again." : "KYC record not found" });
+  }
+  const warnings = status === "approved" && fieldReviews?.some((r) => r.status && !["approved", "accepted", "ok"].includes(r.status))
+    ? ["Some fields were flagged but the record was approved overall."] : [];
   await User.findByIdAndUpdate(record.userId, { kycLevel: status === "approved" ? "full" : "basic" });
   await auditService.log({ actorId: req.user.id, actorRole: req.user.role, action: status === "approved" ? "kyc_verified" : "kyc_reviewed", targetType: type === "driver" ? "DriverKyc" : "PassengerKyc", targetId: record._id, ipAddress: req.ip, metadata: { kycType: type, status, remarks: req.body.remarks } });
-  res.json({ message: `${type} KYC ${status}`, data: record });
+  res.json({ message: `${type} KYC ${status}`, data: record, warnings });
 }
 
-module.exports = { getMine, submitMine, adminList, adminReview };
+module.exports = { getMine, submitMine, adminList, adminDetail, adminReview };

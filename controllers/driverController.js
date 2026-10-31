@@ -158,7 +158,7 @@ const updateProfile = async (req, res) => {
                 ...(permitAttachment && { permitAttachment }),
                 ...(permitId && { permitId }),
             },
-            { new: true }
+            { returnDocument: "after" }
         );
 
         if (!profile) {

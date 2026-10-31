@@ -5,6 +5,12 @@ let configCache = {};
 
 // ─── Default settings to seed on first startup ──────────────────────────────
 const DEFAULT_SETTINGS = [
+    // Fuel support
+    { key: "fuel_voucher_amount", value: 1000, category: "financial", dataType: "number", description: "Value of one fuel voucher in RWF" },
+    { key: "fuel_voucher_daily_limit", value: 2, category: "financial", dataType: "number", description: "Fuel vouchers a driver may request per Kigali day, per type (QR and MoMo)" },
+    { key: "fuel_voucher_min_tier", value: "Gold", category: "financial", dataType: "string", description: "Lowest driver tier allowed to request fuel vouchers (Bronze, Silver, Gold, Platinum)" },
+    { key: "fuel_voucher_momo_enabled", value: true, category: "financial", dataType: "boolean", description: "Allow MoMo fuel vouchers (paid out through the withdrawal pipeline)" },
+    { key: "fuel_stations", value: "[]", category: "general", dataType: "string", description: "Partner fuel stations as JSON: [{\"id\",\"name\",\"address\",\"latitude\",\"longitude\",\"acceptsQr\"}]" },
     // Financial
     { key: "ride_commission_percentage", value: 10, category: "financial", dataType: "percentage", description: "Platform commission % deducted from ride fares" },
     { key: "cash_out_fee_percentage", value: 2, category: "financial", dataType: "percentage", description: "Fee % charged on driver cash-out withdrawals" },
@@ -87,7 +93,7 @@ const updateSetting = async (key, value, userId = null) => {
     const config = await SystemConfig.findOneAndUpdate(
         { key },
         { value, updatedBy: userId },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: "after" }
     );
     configCache[key] = value;
     return config;
@@ -100,7 +106,7 @@ const bulkUpdate = async (settings, userId = null) => {
         const config = await SystemConfig.findOneAndUpdate(
             { key },
             { value, updatedBy: userId },
-            { new: true }
+            { returnDocument: "after" }
         );
         if (config) {
             configCache[key] = value;

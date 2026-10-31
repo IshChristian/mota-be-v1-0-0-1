@@ -3,7 +3,7 @@ const supportCaseSchema = new mongoose.Schema({
     customerId: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true },
     rideId: { type: mongoose.Schema.Types.ObjectId, ref: "Ride", index: true },
     driverId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    category: { type: String, enum: ["ride_assignment", "acceptance_notification", "driver_arrival", "ride_start", "ride_stop", "payment", "cancellation", "other"], default: "other" },
+    category: { type: String, enum: ["ride_assignment", "acceptance_notification", "driver_arrival", "ride_start", "ride_stop", "payment", "cancellation", "account_kyc", "upload", "availability", "withdrawal", "fuel", "technical", "lost_item", "safety", "other"], default: "other" },
     subject: { type: String, required: true, trim: true, maxlength: 160 },
     description: { type: String, required: true, trim: true, maxlength: 4000 },
     priority: { type: String, enum: ["low", "normal", "high", "urgent"], default: "normal", index: true },
@@ -14,6 +14,17 @@ const supportCaseSchema = new mongoose.Schema({
     escalated: { type: Boolean, default: false },
     contactHistory: [{ channel: { type: String, enum: ["call", "sms", "email", "push", "in_app"] }, direction: { type: String, enum: ["outbound", "inbound"], default: "outbound" }, outcome: { type: String, enum: ["answered", "no_answer", "sent", "failed", "callback_requested", "resolved"] }, note: { type: String, trim: true, maxlength: 1000 }, createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, createdAt: { type: Date, default: Date.now } }],
     lastPassengerNotificationAt: { type: Date },
+    // Conversation between the customer and staff. Internal notes are staff-only.
+    messages: [{
+        authorId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        authorType: { type: String, enum: ["customer", "staff", "system"], required: true },
+        text: { type: String, trim: true, required: true, maxlength: 4000 },
+        internal: { type: Boolean, default: false },
+        createdAt: { type: Date, default: Date.now },
+    }],
+    attachments: [{ url: { type: String, trim: true }, name: { type: String, trim: true, maxlength: 200 } }],
+    lastCustomerMessageAt: { type: Date },
+    lastStaffReplyAt: { type: Date },
 }, { timestamps: true });
 supportCaseSchema.index({ status: 1, priority: 1, createdAt: -1 });
 module.exports = mongoose.model("SupportCase", supportCaseSchema);

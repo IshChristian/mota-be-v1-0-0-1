@@ -8,7 +8,8 @@
     "dev": "nodemon --watch .env --watch . index.js",
     "build": "pnpm run build",
     "seed:staff-roles": "node scripts/seedStaffRoles.js",
-    "bootstrap:superadmin": "node scripts/bootstrapSuperadmin.js"
+    "bootstrap:superadmin": "node scripts/bootstrapSuperadmin.js",
+    "test": "node --test --test-concurrency=1 tests/"
   },
   "nodemonConfig": {
     "watch": [
@@ -30,6 +31,7 @@
     "cloudinary": "^2.9.0",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
+    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
     "helmet": "^8.3.0",
@@ -41,6 +43,7 @@
     "multer-storage-cloudinary": "^4.0.0",
     "nodemailer": "^8.0.2",
     "paypack-js": "^0.2.1",
+    "pdfkit": "~0.15.2",
     "qrcode": "^1.5.4",
     "socket.io": "^4.8.3",
     "speakeasy": "^2.0.0",
@@ -48,6 +51,7 @@
     "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.1.14",
+    "supertest": "^7.3.1"
   }
 }

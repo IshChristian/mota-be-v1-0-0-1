@@ -127,7 +127,7 @@ const captureConsent = async (req, res) => {
                 ipAddress: req.ip,
                 revokedAt: null
             },
-            { upsert: true, new: true }
+            { upsert: true, returnDocument: "after" }
         );
 
         await auditService.log({

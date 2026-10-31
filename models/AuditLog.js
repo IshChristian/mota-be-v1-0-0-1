@@ -26,6 +26,7 @@ const auditLogSchema = new mongoose.Schema({
             "driver_profile_updated", "wallet_adjusted",
             "withdrawal_reviewed",
             "role_created", "role_updated", "role_deleted",
+            "report_access_updated", "report_exported", "fuel_voucher_redeemed", "support_message_added",
         ],
     },
     targetType: { type: String, trim: true },   // e.g. "Loan", "User", "SavingsAccount"

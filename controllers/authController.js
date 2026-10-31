@@ -104,10 +104,11 @@ const register = async (req, res) => {
 
         // Referral logic
         if (referralCode) {
-            const referrer = await User.findOne({ referralCode });
-            if (referrer) {
-                await Referral.create({ referrerId: referrer._id, referredUserId: newUser._id, reward: 500, status: "pending" });
-                await sendSMS(referrer.phone, `${firstName.trim()} signed up using your code! Reward pending.`, "referral_reward");
+            // Reward fixed now from settings (cash only for driver/agent → driver invitations).
+            const referral = await require("../services/referralService").recordSignup(referralCode, newUser).catch(() => null);
+            if (referral) {
+                const referrer = await User.findById(referral.referrerId).select("phone");
+                await sendSMS(referrer?.phone, `${firstName.trim()} signed up using your MOTA code.${referral.reward ? " Your reward is pending their approval." : ""}`, "referral_reward").catch(() => {});
             }
         }
 

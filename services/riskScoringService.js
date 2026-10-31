@@ -124,7 +124,7 @@ const calculateRiskScore = async (driverId) => {
             maxLoanEligible,
             lastCalculatedAt: new Date(),
         },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: "after" }
     );
 
     await auditService.log({

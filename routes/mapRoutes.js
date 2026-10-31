@@ -6,31 +6,36 @@ const router = express.Router();
 router.use(protect);
 
 router.post("/route", async (req, res) => {
+  const { origin, destination } = req.body;
+  const valid = (point) => Number.isFinite(point?.latitude) && Number.isFinite(point?.longitude);
+  if (!valid(origin) || !valid(destination)) return res.status(400).json({ message: "Valid origin and destination coordinates are required" });
+  // Google Routes first, OpenStreetMap (OSRM) when Google fails or finds no route.
+  const route = await require("../services/routingService").getRoute(origin, destination);
+  if (!route) return res.status(404).json({ message: "No road route found. The map shows a straight line instead." });
+  res.json({ data: { ...route, duration: `${route.durationSeconds}s` } });
+});
+
+const geocode = require("../services/geocodeService");
+const readPoint = (lat, lng) => {
+  const latitude = Number(lat), longitude = Number(lng);
+  return Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180 ? { latitude, longitude } : null;
+};
+
+/** GET /api/maps/search?q=…&lat=&lng= — places in Rwanda (cached; Google if configured, else OpenStreetMap). */
+router.get("/search", async (req, res) => {
   try {
-    const { origin, destination, travelMode = "DRIVE" } = req.body;
-    const valid = (point) => Number.isFinite(point?.latitude) && Number.isFinite(point?.longitude);
-    if (!valid(origin) || !valid(destination)) return res.status(400).json({ message: "Valid origin and destination coordinates are required" });
-
-    const apiKey = process.env.GOOGLE_ROUTES_API_KEY || process.env.GOOGLE_MAPS_API_KEY;
-    if (!apiKey) return res.status(503).json({ message: "Google Routes API is not configured" });
-
-    const response = await axios.post("https://routes.googleapis.com/directions/v2:computeRoutes", {
-      origin: { location: { latLng: { latitude: origin.latitude, longitude: origin.longitude } } },
-      destination: { location: { latLng: { latitude: destination.latitude, longitude: destination.longitude } } },
-      travelMode,
-      routingPreference: "TRAFFIC_AWARE",
-      computeAlternativeRoutes: false,
-      languageCode: "en-US",
-      units: "METRIC",
-    }, { headers: { "X-Goog-Api-Key": apiKey, "X-Goog-FieldMask": "routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline" }, timeout: 10000 });
-
-    const route = response.data?.routes?.[0];
-    if (!route) return res.status(404).json({ message: "No route found" });
-    res.json({ data: { encodedPolyline: route.polyline?.encodedPolyline, distanceMeters: route.distanceMeters, duration: route.duration } });
+    res.json({ data: await geocode.searchPlaces(req.query.q, readPoint(req.query.lat, req.query.lng) || undefined) });
   } catch (error) {
-    const status = error.response?.status || 502;
-    res.status(status).json({ message: error.response?.data?.error?.message || "Unable to calculate route" });
+    res.status(503).json({ message: "Place search is busy. Try again in a moment, or tap the map." });
   }
+});
+
+/** GET /api/maps/reverse?lat=&lng= — a readable name for a tapped point. */
+router.get("/reverse", async (req, res) => {
+  const point = readPoint(req.query.lat, req.query.lng);
+  if (!point) return res.status(400).json({ message: "Valid lat and lng are required." });
+  try { res.json({ data: await geocode.reverseGeocode(point) }); }
+  catch { res.json({ data: { name: "Selected location", address: "", ...point } }); }
 });
 
 module.exports = router;

@@ -114,6 +114,7 @@ router.post("/request", ctrl.requestRide);
  *         description: Paginated ride history
  */
 router.get("/my-rides", ctrl.getMyRides);
+router.get("/active", ctrl.getPassengerActiveRide);
 router.get("/driver/requests", ctrl.getDriverRequests);
 
 /**
@@ -322,6 +323,14 @@ router.post("/:id/cancel", ctrl.cancelRide);
  */
 router.post("/:id/rating", ctrl.rateRide);
 router.post("/:id/rate", ctrl.rateRide);
+// Fare negotiation, sharing, chat and calls
+router.post("/:id/raise-offer", ctrl.raiseOffer);
+router.post("/:id/counter-offer", ctrl.counterOffer);
+router.post("/:id/counter-offers/:offerId/accept", ctrl.acceptCounterOffer);
+router.post("/:id/share", ctrl.shareRide);
+router.get("/:id/messages", ctrl.listMessages);
+router.post("/:id/messages", ctrl.sendMessage);
+router.post("/:id/call", ctrl.callParty);
 
 /**
  * @swagger

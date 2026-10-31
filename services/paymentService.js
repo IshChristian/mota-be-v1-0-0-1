@@ -1,6 +1,15 @@
 const paypack = require("../config/paypack");
 const Transaction = require("../models/Transaction");
 const { creditRidePayment } = require("./walletService");
+const paystack = require("./paystackProvider");
+
+// PAYMENT_PROVIDER=paypack (default) | paystack. Every money flow (top-ups, ride
+// payments, registration fees, USSD, withdrawals, fuel payouts) goes through these.
+const activeProvider = () => (String(process.env.PAYMENT_PROVIDER || "paypack").toLowerCase() === "paystack" ? "paystack" : "paypack");
+const requestCashIn = (phone, amount, environment) => (activeProvider() === "paystack" ? paystack.requestCashIn(phone, amount) : paypack_requestCashIn(phone, amount, environment));
+const requestCashOut = (phone, amount, environment) => (activeProvider() === "paystack" ? paystack.requestCashOut(phone, amount) : paypack_requestCashOut(phone, amount, environment));
+// References carry their provider, so an in-flight Paypack payment can still be checked after switching.
+const getTransactionStatus = (ref) => (String(ref || "").startsWith("MOTA-") ? paystack.getTransactionStatus(ref) : paypack_getTransactionStatus(ref));
 
 /**
  * Initiate a Paypack cashin (payment request to passenger)
@@ -9,7 +18,7 @@ const { creditRidePayment } = require("./walletService");
  * @param {string} environment - "development" | "production"
  * @returns {Object} Paypack cashin response
  */
-const requestCashIn = async (phone, amount, environment = "development") => {
+const paypack_requestCashIn = async (phone, amount, environment = "development") => {
     try {
         const numAmount = Number(amount);
         if (isNaN(numAmount) || numAmount < 100) {
@@ -35,7 +44,7 @@ const requestCashIn = async (phone, amount, environment = "development") => {
  * @param {string} environment
  * @returns {Object} Paypack cashout response
  */
-const requestCashOut = async (phone, amount, environment = "development") => {
+const paypack_requestCashOut = async (phone, amount, environment = "development") => {
     try {
         const numAmount = Number(amount);
         if (isNaN(numAmount) || numAmount < 100) {
@@ -84,7 +93,7 @@ const handleWebhook = async (event, driverId, rideId) => {
     }
 };
 
-const getTransactionStatus = async (ref) => {
+const paypack_getTransactionStatus = async (ref) => {
     try {
         if (!ref) return { success: false, error: "Transaction ref is required" };
         const response = await paypack.transaction(ref);
@@ -116,6 +125,7 @@ const getTransactions = async (filters) => {
 };
 
 module.exports = {
+    activeProvider,
     requestCashIn,
     requestCashOut,
     handleWebhook,

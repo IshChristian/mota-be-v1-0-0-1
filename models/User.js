@@ -39,6 +39,32 @@ const userSchema = new mongoose.Schema({
     registrationRemarks: { type: String, trim: true },
     emergencyContactName: { type: String, trim: true },
     emergencyContactPhone: { type: String, trim: true },
+    // SOS texts every contact here (the single fields above mirror the first one for older clients).
+    emergencyContacts: {
+        type: [{
+            name: { type: String, trim: true, maxlength: 80, required: true },
+            phone: { type: String, trim: true, required: true },
+            relationship: { type: String, trim: true, maxlength: 40 },
+        }],
+        default: [],
+        validate: [(v) => v.length <= 5, "At most 5 emergency contacts"],
+    },
+    // App language; push notifications and SMS use it where translations exist.
+    // Per-user report scopes (analysis/audit/export/access). Unset = inherited from the role.
+    reportPermissions: { type: [String], default: undefined },
+    preferredLanguage: { type: String, enum: ["en", "rw", "fr", "sw"], default: "en" },
+    // Drivers: only offer rides whose pickup is within this distance (km). Unset = system radius.
+    requestRadiusKm: { type: Number, min: 1, max: 15 },
+    savedPlaces: {
+        type: [{
+            label: { type: String, trim: true, maxlength: 40, required: true },
+            name: { type: String, trim: true, maxlength: 200, required: true },
+            latitude: { type: Number, required: true },
+            longitude: { type: Number, required: true },
+        }],
+        default: [],
+        validate: [(v) => v.length <= 20, "At most 20 saved places"],
+    },
     preferredPayment: {
         type: String,
         enum: ["CASH", "MOMO", "CARD"],
@@ -78,7 +104,13 @@ const userSchema = new mongoose.Schema({
         code: String,
         amount: Number,
         type: { type: String, enum: ["momo", "qr"], default: "qr" },
-        status: { type: String, enum: ["pending", "active", "redeemed", "expired"], default: "active" },
+        status: { type: String, enum: ["pending", "active", "redeemed", "expired", "processing", "paid", "returned"], default: "active" },
+        // "request" = claimed by the driver (counts toward the daily limit); "reward" = granted by MOTA (cron, admin).
+        source: { type: String, enum: ["request", "reward"], default: "request" },
+        idempotencyKey: { type: String },
+        // MoMo vouchers are paid through the withdrawal pipeline.
+        withdrawalRequestId: { type: mongoose.Schema.Types.ObjectId, ref: "WithdrawalRequest" },
+        redeemedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
         station: String,
         issuedAt: { type: Date, default: Date.now },
         expiresAt: Date,

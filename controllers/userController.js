@@ -46,15 +46,18 @@ const updateMe = async (req, res) => {
     try {
         const {
             firstName, lastName, emergencyContactName,
-            emergencyContactPhone, preferredPayment,
+            emergencyContactPhone, preferredPayment, preferredLanguage,
         } = req.body;
+        if (preferredLanguage !== undefined && !["en", "rw", "fr", "sw"].includes(preferredLanguage)) {
+            return res.status(400).json({ message: "preferredLanguage must be en, rw, fr or sw" });
+        }
         if (preferredPayment && !["CASH", "MOMO", "CARD"].includes(preferredPayment)) {
             return res.status(400).json({ message: "preferredPayment must be CASH, MOMO, or CARD" });
         }
         // Don't allow updating sensitive fields here directly
         const updates = {
             firstName, lastName, emergencyContactName,
-            emergencyContactPhone, preferredPayment,
+            emergencyContactPhone, preferredPayment, preferredLanguage,
         };
         if (emergencyContactName && emergencyContactPhone && preferredPayment) {
             updates.passengerProfileCompleted = true;

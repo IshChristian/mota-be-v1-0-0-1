@@ -20,7 +20,13 @@ const rideEngineService = require("../services/rideEngineService");
  */
 router.get("/driver-events", authMiddleware, (req, res) => {
     // Add this client to the SSE manager
-    sseService.addClient(req.user.id, res);
+    sseService.addClient(req.user.id, res, req);
+});
+
+// One live stream for every signed-in app (passengers and drivers): ride
+// updates, offers, counter-offers, chat, payments and driver location.
+router.get("/events", authMiddleware, (req, res) => {
+    sseService.addClient(req.user.id, res, req);
 });
 
 router.post("/location", authMiddleware, async (req, res) => {
@@ -30,10 +36,8 @@ router.post("/location", authMiddleware, async (req, res) => {
             !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
             return res.status(400).json({ message: "Valid latitude and longitude are required." });
         }
-        await User.findByIdAndUpdate(req.user.id, {
-            lastLocation: { latitude, longitude, heading, speed },
-            lastLocationAt: new Date(),
-        });
+        // Same path as PUT /api/driver/location, so the passenger's map updates live.
+        await rideEngineService.updateDriverLocation(req.user.id, latitude, longitude, heading, speed);
         res.status(200).json({ message: "Location updated." });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
@@ -48,13 +52,13 @@ router.get("/nearby-drivers", authMiddleware, async (req, res) => {
         if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
             return res.status(400).json({ message: "Valid lat and lng query parameters are required." });
         }
-        const drivers = await rideEngineService.findNearbyDrivers(lat, lng, radius, 25);
+        const vehicleType = req.query.vehicleType ? rideEngineService.normalizeVehicleType(req.query.vehicleType) : undefined;
+        const drivers = await rideEngineService.findNearbyDrivers(lat, lng, radius, 25, { vehicleType, exclude: [req.user.id] });
+        // Positions are rounded (~100 m) and names omitted: passengers see availability, not who is where.
         res.status(200).json({ data: drivers.map((driver) => ({
             id: driver._id,
-            firstName: driver.firstName,
-            lastName: driver.lastName,
-            latitude: driver.lastLocation.latitude,
-            longitude: driver.lastLocation.longitude,
+            latitude: Math.round(driver.lastLocation.latitude * 1000) / 1000,
+            longitude: Math.round(driver.lastLocation.longitude * 1000) / 1000,
             heading: driver.lastLocation.heading,
             distanceKm: Math.round(driver.distanceKm * 10) / 10,
         })) });

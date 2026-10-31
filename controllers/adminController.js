@@ -65,7 +65,7 @@ const getUserOverview = async (req, res) => {
 const updateDriverProfile = async (req, res) => {
     try {
         const allowed = pickFields(req.body, ["plateNumber", "cooperativeName", "nid", "insuranceAttachment", "permitAttachment", "permitId", "code"]);
-        const profile = await DriverProfile.findOneAndUpdate({ driverId: req.params.id }, allowed, { new: true, runValidators: true });
+        const profile = await DriverProfile.findOneAndUpdate({ driverId: req.params.id }, allowed, { returnDocument: "after", runValidators: true });
         if (!profile) return res.status(404).json({ message: "Driver profile not found" });
         await auditService.log({ ...auditContext(req), action: "driver_profile_updated", targetType: "DriverProfile", targetId: profile._id, metadata: { changes: allowed, driverId: req.params.id } });
         res.json({ message: "Driver profile updated", data: profile });
@@ -169,12 +169,12 @@ const cancelRideAsAdmin = async (req, res) => {
 const getSupportCases = async (req, res) => { try { const filter = req.query.status ? { status: req.query.status } : {}; const data = await SupportCase.find(filter).populate("customerId driverId assignedTo createdBy", "firstName lastName phone email role").populate("rideId").sort({ createdAt: -1 }).limit(200); res.json({ data }); } catch (error) { res.status(500).json({ message: "Server error", error: error.message }); } };
 const getSupportCaseDetails = async (req, res) => { try { const item = await SupportCase.findById(req.params.id).populate("customerId driverId assignedTo createdBy contactHistory.createdBy", "firstName lastName phone email role").populate("rideId"); if (!item) return res.status(404).json({ message: "Support case not found" }); res.json({ data: item }); } catch (error) { res.status(500).json({ message: "Server error", error: error.message }); } };
 const createSupportCase = async (req, res) => { try { const { customerId, rideId, driverId, category, subject, description, priority = "normal", assignedTo } = req.body; if (!subject || !description) return res.status(400).json({ message: "Subject and description are required" }); const item = await SupportCase.create({ customerId, rideId, driverId, category, subject, description, priority, assignedTo, createdBy: req.user.id }); await auditService.log({ ...auditContext(req), action: "support_case_created", targetType: "SupportCase", targetId: item._id, metadata: { subject, priority, rideId } }); res.status(201).json({ message: "Support case created", data: item }); } catch (error) { res.status(400).json({ message: error.message }); } };
-const updateSupportCase = async (req, res) => { try { const allowed = pickFields(req.body, ["subject", "description", "priority", "status", "assignedTo", "resolution", "rideId", "customerId", "driverId", "category", "escalated"]); const before = await SupportCase.findById(req.params.id); if (!before) return res.status(404).json({ message: "Support case not found" }); if (["resolved", "closed"].includes(allowed.status) && !allowed.resolution && !before.resolution) return res.status(400).json({ message: "Resolution is required before resolving or closing a case" }); const item = await SupportCase.findByIdAndUpdate(req.params.id, allowed, { new: true, runValidators: true }); await auditService.log({ ...auditContext(req), action: "support_case_updated", targetType: "SupportCase", targetId: item._id, metadata: { changes: allowed } }); res.json({ message: "Support case updated", data: item }); } catch (error) { res.status(400).json({ message: error.message }); } };
+const updateSupportCase = async (req, res) => { try { const allowed = pickFields(req.body, ["subject", "description", "priority", "status", "assignedTo", "resolution", "rideId", "customerId", "driverId", "category", "escalated"]); const before = await SupportCase.findById(req.params.id); if (!before) return res.status(404).json({ message: "Support case not found" }); if (["resolved", "closed"].includes(allowed.status) && !allowed.resolution && !before.resolution) return res.status(400).json({ message: "Resolution is required before resolving or closing a case" }); const item = await SupportCase.findByIdAndUpdate(req.params.id, allowed, { returnDocument: "after", runValidators: true }); await auditService.log({ ...auditContext(req), action: "support_case_updated", targetType: "SupportCase", targetId: item._id, metadata: { changes: allowed } }); res.json({ message: "Support case updated", data: item }); } catch (error) { res.status(400).json({ message: error.message }); } };
 const deleteSupportCase = async (req, res) => { try { const item = await SupportCase.findByIdAndDelete(req.params.id); if (!item) return res.status(404).json({ message: "Support case not found" }); await auditService.log({ ...auditContext(req), action: "support_case_deleted", targetType: "SupportCase", targetId: item._id, metadata: { subject: item.subject } }); res.json({ message: "Support case deleted" }); } catch (error) { res.status(500).json({ message: "Server error", error: error.message }); } };
 const getSupportOperations = async (req, res) => { try { const activeStatuses = ["requested", "searching", "accepted", "approaching", "arrived", "start_requested", "in_progress", "stop_requested", "awaiting_payment"]; const [cases, rides, drivers] = await Promise.all([SupportCase.find({ status: { $in: ["open", "in_progress"] } }).populate("customerId driverId assignedTo", "firstName lastName phone email role").populate("rideId").sort({ priority: -1, createdAt: -1 }).limit(100), Ride.find({ rideStatus: { $in: activeStatuses } }).populate("passengerId driverId", "firstName lastName phone email isOnline lastLocation lastLocationAt").sort({ requestedAt: -1 }).limit(100), User.find({ role: "driver", isActive: true, isOnline: true, lastLocationAt: { $gte: new Date(Date.now() - 5 * 60 * 1000) } }).select("firstName lastName phone lastLocation lastLocationAt")]); res.json({ data: { cases, rides, drivers } }); } catch (error) { res.status(500).json({ message: "Server error", error: error.message }); } };
-const logSupportContact = async (req, res) => { try { const { channel, direction = "outbound", outcome, note } = req.body; const allowedChannels = ["call", "sms", "email", "push", "in_app"]; const allowedOutcomes = ["answered", "no_answer", "sent", "failed", "callback_requested", "resolved"]; if (!allowedChannels.includes(channel) || !allowedOutcomes.includes(outcome) || !note) return res.status(400).json({ message: "Valid channel, outcome and note are required" }); const item = await SupportCase.findByIdAndUpdate(req.params.id, { $push: { contactHistory: { channel, direction, outcome, note, createdBy: req.user.id } }, $set: { status: outcome === "resolved" ? "resolved" : "in_progress" } }, { new: true, runValidators: true }); if (!item) return res.status(404).json({ message: "Support case not found" }); await auditService.log({ ...auditContext(req), action: "support_contact_logged", targetType: "SupportCase", targetId: item._id, metadata: { channel, direction, outcome } }); res.json({ message: "Contact logged", data: item }); } catch (error) { res.status(400).json({ message: error.message }); } };
+const logSupportContact = async (req, res) => { try { const { channel, direction = "outbound", outcome, note } = req.body; const allowedChannels = ["call", "sms", "email", "push", "in_app"]; const allowedOutcomes = ["answered", "no_answer", "sent", "failed", "callback_requested", "resolved"]; if (!allowedChannels.includes(channel) || !allowedOutcomes.includes(outcome) || !note) return res.status(400).json({ message: "Valid channel, outcome and note are required" }); const item = await SupportCase.findByIdAndUpdate(req.params.id, { $push: { contactHistory: { channel, direction, outcome, note, createdBy: req.user.id } }, $set: { status: outcome === "resolved" ? "resolved" : "in_progress" } }, { returnDocument: "after", runValidators: true }); if (!item) return res.status(404).json({ message: "Support case not found" }); await auditService.log({ ...auditContext(req), action: "support_contact_logged", targetType: "SupportCase", targetId: item._id, metadata: { channel, direction, outcome } }); res.json({ message: "Contact logged", data: item }); } catch (error) { res.status(400).json({ message: error.message }); } };
 const notifySupportPassenger = async (req, res) => { try { const item = await SupportCase.findById(req.params.id); if (!item?.rideId) return res.status(404).json({ message: "Support case or linked ride not found" }); const ride = await Ride.findById(item.rideId).populate("driverId", "firstName lastName phone"); const passenger = await User.findById(ride?.passengerId).select("firstName phone email +pushTokens"); if (!ride || !passenger) return res.status(404).json({ message: "Ride passenger not found" }); const driverName = ride.driverId ? `${ride.driverId.firstName} ${ride.driverId.lastName}` : "your MOTA driver"; const message = `MOTA: ${driverName} accepted your ride. Current status: ${ride.rideStatus}. Fare: ${ride.fare || ride.offeredFare} RWF.`; await notificationService.createNotification(passenger._id, "Ride update", message, "in_app", { rideId: ride._id, rideStatus: ride.rideStatus }); const results = await Promise.allSettled([sendSMS(passenger.phone, message, "support_ride_update"), passenger.email ? notificationService.sendEmail(passenger.email, "MOTA ride update", message) : Promise.resolve(false), notificationService.sendPushNotification(passenger._id, "Ride update", message, { rideId: String(ride._id), rideStatus: ride.rideStatus })]); item.lastPassengerNotificationAt = new Date(); item.contactHistory.push({ channel: "in_app", direction: "outbound", outcome: "sent", note: `Ride notification resent for ${ride.rideStatus}`, createdBy: req.user.id }); await item.save(); await auditService.log({ ...auditContext(req), action: "passenger_renotified", targetType: "Ride", targetId: ride._id, metadata: { supportCaseId: item._id, results: results.map(result => result.status) } }); res.json({ message: "Passenger notification attempted on all configured channels", data: { statuses: results.map(result => result.status), notifiedAt: item.lastPassengerNotificationAt } }); } catch (error) { res.status(500).json({ message: error.message }); } };
-const assignRideBySupport = async (req, res) => { try { const { driverId, supportCaseId } = req.body; if (!mongoose.isValidObjectId(driverId)) return res.status(400).json({ message: "Valid driverId is required" }); const driver = await User.findOne({ _id: driverId, role: "driver", isActive: true, isOnline: true, lastLocationAt: { $gte: new Date(Date.now() - 5 * 60 * 1000) } }); if (!driver) return res.status(409).json({ message: "Driver is unavailable or location is stale" }); const busy = await Ride.exists({ driverId, rideStatus: { $in: ["accepted", "approaching", "arrived", "start_requested", "in_progress", "stop_requested", "awaiting_payment"] } }); if (busy) return res.status(409).json({ message: "Driver already has an active ride" }); const ride = await Ride.findOneAndUpdate({ _id: req.params.id, rideStatus: { $in: ["requested", "searching"] }, driverId: null }, { $set: { driverId, rideStatus: "approaching", acceptedAt: new Date() }, $addToSet: { notifiedDrivers: driverId } }, { new: true }); if (!ride) return res.status(409).json({ message: "Ride is no longer assignable" }); const passenger = await User.findById(ride.passengerId); if (!passenger) return res.status(409).json({ message: "Ride passenger account is unavailable; assignment was saved but no notification was sent", data: ride }); const message = `MOTA support assigned driver ${driver.firstName} ${driver.lastName} to your ride. Fare: ${ride.fare || ride.offeredFare} RWF.`; await Promise.allSettled([notificationService.createNotification(passenger._id, "Driver assigned", message, "in_app", { rideId: ride._id, driverId }), sendSMS(passenger.phone, message, "support_driver_assigned"), notificationService.sendPushNotification(passenger._id, "Driver assigned", message, { rideId: String(ride._id), driverId: String(driverId) })]); if (supportCaseId) await SupportCase.findByIdAndUpdate(supportCaseId, { rideId: ride._id, customerId: ride.passengerId, driverId, assignedTo: req.user.id, status: "in_progress", $push: { contactHistory: { channel: "in_app", outcome: "sent", note: "Driver manually assigned by support", createdBy: req.user.id } } }); await auditService.log({ ...auditContext(req), action: "support_ride_assigned", targetType: "Ride", targetId: ride._id, metadata: { driverId, supportCaseId } }); res.json({ message: "Driver assigned and passenger notified", data: ride }); } catch (error) { res.status(500).json({ message: error.message }); } };
+const assignRideBySupport = async (req, res) => { try { const { driverId, supportCaseId } = req.body; if (!mongoose.isValidObjectId(driverId)) return res.status(400).json({ message: "Valid driverId is required" }); const driver = await User.findOne({ _id: driverId, role: "driver", isActive: true, isOnline: true, lastLocationAt: { $gte: new Date(Date.now() - 5 * 60 * 1000) } }); if (!driver) return res.status(409).json({ message: "Driver is unavailable or location is stale" }); const busy = await Ride.exists({ driverId, rideStatus: { $in: ["accepted", "approaching", "arrived", "start_requested", "in_progress", "stop_requested", "awaiting_payment"] } }); if (busy) return res.status(409).json({ message: "Driver already has an active ride" }); const ride = await Ride.findOneAndUpdate({ _id: req.params.id, rideStatus: { $in: ["requested", "searching"] }, driverId: null }, { $set: { driverId, rideStatus: "approaching", acceptedAt: new Date() }, $addToSet: { notifiedDrivers: driverId } }, { returnDocument: "after" }); if (!ride) return res.status(409).json({ message: "Ride is no longer assignable" }); const passenger = await User.findById(ride.passengerId); if (!passenger) return res.status(409).json({ message: "Ride passenger account is unavailable; assignment was saved but no notification was sent", data: ride }); const message = `MOTA support assigned driver ${driver.firstName} ${driver.lastName} to your ride. Fare: ${ride.fare || ride.offeredFare} RWF.`; await Promise.allSettled([notificationService.createNotification(passenger._id, "Driver assigned", message, "in_app", { rideId: ride._id, driverId }), sendSMS(passenger.phone, message, "support_driver_assigned"), notificationService.sendPushNotification(passenger._id, "Driver assigned", message, { rideId: String(ride._id), driverId: String(driverId) })]); if (supportCaseId) await SupportCase.findByIdAndUpdate(supportCaseId, { rideId: ride._id, customerId: ride.passengerId, driverId, assignedTo: req.user.id, status: "in_progress", $push: { contactHistory: { channel: "in_app", outcome: "sent", note: "Driver manually assigned by support", createdBy: req.user.id } } }); await auditService.log({ ...auditContext(req), action: "support_ride_assigned", targetType: "Ride", targetId: ride._id, metadata: { driverId, supportCaseId } }); res.json({ message: "Driver assigned and passenger notified", data: ride }); } catch (error) { res.status(500).json({ message: error.message }); } };
 
 const createRideBySupport = async (req, res) => { try {
     const { passengerId, pickup, destination, offeredFare, passengers = 1, paymentMethod = "cash", scheduledDate, scheduledTime } = req.body;
@@ -194,7 +194,7 @@ const updateRideBySupport = async (req, res) => { try {
     const allowed = pickFields(req.body, ["pickup", "destination", "offeredFare", "fare", "passengers", "paymentMethod", "paymentStatus", "rideStatus", "scheduledDate", "scheduledTime"]);
     const statuses = ["requested", "searching", "accepted", "approaching", "arrived", "start_requested", "in_progress", "stop_requested", "awaiting_payment", "completed", "cancelled", "expired"];
     if (allowed.rideStatus && !statuses.includes(allowed.rideStatus)) return res.status(400).json({ message: "Invalid ride status" });
-    const ride = await Ride.findByIdAndUpdate(req.params.id, allowed, { new: true, runValidators: true }).populate("passengerId driverId", "firstName lastName phone email lastLocation lastLocationAt");
+    const ride = await Ride.findByIdAndUpdate(req.params.id, allowed, { returnDocument: "after", runValidators: true }).populate("passengerId driverId", "firstName lastName phone email lastLocation lastLocationAt");
     if (!ride) return res.status(404).json({ message: "Ride not found" });
     await auditService.log({ ...auditContext(req), action: "support_ride_updated", targetType: "Ride", targetId: ride._id, metadata: { changes: allowed } });
     res.json({ message: "Ride updated", data: ride });
@@ -257,12 +257,33 @@ const getStats = async (req, res) => {
     }
 };
 
+/** Returns an error message for values the app can't use, else null. */
+function validateSetting(key, value) {
+    if (key === "fuel_stations") {
+        try {
+            const list = JSON.parse(value);
+            if (!Array.isArray(list) || list.some((s) => !s || !s.name)) return "fuel_stations must be a JSON list of stations, each with a name.";
+        } catch { return "fuel_stations must be valid JSON."; }
+    }
+    if (key === "fuel_voucher_min_tier" && !["Bronze", "Silver", "Gold", "Platinum"].includes(value)) return "Tier must be Bronze, Silver, Gold or Platinum.";
+    if (["fuel_voucher_amount", "fuel_voucher_daily_limit", "car_ride_base_fare", "car_ride_per_km_rate", "car_ride_minimum_fare", "parcel_surcharge"].includes(key) && (!Number.isFinite(Number(value)) || Number(value) < 0)) return `${key} must be a number of 0 or more.`;
+    return null;
+}
+
 const updateSystemConfig = async (req, res) => {
     try {
         const { key, value, description } = req.body;
         if (!key || value === undefined) {
             return res.status(400).json({ message: "Key and value are required" });
         }
+        // Financial settings (fees, commission, rewards, fuel) need settings:financial, not just settings:update.
+        const existing = await SystemConfig.findOne({ key }).select("category").lean();
+        const category = existing?.category || (/fee|commission|reward|fuel_voucher|loan|fare|cash_out|price|amount/.test(key) ? "financial" : "general");
+        if (category === "financial" && !require("../services/accessService").can(req.user, "settings:financial")) {
+            return res.status(403).json({ message: "Changing financial settings requires the settings:financial permission." });
+        }
+        const invalid = validateSetting(key, value);
+        if (invalid) return res.status(400).json({ message: invalid });
         const config = await configService.setConfig(key, value, description, req.user.id);
         res.status(200).json({ message: "System configuration updated", data: config });
     } catch (error) {
@@ -306,7 +327,7 @@ const getDriverDetails = async (req, res) => {
 const updateUserStatus = async (req, res) => {
     try {
         const { isActive } = req.body;
-        const user = await User.findByIdAndUpdate(req.params.id, { isActive }, { new: true });
+        const user = await User.findByIdAndUpdate(req.params.id, { isActive }, { returnDocument: "after" });
         res.status(200).json({ message: "User status updated", data: user });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
@@ -315,7 +336,7 @@ const updateUserStatus = async (req, res) => {
 
 const verifyUser = async (req, res) => {
     try {
-        const user = await User.findByIdAndUpdate(req.params.id, { isVerified: true }, { new: true });
+        const user = await User.findByIdAndUpdate(req.params.id, { isVerified: true }, { returnDocument: "after" });
         res.status(200).json({ message: "User verified manually", data: user });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
@@ -325,7 +346,7 @@ const verifyUser = async (req, res) => {
 const updateKYC = async (req, res) => {
     try {
         const { kycLevel } = req.body;
-        const user = await User.findByIdAndUpdate(req.params.id, { kycLevel }, { new: true });
+        const user = await User.findByIdAndUpdate(req.params.id, { kycLevel }, { returnDocument: "after" });
         res.status(200).json({ message: "KYC level updated", data: user });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
@@ -522,17 +543,8 @@ const reviewRegistration = async (req, res) => {
         if (status === "approved") {
             user.isActive = true;
 
-            // Trigger referral reward (3000 RWF to wallet)
-            const Referral = require("../models/Referral");
-            const walletService = require("../services/walletService");
-            const pendingReferral = await Referral.findOne({ referredUserId: user._id, status: "pending" });
-            
-            if (pendingReferral) {
-                // Reward referrer visually 3000 RWF in their wallet
-                await walletService.rewardReferral(pendingReferral.referrerId, 3000);
-                pendingReferral.status = "successful";
-                await pendingReferral.save();
-            }
+            // Referral reward is settled after the approval is saved (below), atomically and at most once.
+            res.on("finish", () => { void require("../services/referralService").settleForInvitee(user._id); });
 
         } else {
             user.isActive = false; // suspend/pending if not approved

@@ -21,7 +21,7 @@ const getRoles = async () => {
 };
 
 const updateRolePermissions = async (id, permissions) => {
-    return await Role.findByIdAndUpdate(id, { permissions: validatePermissions(permissions) }, { new: true, runValidators: true });
+    return await Role.findByIdAndUpdate(id, { permissions: validatePermissions(permissions) }, { returnDocument: "after", runValidators: true });
 };
 
 const deleteRole = async (id) => {

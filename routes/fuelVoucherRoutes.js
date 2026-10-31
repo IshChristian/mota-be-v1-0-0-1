@@ -11,4 +11,6 @@ router.get("/history", controller.history);
 router.get("/weekly-savings", controller.weeklySavings);
 router.get("/stations", controller.stations);
 router.patch("/:id/redeem", controller.redeem);
+router.get("/:id", controller.getVoucher);
+
 module.exports = router;

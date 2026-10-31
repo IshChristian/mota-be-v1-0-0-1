@@ -50,6 +50,8 @@ const transactionSchema = new mongoose.Schema({
             "p2p_transfer_sent",
             "p2p_transfer_received",
             "p2p_transfer_fee",
+            "tip",
+            "fuel_voucher",
         ],
     },
     status: {

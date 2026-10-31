@@ -11,6 +11,30 @@ router.use(protect);
 router.use(authorize("admin:access"));
 
 router.get("/kyc", authorize("kyc:view"), kycController.adminList);
+
+// ── Fuel vouchers ───────────────────────────────────────────────────────────
+router.get("/fuel-vouchers", authorize("fuel_voucher:view"), async (req, res) => {
+    try {
+        const User = require("../models/User");
+        const status = String(req.query.status || "");
+        const rows = await User.aggregate([
+            { $match: { role: "driver", "fuelVouchers.0": { $exists: true } } },
+            { $unwind: "$fuelVouchers" },
+            ...(status ? [{ $match: { "fuelVouchers.status": status } }] : []),
+            { $sort: { "fuelVouchers.issuedAt": -1 } },
+            { $limit: 300 },
+            { $project: { _id: 0, id: "$fuelVouchers._id", code: "$fuelVouchers.code", type: "$fuelVouchers.type", source: "$fuelVouchers.source", amount: "$fuelVouchers.amount", status: "$fuelVouchers.status", issuedAt: "$fuelVouchers.issuedAt", expiresAt: "$fuelVouchers.expiresAt", redeemedAt: "$fuelVouchers.redeemedAt", station: "$fuelVouchers.station", driver: { id: "$_id", firstName: "$firstName", lastName: "$lastName", phone: "$phone" } } },
+        ]);
+        res.json({ data: rows });
+    } catch (error) { res.status(500).json({ message: "Unable to load fuel vouchers" }); }
+});
+router.post("/fuel-vouchers/redeem", authorize("fuel_voucher:manage"), async (req, res) => {
+    try {
+        const result = await require("../services/fuelVoucherService").redeemByCode(req.body.code, req.user.id, req.body.station);
+        try { await require("../services/auditService").log({ actorId: req.user.id, actorRole: req.user.role, action: "fuel_voucher_redeemed", targetType: "User", targetId: result.driver.id, metadata: { code: result.voucher.code, station: req.body.station } }); } catch { /* audit enum may not include this action */ }
+        res.json({ message: "Voucher redeemed", data: result });
+    } catch (error) { res.status(error.statusCode || 400).json({ message: error.message }); }
+});
 router.get("/withdrawals", authorize("finance:view"), async (req, res) => {
     try {
         const WithdrawalRequest = require("../models/WithdrawalRequest");
@@ -45,6 +69,7 @@ router.patch("/withdrawals/:id/review", authorize("transaction:sync"), async (re
         res.json({ message: "Withdrawal review updated", data: { id: record._id, reviewStatus: record.reviewStatus, reviewNote: record.reviewNote } });
     } catch { res.status(500).json({ message: "Unable to update withdrawal review" }); }
 });
+router.get("/kyc/:type/:id", authorize("kyc:view"), kycController.adminDetail);
 router.patch("/kyc/:type/:id/review", authorize("kyc:approve"), kycController.adminReview);
 
 /**
@@ -300,6 +325,14 @@ router.post("/drivers/:id/wallet-adjust", authorize("wallet:adjust"), adminContr
 router.post("/users/:id/wallet-adjust", authorize("wallet:adjust"), adminController.adjustDriverWallet);
 router.get("/rides", authorize("ride:view"), adminController.getRidesList);
 router.patch("/rides/:id/cancel", authorize("ride:cancel"), adminController.cancelRideAsAdmin);
+router.get("/support-summary", authorize("support:view"), async (req, res) => {
+    try { res.json({ data: await require("../services/supportService").summary() }); }
+    catch (error) { res.status(500).json({ message: "Unable to load support summary" }); }
+});
+router.post("/support-cases/:id/messages", authorize("support:update"), async (req, res) => {
+    try { res.json({ data: await require("../services/supportService").staffReply(req.user, req.params.id, req.body || {}) }); }
+    catch (error) { res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : "Unable to save the reply" }); }
+});
 router.get("/support-cases", authorize("support:view"), adminController.getSupportCases);
 router.post("/support-cases", authorize("support:update"), adminController.createSupportCase);
 router.get("/support-cases/:id", authorize("support:view"), adminController.getSupportCaseDetails);

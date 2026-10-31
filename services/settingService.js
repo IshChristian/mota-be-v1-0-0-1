@@ -9,7 +9,7 @@ const getSettingsByUserId = async (userId) => {
 };
 
 const updateSettings = async (userId, updateData) => {
-    return await Setting.findOneAndUpdate({ userId }, updateData, { new: true, upsert: true });
+    return await Setting.findOneAndUpdate({ userId }, updateData, { returnDocument: "after", upsert: true });
 };
 
 const updateCategory = async (userId, category, data) => {
@@ -17,7 +17,7 @@ const updateCategory = async (userId, category, data) => {
     for (const key in data) {
         updateObj[`${category}.${key}`] = data[key];
     }
-    return await Setting.findOneAndUpdate({ userId }, { $set: updateObj }, { new: true, upsert: true });
+    return await Setting.findOneAndUpdate({ userId }, { $set: updateObj }, { returnDocument: "after", upsert: true });
 };
 
 module.exports = {

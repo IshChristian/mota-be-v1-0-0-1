@@ -14,6 +14,31 @@ const rideSchema = new mongoose.Schema({
     },
     passengerPhone: { type: String, trim: true },
     passengers: { type: Number, default: 1 },
+    // Car or moto; drivers are matched on their approved KYC vehicle type.
+    vehicleType: { type: String, enum: ["motor", "car"], default: "motor" },
+    rideType: { type: String, enum: ["ride", "parcel"], default: "ride" },
+    parcel: {
+        recipientName: { type: String, trim: true, maxlength: 80 },
+        recipientPhone: { type: String, trim: true },
+        description: { type: String, trim: true, maxlength: 200 },
+        size: { type: String, enum: ["small", "medium", "large"] },
+        deliveryPinHash: { type: String, select: false },
+        deliveredAt: { type: Date },
+    },
+    suggestedFare: { type: Number },
+    // Driver price proposals while the passenger is still searching.
+    counterOffers: [{
+        driverId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+        amount: { type: Number, required: true, min: 0 },
+        status: { type: String, enum: ["pending", "accepted", "expired"], default: "pending" },
+        createdAt: { type: Date, default: Date.now },
+    }],
+    dispatchRound: { type: Number, default: 0 },
+    lastDispatchAt: { type: Date },
+    tipAmount: { type: Number, default: 0, min: 0 },
+    // Public read-only trip link for family/friends.
+    shareToken: { type: String },
+    shareExpiresAt: { type: Date },
     scheduledDate: { type: String },
     scheduledTime: { type: String },
     scheduledAt: { type: Date, index: true },
@@ -139,6 +164,8 @@ rideSchema.index({ driverId: 1, createdAt: -1 });
 rideSchema.index({ passengerId: 1, createdAt: -1 });
 rideSchema.index({ rideStatus: 1, createdAt: -1 });
 rideSchema.index({ "pickup.latitude": 1, "pickup.longitude": 1 });
+rideSchema.index({ shareToken: 1 }, { unique: true, sparse: true });
+rideSchema.index({ rideStatus: 1, lastDispatchAt: 1 });
 
 const Ride = mongoose.model("Ride", rideSchema);
 

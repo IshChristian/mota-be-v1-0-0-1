@@ -65,11 +65,11 @@ const getAgentsStats = async () => {
 };
 
 const banUser = async (userId) => {
-    return await User.findByIdAndUpdate(userId, { isActive: false }, { new: true });
+    return await User.findByIdAndUpdate(userId, { isActive: false }, { returnDocument: "after" });
 };
 
 const unbanUser = async (userId) => {
-    return await User.findByIdAndUpdate(userId, { isActive: true }, { new: true });
+    return await User.findByIdAndUpdate(userId, { isActive: true }, { returnDocument: "after" });
 };
 
 module.exports = {

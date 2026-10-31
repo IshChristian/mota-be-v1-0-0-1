@@ -27,13 +27,13 @@ const getUserById = async (id) => {
 };
 
 const updateUser = async (id, updateData) => {
-    return await User.findByIdAndUpdate(id, updateData, { new: true })
+    return await User.findByIdAndUpdate(id, updateData, { returnDocument: "after" })
         .populate("roleId", "name permissions")
         .populate("avatarId", "url format");
 };
 
 const assignRole = async (userId, roleId) => {
-    return await User.findByIdAndUpdate(userId, { roleId }, { new: true });
+    return await User.findByIdAndUpdate(userId, { roleId }, { returnDocument: "after" });
 };
 
 const deleteUser = async (id) => {

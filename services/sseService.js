@@ -1,46 +1,46 @@
 // services/sseService.js
-// Basic Server-Sent Events (SSE) Manager
+// Server-Sent Events hub. Every signed-in app (passenger or driver) may hold
+// one or more streams; events are written to all streams of the target user.
 
-const clients = new Map();
+const clients = new Map(); // userId -> Set<res>
 
-/**
- * Add a new SSE client
- * @param {string} driverId 
- * @param {Response} res 
- */
-const addClient = (driverId, res) => {
-    // Set headers for SSE
+const addClient = (userId, res, req) => {
+    const key = String(userId);
     res.writeHead(200, {
         "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive"
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
     });
-
     res.write(`data: ${JSON.stringify({ status: "connected" })}\n\n`);
-
-    clients.set(driverId, res);
-
-    // Remove client on disconnect
-    res.on("close", () => {
-        clients.delete(driverId);
+    if (!clients.has(key)) clients.set(key, new Set());
+    clients.get(key).add(res);
+    // Comment frames keep Render/Nginx from closing idle connections.
+    const heartbeat = setInterval(() => res.write(": ping\n\n"), 25000);
+    heartbeat.unref?.();
+    (req || res).on("close", () => {
+        clearInterval(heartbeat);
+        clients.get(key)?.delete(res);
+        if (clients.get(key)?.size === 0) clients.delete(key);
     });
 };
 
-/**
- * Broadcast an event to a specific driver via SSE
- * @param {string} driverId 
- * @param {string} eventName 
- * @param {object} payload 
- */
-const sendEventToDriver = (driverId, eventName, payload) => {
-    const res = clients.get(driverId.toString());
-    if (res) {
-        res.write(`event: ${eventName}\n`);
-        res.write(`data: ${JSON.stringify(payload)}\n\n`);
-    }
+const sendEventToUser = (userId, eventName, payload) => {
+    if (!userId) return 0;
+    const set = clients.get(String(userId));
+    if (!set) return 0;
+    const frame = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+    for (const res of set) res.write(frame);
+    return set.size;
 };
+
+// Kept for existing callers.
+const sendEventToDriver = sendEventToUser;
+const isConnected = (userId) => (clients.get(String(userId))?.size || 0) > 0;
 
 module.exports = {
     addClient,
-    sendEventToDriver
+    sendEventToUser,
+    sendEventToDriver,
+    isConnected,
 };
