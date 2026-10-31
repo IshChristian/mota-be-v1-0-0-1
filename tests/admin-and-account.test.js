@@ -159,3 +159,58 @@ test("driver performance: acceptance and cancellation rates from acknowledged of
     const other = await makeDriver();
     assert.equal((await post(other, `/api/driver/offers/${id}/received`)).status, 404, "only drivers who got the offer");
 });
+
+test("staff payment status corrections: reason required, finished rides only, audited", async () => {
+    const AuditLog = load("models/AuditLog.js");
+    const admin = await staff("admin");
+    const support = await staff("caller_support");
+    const driver = await makeDriver();
+    await User.updateOne({ _id: driver.user._id }, { $set: { registrationPaid: false } });
+    const patch = (who, path, body) => request(app).patch(path).set(who.auth).send(body);
+    assert.equal((await patch(admin, `/api/admin/users/${driver.user._id}/registration-payment`, { paid: true, reason: "x" })).status, 400, "reason required");
+    assert.equal((await patch(support, `/api/admin/users/${driver.user._id}/registration-payment`, { paid: true, reason: "Paid cash at office" })).status, 403);
+    const ok = await patch(admin, `/api/admin/users/${driver.user._id}/registration-payment`, { paid: true, reason: "Paid cash at office, receipt 42" });
+    assert.equal(ok.status, 200, ok.body.message);
+    assert.equal((await User.findById(driver.user._id)).registrationPaid, true);
+    assert.ok(await AuditLog.exists({ action: "registration_payment_updated", targetId: driver.user._id }));
+    const passenger = await makePassenger();
+    assert.equal((await patch(admin, `/api/admin/users/${passenger.user._id}/registration-payment`, { paid: true, reason: "Paid cash at office" })).status, 400, "passengers have no fee");
+
+    const { body } = await requestRide(app, passenger);
+    const id = body.data.rideId;
+    assert.equal((await patch(admin, `/api/admin/rides/${id}/payment`, { paymentStatus: "successful", reason: "Paid outside app" })).status, 409, "trip not finished");
+    await Ride.updateOne({ _id: id }, { $set: { rideStatus: "awaiting_payment", paymentStatus: "pending" } });
+    const ride = await patch(admin, `/api/admin/rides/${id}/payment`, { paymentStatus: "successful", reason: "Passenger paid by bank transfer" });
+    assert.equal(ride.status, 200, ride.body.message);
+    assert.equal((await Ride.findById(id)).paymentStatus, "successful");
+    assert.ok(ride.body.warnings.some((w) => /finish the trip/.test(w)));
+    assert.equal((await patch(admin, `/api/admin/rides/${id}/payment`, { paymentStatus: "refunded", reason: "Passenger paid" })).status, 400);
+});
+
+test("driver KYC renewal: approved+valid stays locked; expired document can be renewed and goes back to review", async () => {
+    const DriverKyc = load("models/DriverKyc.js");
+    const driver = await makeDriver();
+    const future = (days) => new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+    const valid = { drivingLicenseExpiresAt: future(400), transportPermitExpiresAt: future(400), insuranceExpiresAt: future(400), vehicleRegistrationExpiresAt: future(400), technicalInspectionExpiresAt: future(400) };
+    await DriverKyc.updateOne({ userId: driver.user._id }, { $set: valid });
+    const doc = "https://res.cloudinary.com/test/new.jpg";
+    const body = (over = {}) => ({ nationalIdNumber: "1199080012345678", nationalIdFront: doc, nationalIdBack: doc, selfie: doc, drivingLicenseNumber: "DL1", drivingLicenseDocument: doc, transportPermitNumber: "TP1", transportPermitDocument: doc, insuranceDocument: doc, vehicleRegistrationDocument: doc, technicalInspectionDocument: doc, plateNumber: "RAB999C", vehicleType: "moto", powertrain: "petrol", ...valid, ...over });
+
+    const me = await get(driver, "/api/kyc/me");
+    assert.equal(me.body.renewal.due, false);
+    assert.equal((await put(driver, "/api/kyc/me", body())).status, 409, "valid approved documents stay locked");
+
+    await DriverKyc.updateOne({ userId: driver.user._id }, { $set: { insuranceExpiresAt: new Date(Date.now() - 86400000) } });
+    const due = await get(driver, "/api/kyc/me");
+    assert.equal(due.body.renewal.due, true);
+    assert.deepEqual(due.body.renewal.expired.map((d) => d.documentField), ["insuranceDocument"]);
+    assert.equal((await put(driver, "/api/kyc/me", body({ insuranceExpiresAt: new Date(Date.now() - 86400000).toISOString().slice(0, 10) }))).status, 400, "the new expiry must be in the future");
+    const renewed = await put(driver, "/api/kyc/me", body({ insuranceExpiresAt: future(365) }));
+    assert.equal(renewed.status, 200, renewed.body.message);
+    assert.equal(renewed.body.renewal, true);
+    assert.equal(renewed.body.data.status, "submitted");
+    assert.equal((await DriverKyc.findOne({ userId: driver.user._id })).insuranceDocument, doc);
+
+    await DriverKyc.updateOne({ userId: driver.user._id }, { $set: { status: "approved", insuranceExpiresAt: new Date(Date.now() + 10 * 86400000) } });
+    assert.equal((await get(driver, "/api/kyc/me")).body.renewal.expiringSoon.length, 1, "renewal opens 30 days before expiry");
+});

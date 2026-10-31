@@ -8,12 +8,28 @@ const driverFields = ["nationalIdNumber", "nationalIdFront", "nationalIdBack", "
 const pick = (source, fields) => fields.reduce((out, key) => { if (source[key] !== undefined) out[key] = source[key]; return out; }, {});
 const isPassenger = (role) => role === "client" || role === "passenger";
 
+// Required driver documents and their expiry fields. Renewal opens 30 days before expiry.
+const DRIVER_EXPIRY_FIELDS = { drivingLicenseExpiresAt: "drivingLicenseDocument", transportPermitExpiresAt: "transportPermitDocument", insuranceExpiresAt: "insuranceDocument", vehicleRegistrationExpiresAt: "vehicleRegistrationDocument", technicalInspectionExpiresAt: "technicalInspectionDocument" };
+const RENEWAL_WINDOW_DAYS = 30;
+function renewalStatus(record) {
+  const now = Date.now(), soon = now + RENEWAL_WINDOW_DAYS * 86400000;
+  const expired = [], expiringSoon = [];
+  const fields = { ...DRIVER_EXPIRY_FIELDS, ...(record?.vocationalCardDocument ? { vocationalCardExpiresAt: "vocationalCardDocument" } : {}) };
+  for (const [expiryField, documentField] of Object.entries(fields)) {
+    const at = record?.[expiryField] ? new Date(record[expiryField]).getTime() : NaN;
+    if (!Number.isFinite(at) || at <= now) expired.push({ expiryField, documentField, expiresAt: record?.[expiryField] || null });
+    else if (at <= soon) expiringSoon.push({ expiryField, documentField, expiresAt: record[expiryField] });
+  }
+  return { due: expired.length + expiringSoon.length > 0, expired, expiringSoon, windowDays: RENEWAL_WINDOW_DAYS };
+}
+
 async function getMine(req, res) {
   const driver = req.user.role === "driver";
   if (!driver && !isPassenger(req.user.role)) return res.status(403).json({ message: "KYC is only available to passengers and drivers" });
   const Model = driver ? DriverKyc : PassengerKyc;
   const record = await Model.findOne({ userId: req.user.id });
-  res.json({ data: record, kycType: driver ? "driver" : "passenger", requirements: driver ? driverFields : passengerFields });
+  const renewal = driver && record?.status === "approved" ? renewalStatus(record) : undefined;
+  res.json({ data: record, kycType: driver ? "driver" : "passenger", requirements: driver ? driverFields : passengerFields, renewal });
 }
 
 async function submitMine(req, res) {
@@ -31,15 +47,20 @@ async function submitMine(req, res) {
       if (invalidExpiry) return res.status(400).json({ message: `${invalidExpiry} must be a future date` });
     }
     const previous = await Model.findOne({ userId: req.user.id });
-    if (previous?.status === "approved") return res.status(409).json({ message: "Approved KYC cannot be replaced; contact support for a reviewed correction" });
+    // Approved KYC stays locked, except for drivers whose documents have expired or expire soon:
+    // they resubmit for review (they cannot go online with an expired document anyway).
+    const renewal = previous?.status === "approved" && driver ? renewalStatus(previous) : null;
+    if (previous?.status === "approved" && !renewal?.due) {
+      return res.status(409).json({ message: `Your approved documents are still valid. You can renew a document from ${RENEWAL_WINDOW_DAYS} days before it expires, or contact support for a correction.` });
+    }
     const record = await Model.findOneAndUpdate(
       { userId: req.user.id },
       { ...payload, status: "submitted", submittedAt: new Date(), remarks: undefined, reviewedAt: undefined, reviewedBy: undefined },
       { upsert: true, returnDocument: "after", runValidators: true, setDefaultsOnInsert: true }
     );
     await User.findByIdAndUpdate(req.user.id, { kycLevel: "basic" });
-    await auditService.log({ actorId: req.user.id, actorRole: req.user.role, action: "kyc_submitted", targetType: driver ? "DriverKyc" : "PassengerKyc", targetId: record._id, ipAddress: req.ip, metadata: { kycType: driver ? "driver" : "passenger" } });
-    res.status(previous ? 200 : 201).json({ message: `${driver ? "Driver" : "Passenger"} KYC submitted for review`, data: record });
+    await auditService.log({ actorId: req.user.id, actorRole: req.user.role, action: "kyc_submitted", targetType: driver ? "DriverKyc" : "PassengerKyc", targetId: record._id, ipAddress: req.ip, metadata: { kycType: driver ? "driver" : "passenger", renewal: Boolean(renewal?.due), renewedDocuments: renewal ? [...renewal.expired, ...renewal.expiringSoon].map((d) => d.documentField) : undefined } });
+    res.status(previous ? 200 : 201).json({ message: renewal?.due ? "Renewed documents sent for review. You can go online again once they are approved." : `${driver ? "Driver" : "Passenger"} KYC submitted for review`, data: record, renewal: Boolean(renewal?.due) });
   } catch (error) {
     res.status(error.code === 11000 ? 409 : 400).json({ message: error.code === 11000 ? "KYC identity or vehicle information is already registered" : error.message });
   }

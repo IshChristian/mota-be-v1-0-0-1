@@ -13,6 +13,16 @@ router.use(authorize("admin:access"));
 router.get("/kyc", authorize("kyc:view"), kycController.adminList);
 
 // ── Fuel vouchers ───────────────────────────────────────────────────────────
+// ── Payment status corrections (status only; no money moves) ────────────────
+router.patch("/users/:id/registration-payment", authorize("registration:review"), async (req, res) => {
+    try { res.json(await require("../services/paymentAdminService").setRegistrationPayment(req.user, req.params.id, req.body || {}, req.ip)); }
+    catch (error) { res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : "Unable to update the payment status" }); }
+});
+router.patch("/rides/:id/payment", authorize("ride:manage"), async (req, res) => {
+    try { res.json(await require("../services/paymentAdminService").setRidePayment(req.user, req.params.id, req.body || {}, req.ip)); }
+    catch (error) { res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : "Unable to update the payment status" }); }
+});
+
 router.get("/fuel-vouchers", authorize("fuel_voucher:view"), async (req, res) => {
     try {
         const User = require("../models/User");
