@@ -85,3 +85,25 @@ test("daily reward vouchers don't use up the driver's own requests", async () =>
     await User.updateOne({ _id: driver.user._id }, { $push: { fuelVouchers: { $each: [1, 2].map((i) => ({ code: `FUEL-R${i}`, type: "qr", source: "reward", amount: 3000, issuedAt: new Date(), status: "active" })) } } });
     assert.equal((await claim(driver, "qr")).status, 200);
 });
+
+test("Kigali day: the daily limit resets at Kigali midnight, not server midnight", () => {
+    const svc = load("services/fuelVoucherService.js");
+    // 21:59 UTC = 23:59 Kigali on Oct 31; 22:00 UTC = 00:00 Kigali on Nov 1.
+    assert.equal(svc.kigaliDayStart(Date.parse("2026-10-31T21:59:00Z")).toISOString(), "2026-10-30T22:00:00.000Z");
+    assert.equal(svc.kigaliDayStart(Date.parse("2026-10-31T22:00:00Z")).toISOString(), "2026-10-31T22:00:00.000Z");
+    assert.equal(svc.kigaliMidnight(Date.parse("2026-10-31T10:00:00Z")).toISOString(), "2026-10-31T21:59:59.999Z");
+});
+
+test("expired QR vouchers cannot be redeemed; inactive stations are hidden", async () => {
+    const driver = await makeDriver();
+    await gold(driver);
+    const { body } = await claim(driver, "qr");
+    await User.updateOne({ _id: driver.user._id, "fuelVouchers.code": body.data.code }, { $set: { "fuelVouchers.$.expiresAt": new Date(Date.now() - 1000) } });
+    const admin = await makePassenger({ role: "admin" });
+    const res = await request(app).post("/api/admin/fuel-vouchers/redeem").set(admin.auth).send({ code: body.data.code });
+    assert.equal(res.status, 409);
+    assert.match(res.body.message, /expired/i);
+    await load("services/systemSettingService.js").updateSetting("fuel_stations", JSON.stringify([{ name: "Open", acceptsQr: true }, { name: "Closed", active: false }]));
+    const list = await request(app).get("/api/fuel-vouchers/stations").set(driver.auth);
+    assert.deepEqual(list.body.data.map((s) => s.name), ["Open"]);
+});

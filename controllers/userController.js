@@ -35,10 +35,16 @@ const getUser = async (req, res) => {
 
 const getMe = async (req, res) => {
     try {
-        const user = await userService.getUserById(req.user.id);
-        res.status(200).json({ data: user });
+        const account = await User.findById(req.user.id).select("firstName lastName phone email nationalId avatarUrl avatarId role roleId tier isVerified isEmailVerified isActive activationBlocked kycLevel registrationPaid registrationStatus registrationRemarks registrationSubmittedAt emergencyContactName emergencyContactPhone preferredPayment passengerProfileCompleted isOnline availabilityManuallyOffline lastLocation lastLocationAt referralCode referredBy createdAt updatedAt twoFactorEnabled notificationPreferences").populate("avatarId", "url format").populate("roleId", "name permissions");
+        if (!account) return res.status(404).json({message:"Account not found"});
+        const driver = account.role === "driver";
+        const [kyc, profile] = await Promise.all([
+            (driver ? require('../models/DriverKyc') : require('../models/PassengerKyc')).findOne({userId:account._id}).select("status remarks submittedAt reviewedAt").lean(),
+            driver ? require('../models/DriverProfile').findOne({driverId:account._id}).select("plateNumber cooperativeName permitId code").lean() : Promise.resolve(null)
+        ]);
+        res.json({data:{...account.toObject(),id:String(account._id),hasDriverProfile:!!profile,driverProfile:profile,onboarding:{phoneVerified:account.isVerified===true,emailVerified:account.isEmailVerified===true,emailOptional:true,kycStatus:kyc?.status || (account.kycLevel==='full'?'approved':'not_submitted'),kycRemarks:kyc?.remarks || '',registrationPaid:driver?account.registrationPaid===true:true,registrationFeeRequired:driver,isActive:account.isActive===true}}});
     } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+        res.status(500).json({ message: "Could not refresh your account. Please retry." });
     }
 };
 
@@ -46,7 +52,7 @@ const updateMe = async (req, res) => {
     try {
         const {
             firstName, lastName, emergencyContactName,
-            emergencyContactPhone, preferredPayment, preferredLanguage,
+            emergencyContactPhone, preferredPayment, preferredLanguage, avatarUrl,
         } = req.body;
         if (preferredLanguage !== undefined && !["en", "rw", "fr", "sw"].includes(preferredLanguage)) {
             return res.status(400).json({ message: "preferredLanguage must be en, rw, fr or sw" });
@@ -54,10 +60,18 @@ const updateMe = async (req, res) => {
         if (preferredPayment && !["CASH", "MOMO", "CARD"].includes(preferredPayment)) {
             return res.status(400).json({ message: "preferredPayment must be CASH, MOMO, or CARD" });
         }
+        if (avatarUrl !== undefined) {
+            const cloud = uploadService.cloudinary.config().cloud_name;
+            let parsed;
+            try { parsed = new URL(avatarUrl); } catch { /* invalid URL */ }
+            if (!cloud || typeof avatarUrl !== "string" || !parsed || parsed.protocol !== "https:" || parsed.hostname !== "res.cloudinary.com" || parsed.username || parsed.password || parsed.port || parsed.search || parsed.hash || !parsed.pathname.startsWith(`/${cloud}/image/upload/`)) {
+                return res.status(400).json({ message: "Use a confirmed Cloudinary profile image URL." });
+            }
+        }
         // Don't allow updating sensitive fields here directly
         const updates = {
             firstName, lastName, emergencyContactName,
-            emergencyContactPhone, preferredPayment, preferredLanguage,
+            emergencyContactPhone, preferredPayment, preferredLanguage, avatarUrl,
         };
         if (emergencyContactName && emergencyContactPhone && preferredPayment) {
             updates.passengerProfileCompleted = true;
@@ -162,16 +176,15 @@ const verifyContactChange = async (req, res) => {
 };
 
 const assignRole = async (req, res) => {
-    try {
-        const { roleId } = req.body;
-        const user = await userService.assignRole(req.params.id, roleId);
-
-        if (!user) return res.status(404).json({ message: "User not found" });
-
-        res.status(200).json({ message: "Role assigned successfully", data: user });
-    } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+    // Preserve the legacy roleId-only API, but use the validated and audited admin path.
+    if (!req.body.role && req.body.roleId) {
+        try {
+            const role = await require('../models/Role').findById(req.body.roleId);
+            if (!role) return res.status(400).json({ message: 'Select an existing role.' });
+            req.body.role = role.name;
+        } catch { return res.status(400).json({ message: 'Invalid role ID.' }); }
     }
+    return require('./adminController').assignUserRole(req, res);
 };
 
 module.exports = {

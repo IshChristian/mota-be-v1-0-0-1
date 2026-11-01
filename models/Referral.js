@@ -17,6 +17,7 @@ const referralSchema = new mongoose.Schema({
         enum: ["pending", "successful"],
         default: "pending",
     },
+    rewardedAt: { type: Date },
     createdAt: { type: Date, default: Date.now },
 });
 

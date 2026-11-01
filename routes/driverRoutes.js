@@ -1,3 +1,4 @@
+const performanceService = require('../services/driverPerformanceService');
 const express = require("express");
 const router = express.Router();
 const driverController = require("../controllers/driverController");
@@ -520,43 +521,13 @@ router.get("/active-ride", authMiddleware, roleMiddleware("driver"), rideEngineC
  */
 router.put("/location", authMiddleware, roleMiddleware("driver"), rideEngineController.updateLocation);
 
-// Offer receipts: first time the driver app opened a ride offer (basis for acceptance rate).
-router.post("/offers/:rideId/received", authMiddleware, roleMiddleware("driver"), async (req, res) => {
-  const mongoose = require("mongoose");
-  const Ride = require("../models/Ride");
-  const DriverOfferReceipt = require("../models/DriverOfferReceipt");
-  if (!mongoose.isValidObjectId(req.params.rideId)) return res.status(404).json({ message: "Offer not found" });
-  const ride = await Ride.findOne({ _id: req.params.rideId, $or: [{ notifiedDrivers: req.user._id }, { driverId: req.user._id }] }).select("_id");
-  if (!ride) return res.status(404).json({ message: "Offer not found" });
-  try {
-    await DriverOfferReceipt.updateOne({ driverId: req.user._id, rideId: ride._id }, { $setOnInsert: { receivedAt: new Date() } }, { upsert: true });
-  } catch (error) { if (error.code !== 11000) throw error; }
-  res.json({ data: { received: true } });
+router.get('/performance', authMiddleware, roleMiddleware('driver'), async (req, res) => {
+    try { res.json({ data: await performanceService.getPerformance(req.user.id, req.query.days || 30) }); }
+    catch (error) { res.status(error.status || 500).json({ message: error.status === 400 ? error.message : 'Could not load performance. Please retry.' }); }
 });
-
-// Driving performance for the signed-in driver over the last 7, 30 or 90 days.
-router.get("/performance", authMiddleware, roleMiddleware("driver"), async (req, res) => {
-  const DriverOfferReceipt = require("../models/DriverOfferReceipt");
-  const days = [7, 30, 90].includes(Number(req.query.days)) ? Number(req.query.days) : 30;
-  const asOf = new Date();
-  const from = new Date(asOf - days * 86400000);
-  const driverId = req.user._id;
-  const [row] = await DriverOfferReceipt.aggregate([
-    { $match: { driverId, receivedAt: { $gte: from, $lte: asOf } } },
-    { $lookup: { from: "rides", localField: "rideId", foreignField: "_id", as: "ride" } },
-    { $unwind: "$ride" },
-    { $group: {
-      _id: null,
-      offers: { $sum: 1 },
-      accepted: { $sum: { $cond: [{ $eq: ["$ride.driverId", driverId] }, 1, 0] } },
-      completed: { $sum: { $cond: [{ $and: [{ $eq: ["$ride.driverId", driverId] }, { $eq: ["$ride.rideStatus", "completed"] }] }, 1, 0] } },
-      driverCancelled: { $sum: { $cond: [{ $and: [{ $eq: ["$ride.driverId", driverId] }, { $eq: ["$ride.rideStatus", "cancelled"] }, { $eq: ["$ride.cancelledBy", driverId] }] }, 1, 0] } },
-      passengerCancelled: { $sum: { $cond: [{ $and: [{ $eq: ["$ride.driverId", driverId] }, { $eq: ["$ride.rideStatus", "cancelled"] }, { $eq: ["$ride.cancelledBy", "$ride.passengerId"] }] }, 1, 0] } },
-    } },
-  ]);
-  const r = row || { offers: 0, accepted: 0, completed: 0, driverCancelled: 0, passengerCancelled: 0 };
-  const pct = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : null);
-  res.json({ data: { days, from, asOf, offers: r.offers, accepted: r.accepted, completed: r.completed, driverCancelled: r.driverCancelled, passengerCancelled: r.passengerCancelled, acceptanceRate: pct(r.accepted, r.offers), cancellationRate: pct(r.driverCancelled, r.accepted) } });
+router.post('/offers/:rideId/received', authMiddleware, roleMiddleware('driver'), async (req, res) => {
+    try { await performanceService.acknowledgeOffer(req.user.id, req.params.rideId); res.json({ success: true }); }
+    catch (error) { res.status(error.status || 500).json({ message: error.status ? error.message : 'Offer acknowledgment failed.' }); }
 });
 
 // Driver preferences: how far away a pickup may be before MOTA offers it (1–15 km; null = system default).

@@ -1,12 +1,34 @@
 const express = require("express");
 const router = express.Router();
 const notificationController = require("../controllers/notificationController");
-const { protect } = require("../middleware/authMiddleware");
+const {
+  protect,
+  protectOnboardingStatus,
+} = require("../middleware/authMiddleware");
 
-router.use(protect);
+// Own inbox remains available during account verification or deactivation.
+router.get(
+  "/",
+  protectOnboardingStatus,
+  notificationController.getNotifications,
+);
+router.get(
+  "/unread",
+  protectOnboardingStatus,
+  notificationController.getUnreadNotifications,
+);
+router.patch(
+  "/:id/read",
+  protectOnboardingStatus,
+  notificationController.markAsRead,
+);
 
-router.post("/push-token", notificationController.registerPushToken);
-router.delete("/push-token", notificationController.unregisterPushToken);
+router.post("/push-token", protect, notificationController.registerPushToken);
+router.delete(
+  "/push-token",
+  protect,
+  notificationController.unregisterPushToken,
+);
 
 /**
  * @swagger
@@ -29,7 +51,6 @@ router.delete("/push-token", notificationController.unregisterPushToken);
  *       200:
  *         description: List of notifications
  */
-router.get("/", notificationController.getNotifications);
 
 /**
  * @swagger
@@ -52,7 +73,6 @@ router.get("/", notificationController.getNotifications);
  *       200:
  *         description: List of unread notifications
  */
-router.get("/unread", notificationController.getUnreadNotifications);
 
 /**
  * @swagger
@@ -72,7 +92,6 @@ router.get("/unread", notificationController.getUnreadNotifications);
  *       200:
  *         description: Notification marked as read
  */
-router.patch("/:id/read", notificationController.markAsRead);
 
 /**
  * @swagger
@@ -92,6 +111,11 @@ router.patch("/:id/read", notificationController.markAsRead);
  *       200:
  *         description: Notification deleted
  */
-router.delete("/:id", notificationController.deleteNotification);
+
+router.delete(
+  "/:id",
+  protectOnboardingStatus,
+  notificationController.deleteNotification,
+);
 
 module.exports = router;

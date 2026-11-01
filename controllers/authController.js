@@ -1,3 +1,4 @@
+const referralService = require('../services/referralService');
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
@@ -45,6 +46,7 @@ const register = async (req, res) => {
             return res.status(400).json({ message: `User with this ${conflict} already exists`, conflict, value: conflictValue });
         }
 
+        const referral = await referralService.resolveReferral(referralCode, role || "client");
         const userReferralCode = `MOTA-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
 
         let hashedPassword = null;
@@ -60,6 +62,8 @@ const register = async (req, res) => {
             nationalId: cleanNationalId,
             role: role || "client",
             referralCode: userReferralCode,
+            referredBy: referral?.referrer._id,
+            referralReward: referral?.reward,
             password: hashedPassword,
             isActive: false, // Phone verification activates passengers; drivers await review.
         });
@@ -102,14 +106,12 @@ const register = async (req, res) => {
             }
         }
 
-        // Referral logic
-        if (referralCode) {
-            // Reward fixed now from settings (cash only for driver/agent → driver invitations).
-            const referral = await require("../services/referralService").recordSignup(referralCode, newUser).catch(() => null);
-            if (referral) {
-                const referrer = await User.findById(referral.referrerId).select("phone");
-                await sendSMS(referrer?.phone, `${firstName.trim()} signed up using your MOTA code.${referral.reward ? " Your reward is pending their approval." : ""}`, "referral_reward").catch(() => {});
-            }
+        if (referral) {
+            try { await referralService.recordReferral(newUser); }
+            catch { console.error("Referral record deferred; attribution is saved on the user."); }
+            // Delivery failures must not report a successful registration as failed.
+            try { await sendSMS(referral.referrer.phone, "Someone joined MOTA using your code. View referral status in the app.", "referral_reward"); }
+            catch (error) { console.error("Referral notification delivery failed"); }
         }
 
         // SMS Verification
@@ -135,7 +137,7 @@ const register = async (req, res) => {
             payment: paymentInfo
         });
     } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+        res.status(error.status || 500).json({ message: error.status === 400 ? error.message : "Server error", error: error.message });
     }
 };
 
@@ -166,6 +168,7 @@ const login = async (req, res) => {
             if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
         }
 
+        await require('../services/driverActivation').activateFullKycDriver(user);
         const onboardingDriver = user.role === "driver" && user.registrationStatus !== "approved" && !user.deletedAt;
         if (!user.isActive && !onboardingDriver) return res.status(403).json({ message: user.isVerified ? "Account disabled" : "Verify your phone to continue", userId: user._id, phone: user.phone, user: { isVerified: user.isVerified } });
 
@@ -178,9 +181,11 @@ const login = async (req, res) => {
             });
         }
 
+        await require("../services/driverSessionAvailability").beginDriverSession(user);
         const sessionId = crypto.randomUUID();
         await Session.create({ userId: user._id, sessionId, userAgent: req.get('user-agent'), ipAddress: req.ip, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) });
         const token = authService.generateToken(user, sessionId);
+        await require("../services/auditService").log({actorId:user._id,actorRole:user.role,action:"authentication_succeeded",targetType:"Session",metadata:{method:"password"},ipAddress:req.ip});
         res.status(200).json({ message: "Login success", token, user: { id: user._id, firstName: user.firstName, lastName: user.lastName, phone: user.phone, email: user.email, role: user.role, isVerified: user.isVerified, isEmailVerified: user.isEmailVerified, isActive: user.isActive, registrationPaid: user.registrationPaid, registrationStatus: user.registrationStatus, kycLevel: user.kycLevel, permissions: user.roleId?.permissions || [] } });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
@@ -188,7 +193,7 @@ const login = async (req, res) => {
 };
 
 const logout = async (req, res) => {
-    await User.findByIdAndUpdate(req.user.id, { $inc: { tokenVersion: 1 } });
+    await require("../services/driverSessionAvailability").revokeSessionAndAvailability(req.user);
     await Session.updateMany({ userId: req.user.id, revokedAt: null }, { $set: { revokedAt: new Date() } });
     res.status(200).json({ message: "Logged out successfully from all devices." });
 };
@@ -314,6 +319,7 @@ const verify2FA = async (req, res) => {
             await user.save();
         }
 
+        if (!req.user) await require("../services/driverSessionAvailability").beginDriverSession(user);
         const jwtToken = authService.generateToken(user);
         res.status(200).json({ message: "2FA verified", token: jwtToken });
     } catch (error) {
@@ -337,6 +343,7 @@ const verifyOTP = async (req, res) => {
         user.otpToken = null;
         user.otpExpiry = null;
         await user.save();
+        await referralService.trySettleReferral(user._id);
         res.status(200).json({ message: "Phone verified" });
     } catch (err) {
         res.status(400).json({ message: "Code expired" });
@@ -351,6 +358,7 @@ const checkRegistrationPayment = async (req, res) => {
         const { userId } = req.body;
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: "User not found" });
+        await require("../services/driverActivation").activateFullKycDriver(user);
         if (user.registrationPaid) return res.status(200).json({ message: "Registration fee paid", paid: true, active: user.isActive });
 
         if (!user.registrationPaypackRef) {
@@ -363,13 +371,14 @@ const checkRegistrationPayment = async (req, res) => {
             user.registrationPaid = true;
             // Removed: user.isActive = true;
             // Now we mark it as pending for admin approval
-            user.registrationStatus = "pending";
+            if (user.registrationStatus !== "approved") user.registrationStatus = "pending";
             if (user.role === "agent") {
                 user.kycLevel = "full";
             }
             await user.save();
 
-            return res.status(200).json({ message: "Payment successful. Account pending admin approval.", paid: true, active: false, status: user.registrationStatus });
+            await require("../services/driverActivation").activateFullKycDriver(user);
+            return res.status(200).json({ message: user.isActive ? "Payment confirmed. Account active." : "Payment confirmed. Complete verification to continue.", paid: true, active: user.isActive, status: user.registrationStatus });
         } else {
             return res.status(200).json({ message: "Payment pending or failed.", paid: false, active: false, status: result.data?.status });
         }

@@ -1,3 +1,4 @@
+const walletService = require("../services/walletService");
 const rideEngineService = require("../services/rideEngineService");
 const Ride = require("../models/Ride");
 const riderFeatures = require("../services/riderFeaturesService");
@@ -269,9 +270,15 @@ const getRideById = async (req, res) => {
         const ride = await Ride.findById(req.params.id);
         if (!ride) return res.status(404).json({ status: "error", message: "Ride not found" });
         const userId = req.user.id.toString();
-        const allowed = String(ride.passengerId) === userId || String(ride.driverId) === userId || ride.notifiedDrivers.some((id) => id.toString() === userId);
+        const allowed = String(ride.passengerId?._id || ride.passengerId) === userId || String(ride.driverId?._id || ride.driverId) === userId || ride.notifiedDrivers.some((id) => id.toString() === userId);
         if (!allowed) return res.status(403).json({ status: "error", message: "Not authorized to view this ride." });
-        res.status(200).json({ status: "success", data: { ride: await riderFeatures.rideView(ride, userId) } });
+        const view = await riderFeatures.rideView(ride, userId);
+        if (String(ride.passengerId?._id || ride.passengerId) !== userId) {
+            // Drivers (assigned or offered) see what they would take home from this fare.
+            const earning = await walletService.calculateCommission(ride.fare ?? ride.offeredFare ?? 0);
+            Object.assign(view, { driverEarning: earning.driverEarning, commissionAmount: earning.commission, commissionRate: earning.commissionRate });
+        }
+        res.status(200).json({ status: "success", data: { ride: view } });
     } catch (error) {
         res.status(500).json({ status: "error", message: error.message });
     }
@@ -325,7 +332,8 @@ const setAvailability = async (req, res) => {
         if (typeof isOnline !== "boolean") {
             return res.status(400).json({ message: "isOnline (boolean) is required." });
         }
-        const result = await rideEngineService.setDriverAvailability(req.user.id, isOnline);
+        if (req.body.automatic !== undefined && typeof req.body.automatic !== "boolean") return res.status(400).json({ message: "automatic must be a boolean." });
+        const result = await rideEngineService.setDriverAvailability(req.user.id, isOnline, req.body.automatic === true, req.user.tokenVersion);
         res.status(200).json(result);
     } catch (error) {
         res.status(400).json({ message: error.message });

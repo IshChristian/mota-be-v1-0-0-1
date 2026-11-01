@@ -336,16 +336,10 @@ router.post("/drivers/:id/wallet-adjust", authorize("wallet:adjust"), adminContr
 router.post("/users/:id/wallet-adjust", authorize("wallet:adjust"), adminController.adjustDriverWallet);
 router.get("/rides", authorize("ride:view"), adminController.getRidesList);
 router.patch("/rides/:id/cancel", authorize("ride:cancel"), adminController.cancelRideAsAdmin);
-router.get("/support-summary", authorize("support:view"), async (req, res) => {
-    try { res.json({ data: await require("../services/supportService").summary() }); }
-    catch (error) { res.status(500).json({ message: "Unable to load support summary" }); }
-});
-router.post("/support-cases/:id/messages", authorize("support:update"), async (req, res) => {
-    try { res.json({ data: await require("../services/supportService").staffReply(req.user, req.params.id, req.body || {}) }); }
-    catch (error) { res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : "Unable to save the reply" }); }
-});
-router.get("/support-cases", authorize("support:view"), adminController.getSupportCases);
+router.get("/support-summary", authorize("support:view"), require("../controllers/supportController").staffSummary);
+router.get("/support-cases", authorize("support:view"), require("../controllers/supportController").staffList);
 router.post("/support-cases", authorize("support:update"), adminController.createSupportCase);
+router.post("/support-cases/:id/messages", authorize("support:update"), require("../controllers/supportController").staffReply);
 router.get("/support-cases/:id", authorize("support:view"), adminController.getSupportCaseDetails);
 router.patch("/support-cases/:id", authorize("support:update"), adminController.updateSupportCase);
 router.delete("/support-cases/:id", authorize("support:update"), adminController.deleteSupportCase);
@@ -521,8 +515,8 @@ router.post("/fines/approve", authorize("fines:update"), adminController.approve
  *       500:
  *         description: Server error
  */
-router.get("/registrations/pending", authorize("user:view"), adminController.getPendingRegistrations);
-router.get("/registrations", authorize("user:view"), adminController.getPendingRegistrations);
+router.get("/registrations/pending", authorize("registration:view"), adminController.getPendingRegistrations);
+router.get("/registrations", authorize("registration:view"), adminController.getPendingRegistrations);
 
 /**
  * @swagger
@@ -543,7 +537,7 @@ router.get("/registrations", authorize("user:view"), adminController.getPendingR
  *       404:
  *         description: User not found
  */
-router.get("/registrations/:id", authorize("user:view"), adminController.getRegistrationDetails);
+router.get("/registrations/:id", authorize("registration:view"), adminController.getRegistrationDetails);
 
 /**
  * @swagger
@@ -571,7 +565,7 @@ router.get("/registrations/:id", authorize("user:view"), adminController.getRegi
  *       200:
  *         description: Registration status updated
  */
-router.put("/registrations/:id/status", authorize("user:update"), adminController.reviewRegistration);
+router.put("/registrations/:id/status", authorize("registration:review"), adminController.reviewRegistration);
 
 /**
  * @swagger

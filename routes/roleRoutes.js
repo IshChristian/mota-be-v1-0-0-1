@@ -18,34 +18,26 @@ router.use(protect);
  *       200:
  *         description: List of roles
  */
+/**
+ * @swagger
+ * /api/roles/permissions:
+ *   get:
+ *     summary: List the authoritative permission catalog and grantable permissions
+ *     tags: [Roles & Permissions]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: Permissions grouped by system domain }
+ * /api/roles/assignable:
+ *   get:
+ *     summary: List roles assignable by the authenticated user creator or role assigner
+ *     tags: [Roles & Permissions]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: Assignable roles with supported account types }
+ */
+router.get("/permissions", authorize("role:view"), roleController.permissionCatalog);
+router.get("/assignable", roleController.assignableRoles);
 router.get("/", authorize("role:view"), roleController.getRoles);
-
-// Permission catalog for the role editor: every permission, grouped by area,
-// plus which ones the current staff member may grant (only those they hold).
-router.get("/permissions", authorize("role:view"), (req, res) => {
-    const { PERMISSIONS } = require("../constants/staffRoles");
-    const access = require("../services/accessService");
-    const all = [...new Set([...PERMISSIONS, ...access.REPORT_SCOPES])];
-    const groups = {};
-    for (const p of all) (groups[p.split(":")[0]] ||= []).push(p);
-    const mine = access.effectivePermissions(req.user);
-    res.json({ data: { permissions: all, groups, grantable: req.user.role === "superadmin" ? all : all.filter((p) => mine.includes(p)) } });
-});
-
-// Roles the current staff member may assign: built-in staff roles and custom roles
-// whose permissions they fully hold (superadmin can assign anything except superadmin).
-router.get("/assignable", authorize("user:assign_role"), async (req, res) => {
-    const { STAFF_ROLE_TEMPLATES } = require("../constants/staffRoles");
-    const access = require("../services/accessService");
-    const Role = require("../models/Role");
-    const mine = access.effectivePermissions(req.user);
-    const allowed = (perms) => req.user.role === "superadmin" || perms.every((p) => mine.includes(p));
-    const builtIn = Object.entries(STAFF_ROLE_TEMPLATES).filter(([name]) => name !== "superadmin")
-        .map(([name, permissions]) => ({ _id: name, name, accountType: name, permissions, builtIn: true }));
-    const custom = (await Role.find().lean()).map((r) => ({ _id: String(r._id), name: r.name, accountType: STAFF_ROLE_TEMPLATES[r.name] ? r.name : "admin", permissions: r.permissions || [], builtIn: false }));
-    const people = [{ _id: "driver", name: "driver", accountType: "driver", permissions: [], builtIn: true }, { _id: "client", name: "client", accountType: "client", permissions: [], builtIn: true }];
-    res.json({ data: [...people, ...builtIn, ...custom].filter((r) => allowed(r.permissions)) });
-});
 
 /**
  * @swagger

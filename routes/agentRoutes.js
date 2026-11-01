@@ -111,19 +111,16 @@ router.post("/register-driver", async (req, res) => {
             nationalId,
             role: "driver",
             referralCode,
+            referredBy: agentId,
+            referralReward: await require("../services/configService").getConfig("referral_reward_amount", 5000),
             isVerified: false,
             registrationStatus: "pending",
         });
 
         await newUser.save();
 
-        // Create referral record (agent → driver)
-        await Referral.create({
-            referrerId: agentId,
-            referredUserId: newUser._id,
-            reward: 3000,
-            status: "pending",
-        });
+        try { await require("../services/referralService").recordReferral(newUser); }
+        catch { console.error("Agent referral record deferred; attribution saved on user."); }
 
         // An agent can start registration; KYC and activation require the normal review flow.
 

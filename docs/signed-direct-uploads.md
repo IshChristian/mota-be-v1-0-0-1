@@ -1,0 +1,9 @@
+# Signed direct Cloudinary uploads
+
+Deploy the backend PR before updating the mobile app. The authenticated `POST /api/uploads/signature` endpoint uses existing server-side Cloudinary configuration: `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`, or an existing `CLOUDINARY_URL`. Restart/redeploy after setting credentials. No unsigned preset and no mobile Cloudinary environment variables are needed. Keep the API secret out of mobile source and build variables.
+
+The backend signs server-owned timestamp, per-user folder, random public ID and overwrite=false. Client body fields cannot select another folder or sign arbitrary options. Responses are not cached; signature requests are authenticated with the existing onboarding middleware and rate limited. Cloudinary upload signatures are provider-valid for one hour; the app requests a fresh one immediately before each upload. See https://cloudinary.com/documentation/authentication_signatures.
+
+The app reads native/web files as base64 and submits a form-encoded data URI plus the returned signature, API key and exact signed parameters directly to the Cloudinary auto endpoint. No FormData/native multipart is used. This retains the 20 MB limit and all document pickers. Only a confirmed HTTPS Cloudinary URL/public ID is returned as success; the caller then saves that URL to profile/KYC/evidence as before. A missing backend route, incomplete authorization, missing credentials, provider rejection or timeout produces an actionable failure. Cloudinary account format/size limits and PDF/ZIP delivery settings still apply.
+
+Verify on a configured device: sign in as onboarding driver and passenger, upload JPEG/PNG/PDF/Office documents, check completion feedback, submit and reopen KYC, update an avatar, attach dispute evidence. Verify returned Cloudinary links open and persisted account/document URLs match. Workspace tests use controlled provider responses, not a live Cloudinary upload.

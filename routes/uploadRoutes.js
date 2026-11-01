@@ -1,11 +1,16 @@
 const express = require("express");
 const router = express.Router();
+const { rateLimit } = require("express-rate-limit");
+const { createUploadSignature } = require("../controllers/uploadSignatureController");
 const uploadController = require("../controllers/uploadController");
 const uploadService = require("../services/uploadService");
 const { protectOnboarding } = require("../middleware/authMiddleware");
 
 // Require authentication for all upload routes
 router.use(protectOnboarding);
+
+// Authenticated onboarding accounts may upload their first identity documents.
+router.post("/signature", rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: "draft-8", legacyHeaders: false, message: { message: "Too many upload requests. Please wait and retry." } }), createUploadSignature);
 
 /**
  * @swagger
@@ -28,11 +33,6 @@ router.use(protectOnboarding);
  *       201:
  *         description: File uploaded successfully
  */
-// Signs one direct-to-Cloudinary upload (used by the mobile app and the admin panel).
-router.post("/signature", (req, res) => {
-    try { res.json({ data: require("../services/uploadSignatureService").createSignature(req.user) }); }
-    catch (error) { res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : "Could not authorize the upload." }); }
-});
 router.post("/", uploadService.uploadMiddleware.single("file"), uploadController.uploadFile);
 
 /**

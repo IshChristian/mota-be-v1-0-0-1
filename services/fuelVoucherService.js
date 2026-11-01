@@ -226,10 +226,12 @@ async function redeemByCode(code, staffId, station) {
 }
 
 async function stations(lat, lng) {
+    // Stored as a JSON string (admin Fuel page) or as a list (older setting format).
     let list = [];
-    try { list = JSON.parse(await systemSettingService.getSetting("fuel_stations", "[]")); } catch { list = []; }
+    const raw = await systemSettingService.getSetting("fuel_stations", "[]");
+    try { list = Array.isArray(raw) ? raw : JSON.parse(raw); } catch { list = []; }
     if (!Array.isArray(list)) list = [];
-    const valid = list.filter((s) => s && s.name).map((s, i) => ({ id: String(s.id || i), name: s.name, address: s.address || "", latitude: Number(s.latitude), longitude: Number(s.longitude), acceptsQr: s.acceptsQr !== false }));
+    const valid = list.filter((s) => s && s.name && s.active !== false && s.isActive !== false).map((s, i) => ({ id: String(s.id || i), name: s.name, address: s.address || "", latitude: Number(s.latitude), longitude: Number(s.longitude), acceptsQr: s.acceptsQr !== false }));
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return valid;
     const { haversine } = require("./rideEngineService");
     return valid.map((s) => ({ ...s, distanceKm: Number.isFinite(s.latitude) ? Math.round(haversine(lat, lng, s.latitude, s.longitude) * 10) / 10 : null }))

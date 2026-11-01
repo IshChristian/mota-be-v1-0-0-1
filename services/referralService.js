@@ -1,93 +1,80 @@
-// Referrals. The reward is fixed when the invitee signs up; cash goes only to
-// driver/agent referrers for driver invitees who are fully approved. Payment is
-// one MongoDB transaction (wallet + ledger + referral status) keyed
-// referral:<invitee>, so retries can never pay twice. Respects FINANCIAL_WRITES_ENABLED.
-const mongoose = require("mongoose");
-const Referral = require("../models/Referral");
-const User = require("../models/User");
-const Wallet = require("../models/Wallet");
-const Transaction = require("../models/Transaction");
-const configService = require("./configService");
+const mongoose = require('mongoose');
+const User = require('../models/User');
+const Referral = require('../models/Referral');
+const Wallet = require('../models/Wallet');
+const Transaction = require('../models/Transaction');
+const configService = require('./configService');
 
-const CASH_REFERRERS = ["driver", "agent"];
-const isCashReferral = (referrer, invitee) => CASH_REFERRERS.includes(referrer?.role) && invitee?.role === "driver";
-const inviteeComplete = (u) => u && u.isVerified && (u.role !== "driver" || (u.kycLevel === "full" && u.registrationPaid && u.registrationStatus === "approved"));
-
-/** Called at signup with the code the invitee typed. */
-async function recordSignup(code, invitee) {
-    const clean = String(code || "").trim().toUpperCase();
-    if (!clean) return null;
-    const referrer = await User.findOne({ referralCode: clean }).select("role phone");
-    if (!referrer || String(referrer._id) === String(invitee._id)) return null;
-    const reward = isCashReferral(referrer, invitee) ? Number(await configService.getConfig("referral_reward_amount", 5000)) || 0 : 0;
-    return Referral.create({ referrerId: referrer._id, referredUserId: invitee._id, reward, status: "pending" });
+const normalizeCode = value => typeof value === 'string' ? value.trim().toUpperCase() : '';
+const rewardEligible = (referrerRole, referredRole) => ['driver', 'agent'].includes(referrerRole) && referredRole === 'driver';
+async function resolveReferral(code, referredRole) {
+    const normalized = normalizeCode(code);
+    if (!normalized) return null;
+    const referrer = await User.findOne({ referralCode: normalized });
+    if (!referrer || referrer.deletedAt || !["driver", "agent", "client", "passenger"].includes(referrer.role)) { const error = new Error('Referral code was not found. Check the code or leave it empty.'); error.status = 400; throw error; }
+    const configured = Number(await configService.getConfig('referral_reward_amount', 5000));
+    if (!Number.isFinite(configured) || configured < 0) throw new Error('Referral reward configuration is invalid');
+    return { referrer, reward: rewardEligible(referrer.role, referredRole) ? configured : 0 };
 }
-
-/** Completes one referral if the invitee qualifies. Returns "paid" | "completed" | "waiting" | "already". */
-async function settle(referralId) {
-    const referral = await Referral.findById(referralId);
-    if (!referral) return "missing";
-    if (referral.status === "successful") return "already";
-    const [referrer, invitee] = await Promise.all([User.findById(referral.referrerId).select("role"), User.findById(referral.referredUserId)]);
-    if (!inviteeComplete(invitee)) return "waiting";
-    const cash = isCashReferral(referrer, invitee) && referral.reward > 0;
-    if (cash && process.env.FINANCIAL_WRITES_ENABLED !== "true") return "waiting";
-    let outcome = "already";
-    await mongoose.connection.transaction(async (session) => {
-        const claimed = await Referral.findOneAndUpdate({ _id: referral._id, status: "pending" }, { $set: { status: "successful" } }, { returnDocument: "after", session });
-        if (!claimed) return;
-        if (cash) {
-            await Wallet.updateOne({ driverId: referral.referrerId }, { $inc: { balance: referral.reward }, $setOnInsert: { driverId: referral.referrerId } }, { upsert: true, session });
-            await Transaction.create([{ driverId: referral.referrerId, amount: referral.reward, type: "referral_reward", status: "successful", idempotencyKey: `referral:${referral.referredUserId}`, description: `Referral reward: ${referral.reward} RWF` }], { session });
-        }
-        outcome = cash ? "paid" : "completed";
-    });
-    return outcome;
+async function recordReferral(user) {
+    if (!user.referredBy || String(user.referredBy) === String(user._id)) return null;
+    const existing = await Referral.findOne({ referredUserId: user._id });
+    if (existing) return existing;
+    return Referral.findOneAndUpdate({ _id: user._id }, { $setOnInsert: { referrerId: user.referredBy, referredUserId: user._id, reward: user.referralReward || 0, status: 'pending' } }, { upsert: true, new: true });
 }
-
-/** Settles whatever referral points at this invitee (after verification/approval). Never throws. */
-async function settleForInvitee(inviteeId) {
-    try {
-        const r = await Referral.findOne({ referredUserId: inviteeId, status: "pending" }).select("_id");
-        return r ? await settle(r._id) : "none";
-    } catch (error) {
-        console.error("Referral settlement deferred:", error.message);
-        return "error";
+async function settleReferral(userId) {
+    const user = await User.findById(userId);
+    if (!user) return;
+    await recordReferral(user); // Recover a record if registration lost its response.
+    // Cash rewards require the complete driver verification and payment workflow.
+    if (user.role === 'driver' && !(user.isVerified && user.kycLevel === 'full' && user.registrationPaid && user.registrationStatus === 'approved')) return;
+    if (user.role !== 'driver' && !(user.isVerified && user.kycLevel === 'full')) return;
+    const pending = await Referral.findOne({ referredUserId: userId, status: 'pending' });
+    if (!pending) return;
+    // Historical pending records may already have been credited by the old non-atomic flow.
+    // Require new persisted attribution before automated cash settlement.
+    if (!user.referredBy || String(user.referredBy) !== String(pending.referrerId)) return;
+    const owner = await User.findById(pending.referrerId);
+    if (!rewardEligible(owner?.role, user.role) || Number(pending.reward) === 0) {
+        await Referral.updateMany({ referredUserId: userId, status: 'pending' }, { $set: { status: 'successful', reward: 0, rewardedAt: new Date() } });
+        return;
     }
+    if (process.env.FINANCIAL_WRITES_ENABLED !== 'true') return;
+    const session = await mongoose.startSession();
+    try {
+        await session.withTransaction(async () => {
+            const current = await User.findById(userId).session(session);
+            if (!current || !current.isVerified || current.kycLevel !== 'full' || !current.registrationPaid || current.registrationStatus !== 'approved' || current.role !== 'driver') return;
+            const referral = await Referral.findOne({ referredUserId: userId, status: 'pending' }).session(session);
+            if (!referral) return;
+            const referrer = await User.findById(referral.referrerId).session(session);
+            const amount = rewardEligible(referrer?.role, user.role) ? Number(referral.reward) : 0;
+            if (!Number.isFinite(amount) || amount < 0) throw new Error('Invalid referral reward');
+            const key = `referral:${userId}`;
+            const existing = await Transaction.findOne({ idempotencyKey: key }).session(session);
+            if (amount > 0 && !existing) {
+                await Wallet.findOneAndUpdate({ driverId: referral.referrerId }, { $inc: { balance: amount }, $setOnInsert: { heldBalance: 0, fuelCredits: 0 } }, { upsert: true, new: true, session });
+                await Transaction.create([{ userId: referral.referrerId, driverId: referral.referrerId, amount, type: 'referral_reward', status: 'successful', idempotencyKey: key, reference: String(referral._id), description: 'Verified driver referral reward' }], { session });
+            }
+            await Referral.updateMany({ referredUserId: userId, status: 'pending' }, { $set: { status: 'successful', reward: existing?.amount ?? amount, rewardedAt: new Date() } }, { session });
+        });
+    } finally { await session.endSession(); }
 }
-
-async function mine(user, page = 1) {
-    const limit = 20;
-    const filter = { referrerId: user._id };
-    const [records, total, pending, successful, earned, currentReward] = await Promise.all([
-        Referral.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).select("status reward createdAt").lean(),
-        Referral.countDocuments(filter),
-        Referral.countDocuments({ ...filter, status: "pending" }),
-        Referral.countDocuments({ ...filter, status: "successful" }),
-        Transaction.aggregate([{ $match: { driverId: user._id, type: "referral_reward", status: "successful" } }, { $group: { _id: null, s: { $sum: "$amount" } } }]),
-        configService.getConfig("referral_reward_amount", 5000),
+async function trySettleReferral(userId) {
+    try { await settleReferral(userId); }
+    catch { console.error('Referral reward is pending; settlement can be retried.'); }
+}
+async function getSummary(userId, page = 1) {
+    const user = await User.findById(userId).select('referralCode role');
+    if (!user) throw new Error('User not found');
+    // No referred user's phone, identity documents, or full name is exposed.
+    const [records, total, pending, successful, paid] = await Promise.all([
+        Referral.find({ referrerId: userId }).select('status reward createdAt rewardedAt').sort({ createdAt: -1 }).skip((page - 1) * 20).limit(20).lean(),
+        Referral.countDocuments({ referrerId: userId }),
+        Referral.countDocuments({ referrerId: userId, status: 'pending' }),
+        Referral.countDocuments({ referrerId: userId, status: 'successful' }),
+        Transaction.find({ driverId: userId, type: 'referral_reward', status: 'successful' }).select('amount').lean(),
     ]);
-    // Invitees' names/phones are never exposed.
-    return {
-        code: user.referralCode || null,
-        cashRewardsEligible: CASH_REFERRERS.includes(user.role),
-        currentReward: Number(currentReward) || 0,
-        total, pending, successful,
-        totalEarned: earned[0]?.s || 0,
-        page,
-        hasMore: page * limit < total,
-        records,
-    };
+    return { code: user.referralCode || null, cashRewardsEligible: ['driver', 'agent'].includes(user.role), currentReward: Number(await configService.getConfig('referral_reward_amount', 5000)), total, pending, successful, totalEarned: paid.reduce((sum, row) => sum + row.amount, 0), page, hasMore: page * 20 < total, records };
 }
-
-async function checkMine(user) {
-    const pending = await Referral.find({ referrerId: user._id, status: "pending" }).limit(20).select("_id");
-    const results = [];
-    for (const r of pending) results.push(await settle(r._id));
-    const paid = results.filter((r) => r === "paid").length;
-    const completed = results.filter((r) => r === "completed").length;
-    const waiting = results.filter((r) => r === "waiting").length;
-    return { checked: pending.length, paid, completed, waiting, message: paid ? `${paid} reward${paid > 1 ? "s" : ""} added to your wallet.` : waiting ? "Your invitees haven't finished verification yet." : "No pending rewards." };
-}
-
-module.exports = { recordSignup, settle, settleForInvitee, mine, checkMine };
+module.exports = { normalizeCode, rewardEligible, resolveReferral, recordReferral, settleReferral, trySettleReferral, getSummary };

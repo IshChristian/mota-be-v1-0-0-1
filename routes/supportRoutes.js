@@ -1,25 +1,18 @@
-// /api/support — help-center requests for passengers and drivers.
-const express = require("express");
-const { protect } = require("../middleware/authMiddleware");
-const support = require("../services/supportService");
-
-const router = express.Router();
-router.use(protect);
-const wrap = (fn, status = 200) => async (req, res) => {
-    try { res.status(status).json({ data: await fn(req) }); }
-    catch (e) { res.status(e.statusCode || 500).json({ message: e.statusCode ? e.message : "Support is unavailable right now." }); }
-};
-
-router.get("/", async (req, res) => {
-    try {
-        const page = Math.max(1, Number(req.query.page) || 1);
-        const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
-        res.json(await support.listMine(req.user._id, page, limit));
-    } catch (e) { res.status(500).json({ message: "Support is unavailable right now." }); }
+const router = require("express").Router();
+const { rateLimit } = require("express-rate-limit");
+const { protectOnboardingStatus } = require("../middleware/authMiddleware");
+const controller = require("../controllers/supportController");
+router.use(protectOnboardingStatus);
+const writes = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: { message: "Too many support requests. Please wait and retry." },
 });
-router.post("/", wrap((req) => support.create(req.user, req.body || {}), 201));
-router.get("/:id", wrap((req) => support.getMine(req.user._id, req.params.id)));
-router.post("/:id/messages", wrap((req) => support.customerReply(req.user, req.params.id, req.body?.text)));
-router.post("/:id/reopen", wrap((req) => support.customerReply(req.user, req.params.id, req.body?.text, { reopen: true })));
-
+router.get("/", controller.list);
+router.post("/", writes, controller.create);
+router.get("/:id", controller.details);
+router.post("/:id/messages", writes, controller.reply);
+router.post("/:id/reopen", writes, controller.reopen);
 module.exports = router;

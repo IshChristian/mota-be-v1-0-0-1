@@ -1,283 +1,890 @@
-// Admin reporting: summaries, drill-down records and investigations.
-// Dates are Africa/Kigali calendar days (UTC+2, no DST); ranges are capped at 366 days.
 const mongoose = require("mongoose");
-const User = require("../models/User");
-const Ride = require("../models/Ride");
-const Transaction = require("../models/Transaction");
-const WithdrawalRequest = require("../models/WithdrawalRequest");
-const Referral = require("../models/Referral");
-const SupportCase = require("../models/SupportCase");
-const SafetyEvent = require("../models/SafetyEvent");
-const DriverKyc = require("../models/DriverKyc");
-const PassengerKyc = require("../models/PassengerKyc");
-const AuditLog = require("../models/AuditLog");
-
-const KIGALI = "+02:00";
-const DAY = 86400000;
-const SECTION_SCOPE = {
-    users: "analytics:users", rides: "analytics:rides", drivers: "analytics:rides", finance: "analytics:finance",
-    withdrawals: "analytics:finance", quality: "analytics:finance", referrals: "analytics:operations", demand: "analytics:operations",
-    support: "analytics:operations", documents: "analytics:operations", security: "audit:view",
+const models = Object.fromEntries(
+  [
+    "User",
+    "Ride",
+    "Transaction",
+    "Wallet",
+    "WithdrawalRequest",
+    "Referral",
+    "SupportCase",
+    "AuditLog",
+    "Upload",
+    "SmsLog",
+    "Session",
+    "DriverOfferReceipt",
+    "SafetyEvent",
+    "RideDispute",
+  ].map((name) => [name, require(`../models/${name}`)]),
+);
+const { effectivePermissions } = require("./reportAccess");
+const sections = {
+  users: "analytics:users",
+  rides: "analytics:rides",
+  drivers: "analytics:rides",
+  finance: "analytics:finance",
+  withdrawals: "analytics:finance",
+  referrals: "analytics:operations",
+  demand: "analytics:operations",
+  support: "analytics:operations",
+  documents: "analytics:operations",
+  security: "audit:view",
+  quality: "analytics:finance",
 };
-const SECTIONS = Object.keys(SECTION_SCOPE);
-const httpError = (statusCode, message) => Object.assign(new Error(message), { statusCode });
-
-function period(query) {
-    const day = /^\d{4}-\d{2}-\d{2}$/;
-    const today = new Date(Date.now() + 2 * 3600000).toISOString().slice(0, 10);
-    const from = day.test(query.from || "") ? query.from : new Date(Date.now() + 2 * 3600000 - 29 * DAY).toISOString().slice(0, 10);
-    const to = day.test(query.to || "") ? query.to : today;
-    const start = new Date(`${from}T00:00:00${KIGALI}`);
-    const end = new Date(new Date(`${to}T00:00:00${KIGALI}`).getTime() + DAY);
-    if (!(start < end)) throw httpError(400, "The start date must be on or before the end date.");
-    if (end - start > 366 * DAY) throw httpError(400, "Choose a period of at most 366 days.");
-    return { from, to, start, end, timezone: "Africa/Kigali", previous: { start: new Date(start - (end - start)), end: start } };
+const error = (message, status = 400) => {
+  const e = new Error(message);
+  e.status = status;
+  throw e;
+};
+function filters(query = {}) {
+  const now = new Date(),
+    end = query.to ? new Date(`${query.to}T23:59:59.999+02:00`) : now;
+  const start = query.from
+    ? new Date(`${query.from}T00:00:00.000+02:00`)
+    : new Date(end.getTime() - 30 * 86400000);
+  for (const value of [query.from, query.to])
+    if (
+      value &&
+      (typeof value !== "string" ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(value) ||
+        !Number.isFinite(+new Date(value)) ||
+        new Date(value).toISOString().slice(0, 10) !== value)
+    )
+      error("Use valid YYYY-MM-DD dates.");
+  if (
+    !Number.isFinite(+start) ||
+    !Number.isFinite(+end) ||
+    start > end ||
+    end - start > 366 * 86400000
+  )
+    error("Choose a valid period of at most 366 days.");
+  if (
+    query.role &&
+    ![
+      "driver",
+      "client",
+      "agent",
+      "admin",
+      "superadmin",
+      "financial",
+      "caller_support",
+      "manager",
+      "moderator",
+    ].includes(query.role)
+  )
+    error("Invalid account type.");
+  const page = Number(query.page || 1);
+  if (!Number.isSafeInteger(page) || page < 1 || page > 10000)
+    error("Invalid page.");
+  const q = String(query.q || "").trim();
+  if (q.length > 100) error("Search must be at most 100 characters.");
+  return {
+    from: start,
+    to: end,
+    page,
+    q,
+    role: query.role || "",
+    date: { $gte: start, $lte: end },
+  };
 }
-
-const maskPhone = (p) => (p ? String(p).replace(/(\+?\d{3,6})\d{3}(\d{2,3})$/, "$1•••$2") : p);
-const dailyGroup = (field) => ({ $dateToString: { format: "%Y-%m-%d", date: `$${field}`, timezone: "Africa/Kigali" } });
-const toRows = (agg) => agg.map((r) => ({ _id: r._id ?? "unknown", count: r.count, ...(r.amount !== undefined ? { amount: r.amount } : {}) })).sort((a, b) => b.count - a.count);
-const between = (field, p) => ({ [field]: { $gte: p.start, $lt: p.end } });
-const prevBetween = (field, p) => ({ [field]: { $gte: p.previous.start, $lt: p.previous.end } });
-const count = (Model, filter) => Model.countDocuments(filter);
-const byField = (Model, match, field, amountField) => Model.aggregate([{ $match: match }, { $group: { _id: `$${field}`, count: { $sum: 1 }, ...(amountField ? { amount: { $sum: { $abs: `$${amountField}` } } } : {}) } }]).then(toRows);
-const daily = (Model, match, dateField) => Model.aggregate([{ $match: match }, { $group: { _id: dailyGroup(dateField), count: { $sum: 1 } } }, { $sort: { _id: 1 } }]);
-
-// ─── Summaries ───────────────────────────────────────────────────────────────
-const summaries = {
-    async users(p, prev) {
-        const range = (pp) => between("createdAt", pp);
-        const cards = async (pp) => ({
-            "New accounts": await count(User, range(pp)),
-            "New passengers": await count(User, { ...range(pp), role: "client" }),
-            "New drivers": await count(User, { ...range(pp), role: "driver" }),
-            "Phone verified": await count(User, { ...range(pp), isVerified: true }),
-            "Total accounts now": await count(User, {}),
-        });
-        const cohort = { ...range(p), role: "driver" };
-        return {
-            cards: await cards(p),
-            previousCards: prev ? await cards(p.previous) : undefined,
-            funnel: {
-                registered: await count(User, cohort),
-                phoneVerified: await count(User, { ...cohort, isVerified: true }),
-                feePaid: await count(User, { ...cohort, registrationPaid: true }),
-                approved: await count(User, { ...cohort, registrationStatus: "approved" }),
-                kycFull: await count(User, { ...cohort, kycLevel: "full" }),
+const safe = (value, sensitive = false, depth = 0) => {
+  if (depth > 8) return "[nested value]";
+  if (value == null || typeof value !== "object") return value;
+  if (value instanceof Date) return value.toISOString();
+  if (value._bsontype) return String(value);
+  if (Array.isArray(value))
+    return value.slice(0, 200).map((v) => safe(v, sensitive, depth + 1));
+  const result = {};
+  for (const [key, v] of Object.entries(value)) {
+    if (
+      /password|secret|token|authorization|cookie|otp|providerEvent|paypackEvent/i.test(
+        key,
+      )
+    )
+      result[key] = "[redacted]";
+    else if (
+      !sensitive &&
+      /phone|email|nationalId|^nid$|address|url|ipAddress|firstName|lastName|fullName|emergency|location|description|message|note|reason|attachment|evidence|resolution|comment|contact|plateNumber|permitId/i.test(
+        key,
+      )
+    )
+      result[key] = "[restricted]";
+    else result[key] = safe(v, sensitive, depth + 1);
+  }
+  return result;
+};
+function ensure(user, section, exporting = false) {
+  const p = effectivePermissions(user);
+  if (!sections[section]) error("Unknown report.", 400);
+  if (
+    !p.includes(section === "security" ? "audit:view" : "analytics:view") ||
+    !p.includes(sections[section]) ||
+    (exporting &&
+      !p.includes(section === "security" ? "audit:export" : "analytics:export"))
+  )
+    error("You do not have access to this report.", 403);
+}
+const group = (field, extra = {}) => ({
+  $group: { _id: `$${field}`, count: { $sum: 1 }, ...extra },
+});
+const trend = (date) => [
+  {
+    $group: {
+      _id: {
+        $dateToString: {
+          format: "%Y-%m-%d",
+          date: `$${date}`,
+          timezone: "Africa/Kigali",
+        },
+      },
+      count: { $sum: 1 },
+    },
+  },
+  { $sort: { _id: 1 } },
+];
+async function aggregate(name, pipeline) {
+  return models[name].aggregate(pipeline).option({ maxTimeMS: 15000 });
+}
+async function summarySection(section, f) {
+  const dated = { createdAt: f.date };
+  const run = (model, pipeline) => aggregate(model, pipeline);
+  const status = (model, field, date = "createdAt") =>
+    run(model, [
+      { $match: { [date]: f.date } },
+      group(field),
+      { $sort: { count: -1 } },
+    ]);
+  if (section === "users") {
+    const match = { ...dated, ...(f.role ? { role: f.role } : {}) };
+    const [breakdown, daily, funnel, stock] = await Promise.all([
+      run("User", [{ $match: match }, group("role")]),
+      run("User", [{ $match: match }, ...trend("createdAt")]),
+      run("User", [
+        { $match: match },
+        {
+          $group: {
+            _id: null,
+            registered: { $sum: 1 },
+            phoneVerified: { $sum: { $cond: ["$isVerified", 1, 0] } },
+            emailVerified: { $sum: { $cond: ["$isEmailVerified", 1, 0] } },
+            kycApproved: {
+              $sum: { $cond: [{ $eq: ["$kycLevel", "full"] }, 1, 0] },
             },
-            breakdown: await byField(User, range(p), "role"),
-            daily: await daily(User, range(p), "createdAt"),
-            note: "Accounts created in the period, by role. The funnel follows drivers registered in the period through each verification step.",
-        };
-    },
-    async rides(p, prev) {
-        const range = (pp) => between("createdAt", pp);
-        const cards = async (pp) => {
-            const [all, completed, cancelled, expired, gmv] = await Promise.all([
-                count(Ride, range(pp)), count(Ride, { ...range(pp), rideStatus: "completed" }), count(Ride, { ...range(pp), rideStatus: "cancelled" }),
-                count(Ride, { ...range(pp), rideStatus: "expired" }),
-                Ride.aggregate([{ $match: { ...range(pp), rideStatus: "completed" } }, { $group: { _id: null, sum: { $sum: "$fare" } } }]),
-            ]);
-            return { Requests: all, Completed: completed, Cancelled: cancelled, "No driver found": expired, "Completion rate %": all ? Math.round((completed / all) * 1000) / 10 : 0, "Completed fares (RWF)": gmv[0]?.sum || 0 };
-        };
-        return {
-            cards: await cards(p), previousCards: prev ? await cards(p.previous) : undefined,
-            breakdown: await byField(Ride, range(p), "rideStatus"),
-            daily: await daily(Ride, range(p), "createdAt"),
-            vehicles: await byField(Ride, range(p), "vehicleType"),
-            note: "Ride requests created in the period by current status. Completion rate = completed ÷ all requests.",
-        };
-    },
-    async drivers(p) {
-        const top = await Ride.aggregate([
-            { $match: { ...between("completedAt", p), rideStatus: "completed", driverId: { $ne: null } } },
-            { $group: { _id: "$driverId", count: { $sum: 1 }, earnings: { $sum: { $ifNull: ["$driverEarning", 0] } }, rating: { $avg: "$passengerRating" } } },
-            { $sort: { count: -1 } }, { $limit: 20 },
-            { $lookup: { from: "users", localField: "_id", foreignField: "_id", as: "u" } },
-        ]);
-        return {
-            cards: {
-                "Drivers who completed rides": (await Ride.distinct("driverId", { ...between("completedAt", p), rideStatus: "completed" })).length,
-                "Online now": await count(User, { role: "driver", isOnline: true }),
-                "Approved drivers now": await count(User, { role: "driver", registrationStatus: "approved", isActive: true }),
+            active: { $sum: { $cond: ["$isActive", 1, 0] } },
+            driverFeesPaid: {
+              $sum: {
+                $cond: [
+                  { $and: [{ $eq: ["$role", "driver"] }, "$registrationPaid"] },
+                  1,
+                  0,
+                ],
+              },
             },
-            breakdown: top.map((r) => ({ _id: `${r.u[0]?.firstName || ""} ${r.u[0]?.lastName || ""}`.trim() || String(r._id), count: r.count })),
-            rankings: top.map((r) => ({ driver: `${r.u[0]?.firstName || ""} ${r.u[0]?.lastName || ""}`.trim(), completedRides: r.count, earningsRwf: Math.round(r.earnings), averageRating: r.rating ? Math.round(r.rating * 10) / 10 : null })),
-            note: "Top 20 drivers by rides completed in the period. Earnings are after commission, before tips and fuel.",
-        };
-    },
-    async finance(p, prev) {
-        const range = (pp) => ({ ...between("createdAt", pp), status: "successful" });
-        const sum = async (pp, type) => (await Transaction.aggregate([{ $match: { ...range(pp), type } }, { $group: { _id: null, s: { $sum: { $abs: "$amount" } } } }]))[0]?.s || 0;
-        const cards = async (pp) => ({ "Top-ups (RWF)": await sum(pp, "cash_in"), "Withdrawals paid (RWF)": await sum(pp, "cash_out"), "Ride payments (RWF)": await sum(pp, "ride_payment"), "Commission (RWF)": await sum(pp, "commission") + await sum(pp, "platform_commission"), "Fuel support (RWF)": await sum(pp, "fuel_voucher") });
-        return {
-            cards: await cards(p), previousCards: prev ? await cards(p.previous) : undefined,
-            breakdown: await byField(Transaction, range(p), "type", "amount"),
-            daily: await daily(Transaction, range(p), "createdAt"),
-            note: "Successful ledger transactions in the period by type. Amounts are absolute RWF.",
-        };
-    },
-    async withdrawals(p) {
-        const range = between("createdAt", p);
-        return {
-            cards: { Requests: await count(WithdrawalRequest, range), Paid: await count(WithdrawalRequest, { ...range, status: "successful" }), Failed: await count(WithdrawalRequest, { ...range, status: "failed" }), "Waiting in queue now": await count(WithdrawalRequest, { status: "queued" }) },
-            breakdown: await byField(WithdrawalRequest, range, "status", "amount"),
-            daily: await daily(WithdrawalRequest, range, "createdAt"),
-            note: "Withdrawal requests (including MoMo fuel payouts) created in the period by status.",
-        };
-    },
-    async referrals(p) {
-        const range = between("createdAt", p);
-        return {
-            cards: { Referrals: await count(Referral, range), Rewarded: await count(Referral, { ...range, status: { $in: ["completed", "rewarded", "paid"] } }) },
-            breakdown: await byField(Referral, range, "status"),
-            daily: await daily(Referral, range, "createdAt"),
-            note: "Referral records created in the period by status.",
-        };
-    },
-    async demand(p) {
-        const match = { ...between("createdAt", p), "pickup.latitude": { $type: "number" } };
-        const hours = await Ride.aggregate([{ $match: match }, { $group: { _id: { $hour: { date: "$createdAt", timezone: "Africa/Kigali" } }, count: { $sum: 1 } } }, { $sort: { _id: 1 } }]);
-        // ~1 km cells; cells with fewer than 5 bookings are hidden to protect individuals.
-        const cells = await Ride.aggregate([
-            { $match: match },
-            { $group: { _id: { lat: { $round: ["$pickup.latitude", 2] }, lng: { $round: ["$pickup.longitude", 2] } }, count: { $sum: 1 } } },
-            { $match: { count: { $gte: 5 } } }, { $sort: { count: -1 } }, { $limit: 200 },
-        ]);
-        return {
-            cards: { "Ride requests": await count(Ride, match), "Busy areas shown": cells.length },
-            breakdown: hours.map((h) => ({ _id: `${String(h._id).padStart(2, "0")}:00`, count: h.count })),
-            cells,
-            note: "Pickups grouped into 0.01° cells (about 1 km). Cells with fewer than 5 bookings are not shown.",
-        };
-    },
-    async support(p) {
-        const range = between("createdAt", p);
-        return {
-            cards: { "Support cases": await count(SupportCase, range), "Open now": await count(SupportCase, { status: { $in: ["open", "in_progress"] } }), "Safety events": await count(SafetyEvent, range), "SOS events": await count(SafetyEvent, { ...range, type: "sos" }) },
-            breakdown: await byField(SupportCase, range, "status"),
-            categories: await byField(SupportCase, range, "category"),
-            daily: await daily(SupportCase, range, "createdAt"),
-            note: "Support cases and safety events created in the period.",
-        };
-    },
-    async documents(p) {
-        const range = between("updatedAt", p);
-        const driver = await byField(DriverKyc, range, "status");
-        const passenger = await byField(PassengerKyc, range, "status");
-        return {
-            cards: { "Driver KYC waiting now": await count(DriverKyc, { status: "submitted" }), "Passenger KYC waiting now": await count(PassengerKyc, { status: "submitted" }), "Driver KYC approved": await count(DriverKyc, { ...range, status: "approved" }) },
-            breakdown: [...driver.map((r) => ({ ...r, _id: `driver ${r._id}` })), ...passenger.map((r) => ({ ...r, _id: `passenger ${r._id}` }))],
-            note: "KYC records last updated in the period, by type and status.",
-        };
-    },
-    async security(p) {
-        const range = between("timestamp", p);
-        return {
-            cards: { "Audit events": await count(AuditLog, range), "Staff actors": (await AuditLog.distinct("actorId", { ...range, actorRole: { $nin: ["driver", "client", "system"] } })).length },
-            breakdown: await byField(AuditLog, range, "action"),
-            daily: await daily(AuditLog, range, "timestamp"),
-            note: "Recorded audit events in the period by action.",
-        };
-    },
-    async quality() {
-        const dayAgo = new Date(Date.now() - DAY);
-        const checks = {
-            "Pending transactions older than 24h": await count(Transaction, { status: "pending", createdAt: { $lt: dayAgo } }),
-            "Completed rides without a fare": await count(Ride, { rideStatus: "completed", $or: [{ fare: null }, { fare: { $lte: 0 } }] }),
-            "Withdrawals stuck with provider >24h": await count(WithdrawalRequest, { status: "provider_pending", updatedAt: { $lt: dayAgo } }),
-            "Drivers online with stale GPS (>15 min)": await count(User, { role: "driver", isOnline: true, lastLocationAt: { $lt: new Date(Date.now() - 15 * 60000) } }),
-        };
-        return {
-            cards: checks,
-            breakdown: Object.entries(checks).map(([k, v]) => ({ _id: k, count: v })),
-            note: "Review candidates, not proven errors. Each count is a list worth checking.",
-        };
-    },
-};
-
-async function summary(query, perms) {
-    const p = period(query);
-    const requested = query.section ? [query.section] : SECTIONS;
-    const sections = {};
-    for (const section of requested) {
-        if (!SECTION_SCOPE[section]) throw httpError(400, `Unknown report section: ${section}`);
-        if (!perms.includes(SECTION_SCOPE[section])) throw httpError(403, "You don't have access to this report section.");
-        sections[section] = await summaries[section](p, query.compare === "true");
-    }
+          },
+        },
+      ]),
+      run("User", [
+        { $match: { role: "driver", isActive: true, deletedAt: null } },
+        { $count: "count" },
+      ]),
+    ]);
     return {
-        generatedAt: new Date(),
-        period: { from: p.from, to: p.to, timezone: p.timezone },
-        coverage: ["Counts come from live records; historic events recorded before a feature existed are not inferred."],
-        sections,
+      title: "Users and onboarding",
+      breakdown,
+      daily,
+      funnel: funnel[0] || {},
+      cards: {
+        "New accounts": breakdown.reduce((s, r) => s + r.count, 0),
+        "Active drivers now": stock[0]?.count || 0,
+      },
+      note: "Verification counts are current states for accounts created in this period. Email verification is optional; passenger registration is free. Active drivers is a current snapshot.",
     };
-}
-
-// ─── Records ─────────────────────────────────────────────────────────────────
-const regex = (q) => new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-const name = (u) => (u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "");
-
-const recordQueries = {
-    users: (p, q, s) => ({ Model: User, filter: { ...between("createdAt", p), ...(q.role ? { role: q.role } : {}), ...(q.q ? { $or: [{ firstName: regex(q.q) }, { lastName: regex(q.q) }, { phone: regex(q.q) }] } : {}) }, sort: { createdAt: -1 }, select: "firstName lastName phone role registrationStatus isVerified isActive kycLevel createdAt", map: (u) => ({ name: name(u), phone: s ? u.phone : maskPhone(u.phone), role: u.role, registration: u.registrationStatus, phoneVerified: u.isVerified, active: u.isActive, kyc: u.kycLevel, created: u.createdAt }) }),
-    rides: (p, q) => ({ Model: Ride, filter: { ...between("createdAt", p), ...(q.status ? { rideStatus: q.status } : {}) }, sort: { createdAt: -1 }, select: "rideStatus vehicleType rideType fare paymentMethod paymentStatus pickup.name destination.name estimatedDistanceKm createdAt", map: (r) => ({ id: r._id, status: r.rideStatus, vehicle: r.vehicleType, type: r.rideType, fareRwf: r.fare, payment: `${r.paymentMethod || ""} ${r.paymentStatus || ""}`.trim(), from: r.pickup?.name, to: r.destination?.name, km: r.estimatedDistanceKm, created: r.createdAt }) }),
-    drivers: (p, q) => ({ Model: User, filter: { role: "driver", ...(q.q ? { $or: [{ firstName: regex(q.q) }, { lastName: regex(q.q) }] } : {}) }, sort: { createdAt: -1 }, select: "firstName lastName registrationStatus isOnline isActive lastLocationAt createdAt", map: (u) => ({ id: u._id, name: name(u), registration: u.registrationStatus, online: u.isOnline, active: u.isActive, lastGps: u.lastLocationAt, joined: u.createdAt }) }),
-    finance: (p, q) => ({ Model: Transaction, filter: { ...between("createdAt", p), ...(q.status ? { status: q.status } : {}), ...(q.q ? { type: q.q } : {}) }, sort: { createdAt: -1 }, select: "type amount status paypackRef description createdAt", map: (t) => ({ type: t.type, amountRwf: t.amount, status: t.status, reference: t.paypackRef, description: t.description, created: t.createdAt }) }),
-    withdrawals: (p, q, s) => ({ Model: WithdrawalRequest, filter: { ...between("createdAt", p), ...(q.status ? { status: q.status } : {}) }, sort: { createdAt: -1 }, select: "amount fee status phone paypackRef failureReason createdAt", map: (w) => ({ amountRwf: w.amount, feeRwf: w.fee, status: w.status, phone: s ? w.phone : maskPhone(w.phone), reference: w.paypackRef, failure: w.failureReason, created: w.createdAt }) }),
-    referrals: (p, q) => ({ Model: Referral, filter: { ...between("createdAt", p), ...(q.status ? { status: q.status } : {}) }, sort: { createdAt: -1 }, select: "status reward createdAt", map: (r) => ({ status: r.status, rewardRwf: r.reward, created: r.createdAt }) }),
-    demand: (p) => ({ Model: Ride, filter: between("createdAt", p), sort: { createdAt: -1 }, select: "pickup.latitude pickup.longitude rideStatus createdAt", map: (r) => ({ areaLat: r.pickup?.latitude != null ? Math.round(r.pickup.latitude * 100) / 100 : null, areaLng: r.pickup?.longitude != null ? Math.round(r.pickup.longitude * 100) / 100 : null, status: r.rideStatus, created: r.createdAt }) }),
-    support: (p, q, s) => ({ Model: SupportCase, filter: { ...between("createdAt", p), ...(q.status ? { status: q.status } : {}) }, sort: { createdAt: -1 }, select: "subject category priority status createdAt description", map: (c) => ({ id: c._id, subject: c.subject, category: c.category, priority: c.priority, status: c.status, description: s ? c.description : undefined, created: c.createdAt }) }),
-    documents: (p, q) => ({ Model: DriverKyc, filter: { ...between("updatedAt", p), ...(q.status ? { status: q.status } : {}) }, sort: { updatedAt: -1 }, select: "status vehicleType plateNumber submittedAt reviewedAt updatedAt", map: (k) => ({ status: k.status, vehicle: k.vehicleType, plate: k.plateNumber, submitted: k.submittedAt, reviewed: k.reviewedAt }) }),
-    security: (p, q, s) => ({ Model: AuditLog, filter: { ...between("timestamp", p), ...(q.action ? { action: q.action } : {}), ...(q.actorId && mongoose.isValidObjectId(q.actorId) ? { actorId: q.actorId } : {}), ...(q.targetId && mongoose.isValidObjectId(q.targetId) ? { targetId: q.targetId } : {}), ...(q.targetType ? { targetType: q.targetType } : {}), ...(q.q ? { action: regex(q.q) } : {}) }, sort: { timestamp: -1 }, select: "action actorId actorRole targetType targetId metadata ipAddress timestamp", map: (a) => ({ _id: a._id, timestamp: a.timestamp, action: a.action, actorId: a.actorId, actorRole: a.actorRole, targetType: a.targetType, targetId: a.targetId, ipAddress: s ? a.ipAddress : undefined, metadata: s ? redactSecrets(a.metadata) : summarizeMetadata(a.metadata) }) }),
-    quality: () => ({ Model: Transaction, filter: { status: "pending", createdAt: { $lt: new Date(Date.now() - DAY) } }, sort: { createdAt: 1 }, select: "type amount paypackRef createdAt", map: (t) => ({ check: "Pending transaction older than 24h", type: t.type, amountRwf: t.amount, reference: t.paypackRef, created: t.createdAt }) }),
-};
-
-const SECRET = /pass|token|secret|otp|pin|key/i;
-function redactSecrets(value) {
-    if (!value || typeof value !== "object") return value;
-    if (Array.isArray(value)) return value.map(redactSecrets);
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, SECRET.test(k) ? "[redacted]" : redactSecrets(v)]));
-}
-/** Without audit:sensitive: keep structure (which fields changed), hide values. */
-function summarizeMetadata(value) {
-    if (!value || typeof value !== "object") return value == null ? value : "[restricted]";
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, v && typeof v === "object" && !Array.isArray(v) ? summarizeMetadata(v) : typeof v === "number" || typeof v === "boolean" ? v : "[restricted]"]));
-}
-
-async function records(section, query, perms, { limit = 25, max } = {}) {
-    if (!SECTION_SCOPE[section]) throw httpError(400, `Unknown report section: ${section}`);
-    if (!perms.includes(SECTION_SCOPE[section])) throw httpError(403, "You don't have access to this report section.");
-    const p = period(query);
-    const sensitive = perms.includes("audit:sensitive");
-    const { Model, filter, sort, select, map } = recordQueries[section](p, query, sensitive);
-    const page = Math.max(1, Number.parseInt(query.page, 10) || 1);
-    const size = max || Math.min(100, limit);
-    const [docs, total] = await Promise.all([Model.find(filter).sort(sort).skip(max ? 0 : (page - 1) * size).limit(size).select(select).lean(), Model.countDocuments(filter)]);
+  }
+  if (section === "rides") {
+    const [breakdown, daily, reasons] = await Promise.all([
+      status("Ride", "rideStatus"),
+      run("Ride", [{ $match: dated }, ...trend("createdAt")]),
+      run("Ride", [
+        { $match: { ...dated, rideStatus: "cancelled" } },
+        {
+          $group: {
+            _id: {
+              $cond: [
+                { $eq: ["$cancelledBy", "$driverId"] },
+                "Driver cancelled",
+                {
+                  $cond: [
+                    { $eq: ["$cancelledBy", "$passengerId"] },
+                    "Passenger cancelled",
+                    "Other / unknown",
+                  ],
+                },
+              ],
+            },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+    ]);
     return {
-        rows: docs.map(map),
-        total,
-        page,
-        pages: Math.max(1, Math.ceil(total / size)),
-        note: sensitive ? "Showing full personal details (audit:sensitive)." : "Phone numbers, IP addresses and free text are restricted in your view.",
+      title: "Ride operations",
+      breakdown,
+      daily,
+      reasons,
+      cards: {
+        "Requests created": breakdown.reduce((s, r) => s + r.count, 0),
+        Completed: breakdown.find((r) => r._id === "completed")?.count || 0,
+      },
+      note: "Grouped by booking creation date and latest ride outcome. Driver-logged rides are labelled separately. Cancellation free text remains restricted.",
     };
+  }
+  if (section === "drivers") {
+    const [ranking, offers] = await Promise.all([
+      run("Ride", [
+        { $match: { driverId: { $ne: null }, acceptedAt: f.date } },
+        {
+          $group: {
+            _id: "$driverId",
+            accepted: { $sum: 1 },
+            completed: {
+              $sum: { $cond: [{ $eq: ["$rideStatus", "completed"] }, 1, 0] },
+            },
+            driverCancelled: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $eq: ["$rideStatus", "cancelled"] },
+                      { $eq: ["$cancelledBy", "$driverId"] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
+            earnings: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $eq: ["$rideStatus", "completed"] },
+                      { $eq: ["$paymentStatus", "successful"] },
+                    ],
+                  },
+                  { $ifNull: ["$driverEarning", 0] },
+                  0,
+                ],
+              },
+            },
+          },
+        },
+        { $sort: { completed: -1 } },
+        { $limit: 20 },
+      ]),
+      run("DriverOfferReceipt", [
+        { $match: { receivedAt: f.date } },
+        {
+          $lookup: {
+            from: "rides",
+            localField: "rideId",
+            foreignField: "_id",
+            as: "ride",
+          },
+        },
+        { $unwind: "$ride" },
+        {
+          $group: {
+            _id: null,
+            offers: { $sum: 1 },
+            accepted: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $eq: ["$driverId", "$ride.driverId"] },
+                      { $ne: [{ $ifNull: ["$ride.acceptedAt", null] }, null] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
+          },
+        },
+      ]),
+    ]);
+    return {
+      title: "Driver performance",
+      ranking,
+      breakdown: ranking.map((r) => ({
+        _id: String(r._id),
+        count: r.completed,
+      })),
+      cards: {
+        "Tracked offers": offers[0]?.offers || 0,
+        "Accepted tracked offers": offers[0]?.accepted || 0,
+      },
+      note: "Rankings use accepted-at cohorts. Offer rates use app-acknowledged receipt cohorts; historical dispatches are not proof of delivery. Earnings use stored confirmed ride earnings, excluding tips.",
+    };
+  }
+  if (section === "finance") {
+    const [breakdown, daily, balances] = await Promise.all([
+      run("Transaction", [
+        { $match: dated },
+        {
+          $group: {
+            _id: { type: "$type", status: "$status" },
+            count: { $sum: 1 },
+            amount: { $sum: "$amount" },
+            fee: { $sum: "$feeAmount" },
+          },
+        },
+        { $sort: { count: -1 } },
+      ]),
+      run("Transaction", [
+        { $match: { ...dated, status: "successful" } },
+        {
+          $group: {
+            _id: {
+              $dateToString: {
+                format: "%Y-%m-%d",
+                date: "$createdAt",
+                timezone: "Africa/Kigali",
+              },
+            },
+            count: { $sum: 1 },
+            amount: { $sum: "$amount" },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]),
+      run("Wallet", [
+        {
+          $group: {
+            _id: null,
+            available: { $sum: "$balance" },
+            held: { $sum: "$heldBalance" },
+          },
+        },
+      ]),
+    ]);
+    return {
+      title: "Financial analysis",
+      breakdown: breakdown.map((r) => ({
+        ...r,
+        _id: `${r._id.type} / ${r._id.status}`,
+      })),
+      daily,
+      cards: {
+        "Wallet available now (RWF)": balances[0]?.available || 0,
+        "Reserved now (RWF)": balances[0]?.held || 0,
+      },
+      note: "Transaction signed amounts are wallet movements, not total platform revenue. Commission, registration fees, tips and refunds are shown only where ledger rows exist; deposits and internal transfers are not revenue. Balances are current snapshots.",
+    };
+  }
+  if (section === "withdrawals") {
+    const [breakdown, review, wait] = await Promise.all([
+      run("WithdrawalRequest", [
+        { $match: dated },
+        group("status", {
+          amount: { $sum: "$amount" },
+          fee: { $sum: "$fee" },
+          reserved: { $sum: "$totalHeld" },
+        }),
+      ]),
+      status("WithdrawalRequest", "reviewStatus"),
+      run("WithdrawalRequest", [
+        { $match: { ...dated, status: { $in: ["successful", "failed"] } } },
+        {
+          $group: {
+            _id: null,
+            minutes: {
+              $avg: {
+                $divide: [{ $subtract: ["$updatedAt", "$createdAt"] }, 60000],
+              },
+            },
+          },
+        },
+      ]),
+    ]);
+    return {
+      title: "Withdrawals",
+      breakdown,
+      review,
+      cards: {
+        Requests: breakdown.reduce((s, r) => s + r.count, 0),
+        "Mean last-update delay (min)": wait[0]?.minutes == null ? null : Math.round(wait[0].minutes),
+      },
+      note: "Staff review is separate from provider payout. Delay uses last update minus creation, not a guaranteed provider settlement timestamp.",
+    };
+  }
+  if (section === "referrals") {
+    const [breakdown, daily, paid] = await Promise.all([
+      status("Referral", "status"),
+      run("Referral", [{ $match: dated }, ...trend("createdAt")]),
+      run("Transaction", [
+        { $match: { ...dated, type: "referral_reward", status: "successful" } },
+        {
+          $group: {
+            _id: null,
+            amount: { $sum: "$amount" },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+    ]);
+    return {
+      title: "Referrals",
+      breakdown,
+      daily,
+      cards: {
+        Invitations: breakdown.reduce((s, r) => s + r.count, 0),
+        "Rewards paid (RWF)": paid[0]?.amount || 0,
+      },
+      note: "Potential rewards are not wallet payments. Historic pending referrals can require manual ledger review.",
+    };
+  }
+  if (section === "demand") {
+    const [cells, hours] = await Promise.all([
+      run("Ride", [
+        {
+          $match: {
+            ...dated,
+            "pickup.latitude": { $gte: -90, $lte: 90 },
+            "pickup.longitude": { $gte: -180, $lte: 180 },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              lat: {
+                $divide: [
+                  { $floor: { $multiply: ["$pickup.latitude", 100] } },
+                  100,
+                ],
+              },
+              lng: {
+                $divide: [
+                  { $floor: { $multiply: ["$pickup.longitude", 100] } },
+                  100,
+                ],
+              },
+            },
+            count: { $sum: 1 },
+          },
+        },
+        { $match: { count: { $gte: 5 } } },
+        { $sort: { count: -1 } },
+        { $limit: 100 },
+      ]),
+      run("Ride", [
+        { $match: dated },
+        {
+          $group: {
+            _id: { $hour: { date: "$createdAt", timezone: "Africa/Kigali" } },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]),
+    ]);
+    return {
+      title: "Demand and locations",
+      cells,
+      breakdown: hours,
+      cards: { "Visible demand cells": cells.length },
+      note: "Approximate 0.01-degree pickup cells with at least 5 bookings. No individual locations. Hours use Africa/Kigali. Legacy coordinates absent from latitude/longitude are excluded.",
+    };
+  }
+  if (section === "support") {
+    const [breakdown, categories, safety, disputes, delay] = await Promise.all([
+      status("SupportCase", "status"),
+      status("SupportCase", "category"),
+      status("SafetyEvent", "status"),
+      status("RideDispute", "status"),
+      run("SupportCase", [
+        { $match: { ...dated, status: { $in: ["resolved", "closed"] } } },
+        {
+          $group: {
+            _id: null,
+            minutes: {
+              $avg: {
+                $divide: [{ $subtract: ["$updatedAt", "$createdAt"] }, 60000],
+              },
+            },
+          },
+        },
+      ]),
+    ]);
+    return {
+      title: "Support and safety",
+      breakdown,
+      categories,
+      safety,
+      disputes,
+      cards: {
+        Cases: breakdown.reduce((s, r) => s + r.count, 0),
+        "Safety events": safety.reduce((s, r) => s + r.count, 0),
+        Disputes: disputes.reduce((s, r) => s + r.count, 0),
+        "Mean case last-update delay (min)": delay[0]?.minutes == null ? null : Math.round(delay[0].minutes),
+      },
+      note: "Recorded support cases, reported safety events and ride disputes. Last-update delay approximates resolution time. This does not measure unrecorded incidents or automated monitoring coverage.",
+    };
+  }
+  if (section === "documents") {
+    const [breakdown, driverKyc, passengerKyc] = await Promise.all([
+      status("Upload", "format"),
+      require("../models/DriverKyc")
+        .aggregate([{ $match: dated }, group("status")])
+        .option({ maxTimeMS: 15000 }),
+      require("../models/PassengerKyc")
+        .aggregate([{ $match: dated }, group("status")])
+        .option({ maxTimeMS: 15000 }),
+    ]);
+    return {
+      title: "Documents and KYC",
+      breakdown,
+      driverKyc,
+      passengerKyc,
+      cards: { "Recorded uploads": breakdown.reduce((s, r) => s + r.count, 0) },
+      note: "Direct Cloudinary uploads only appear here when a backend upload record exists. KYC review records are counted separately. Missing upload-failure telemetry is not shown as zero failures.",
+    };
+  }
+  if (section === "security") {
+    const [breakdown, daily, delivery] = await Promise.all([
+      status("AuditLog", "action", "timestamp"),
+      run("AuditLog", [
+        { $match: { timestamp: f.date } },
+        ...trend("timestamp"),
+      ]),
+      status("SmsLog", "status", "sentAt"),
+    ]);
+    return {
+      title: "Security and system events",
+      breakdown,
+      daily,
+      delivery,
+      cards: {
+        "Recorded audit events": breakdown.reduce((s, r) => s + r.count, 0),
+      },
+      note: "Only persisted events are measurable. New authentication/permission denials start recording after deployment; old unrecorded failures cannot be reconstructed. SMS status is recorded delivery telemetry.",
+    };
+  }
+  if (section === "quality") {
+    const [missing, duplicates, balances] = await Promise.all([
+      run("Transaction", [
+        {
+          $match: {
+            ...dated,
+            status: "successful",
+            $or: [{ driverId: null }, { amount: { $exists: false } }],
+          },
+        },
+        { $count: "count" },
+      ]),
+      run("Transaction", [
+        {
+          $match: {
+            ...dated,
+            paypackRef: { $type: "string" },
+            type: "cash_in",
+          },
+        },
+        { $group: { _id: "$paypackRef", count: { $sum: 1 } } },
+        { $match: { count: { $gt: 1 } } },
+        { $limit: 100 },
+      ]),
+      run("Wallet", [
+        {
+          $lookup: {
+            from: "transactions",
+            let: { user: "$driverId" },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $and: [
+                      { $eq: ["$driverId", "$$user"] },
+                      { $eq: ["$status", "successful"] },
+                    ],
+                  },
+                },
+              },
+              { $group: { _id: null, total: { $sum: "$amount" } } },
+            ],
+            as: "ledger",
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            userId: "$driverId",
+            available: "$balance",
+            held: "$heldBalance",
+            recordedLedger: {
+              $ifNull: [{ $arrayElemAt: ["$ledger.total", 0] }, 0],
+            },
+          },
+        },
+        {
+          $set: {
+            difference: {
+              $subtract: [{ $add: ["$available", "$held"] }, "$recordedLedger"],
+            },
+          },
+        },
+        { $match: { difference: { $ne: 0 } } },
+        { $limit: 100 },
+      ]),
+    ]);
+    return {
+      title: "Data quality and reconciliation",
+      exceptions: balances,
+      duplicates,
+      breakdown: [
+        {
+          _id: "Successful transactions with missing fields",
+          count: missing[0]?.count || 0,
+        },
+        {
+          _id: "Repeated deposit provider references",
+          count: duplicates.length,
+        },
+        { _id: "Wallet review candidates (max 100)", count: balances.length },
+      ],
+      cards: { "Missing-field records": missing[0]?.count || 0 },
+      note: "Wallet vs ledger is an all-time screening comparison, capped at 100 candidates. Opening balances, historical missing entries and withdrawal fee conventions can explain differences. These are review candidates, not proven accounting errors.",
+    };
+  }
 }
-
-/** Everything linked to one record: its audit timeline plus related rides/transactions the viewer may see. */
-async function investigate(type, id, query, perms) {
-    if (!mongoose.isValidObjectId(id)) throw httpError(400, "Enter a valid record ID.");
-    const p = period(query);
-    const sensitive = perms.includes("audit:sensitive");
-    const timeline = (await AuditLog.find({ $or: [{ targetId: id }, { actorId: id }], ...between("timestamp", p) }).sort({ timestamp: -1 }).limit(200).lean())
-        .map((a) => ({ ...a, ipAddress: sensitive ? a.ipAddress : undefined, metadata: sensitive ? redactSecrets(a.metadata) : summarizeMetadata(a.metadata) }));
-    const result = { timeline };
-    if (type === "User" && perms.includes("analytics:rides")) {
-        result.rides = (await Ride.find({ $or: [{ passengerId: id }, { driverId: id }], ...between("createdAt", p) }).sort({ createdAt: -1 }).limit(100).select("rideStatus fare paymentMethod createdAt").lean())
-            .map((r) => ({ id: r._id, status: r.rideStatus, fareRwf: r.fare, payment: r.paymentMethod, created: r.createdAt }));
-    }
-    if (type === "User" && perms.includes("analytics:finance")) {
-        result.transactions = (await Transaction.find({ driverId: id, ...between("createdAt", p) }).sort({ createdAt: -1 }).limit(100).select("type amount status createdAt").lean())
-            .map((t) => ({ type: t.type, amountRwf: t.amount, status: t.status, created: t.createdAt }));
-    }
-    return result;
+async function summary(user, query) {
+  const f = filters(query),
+    allowed = Object.keys(sections).filter((s) => {
+      try {
+        ensure(user, s);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  const selected = query.section ? [String(query.section)] : allowed;
+  if (query.section) ensure(user, String(query.section));
+  const entries = await Promise.all(
+    selected.map(async (section) => {
+      const report = await summarySection(section, f);
+      if (query.compare === "true") {
+        const length = f.to - f.from + 1;
+        const previous = {
+          ...f,
+          from: new Date(+f.from - length),
+          to: new Date(+f.from - 1),
+          date: {
+            $gte: new Date(+f.from - length),
+            $lte: new Date(+f.from - 1),
+          },
+        };
+        report.previousCards = (await summarySection(section, previous)).cards;
+        report.comparisonPeriod = { from: previous.from, to: previous.to };
+      }
+      return [section, report];
+    }),
+  );
+  return {
+    generatedAt: new Date(),
+    period: { from: f.from, to: f.to, timezone: "Africa/Kigali" },
+    sections: Object.fromEntries(entries),
+    available: allowed,
+    coverage: [
+      "Current states are not historical point-in-time snapshots.",
+      "Unrecorded events are unavailable, not assumed zero.",
+      "No passwords, tokens, document URLs or individual map coordinates are returned.",
+    ],
+  };
 }
-
-module.exports = { SECTIONS, SECTION_SCOPE, period, summary, records, investigate };
+const datasets = {
+  users: [
+    "User",
+    "createdAt",
+    "role isActive isVerified isEmailVerified kycLevel registrationPaid registrationStatus createdAt",
+  ],
+  rides: [
+    "Ride",
+    "createdAt",
+    "driverId passengerId rideStatus paymentStatus fare driverEarning createdAt acceptedAt completedAt cancelledBy",
+  ],
+  drivers: [
+    "Ride",
+    "acceptedAt",
+    "driverId rideStatus paymentStatus driverEarning acceptedAt completedAt cancelledBy",
+  ],
+  finance: [
+    "Transaction",
+    "createdAt",
+    "driverId rideId amount feeAmount type status reference createdAt",
+  ],
+  withdrawals: [
+    "WithdrawalRequest",
+    "createdAt",
+    "driverId amount fee totalHeld status reviewStatus failureReason createdAt updatedAt",
+  ],
+  referrals: [
+    "Referral",
+    "createdAt",
+    "referrerId referredUserId reward status createdAt rewardedAt",
+  ],
+  support: [
+    "SupportCase",
+    "createdAt",
+    "customerId driverId rideId category priority status escalated createdAt updatedAt",
+  ],
+  documents: [
+    "Upload",
+    "createdAt",
+    "userId format resourceType size createdAt",
+  ],
+  security: [
+    "AuditLog",
+    "timestamp",
+    "actorId actorRole action targetType targetId metadata ipAddress timestamp",
+  ],
+};
+async function records(user, section, query, limit = 50) {
+  ensure(user, section);
+  const f = filters(query);
+  if (!datasets[section])
+    return {
+      rows: [],
+      total: 0,
+      page: 1,
+      note: "This report is aggregated. Export its summary instead.",
+    };
+  const [name, date, select] = datasets[section];
+  const match = { [date]: f.date };
+  if (section === "users" && f.role) match.role = f.role;
+  if (query.status) {
+    if (typeof query.status !== "string" || !/^\w{1,40}$/.test(query.status))
+      error("Invalid status.");
+    match[
+      section === "rides" || section === "drivers"
+        ? "rideStatus"
+        : section === "users"
+          ? "registrationStatus"
+          : "status"
+    ] = query.status;
+  }
+  if (f.q) {
+    if (mongoose.isValidObjectId(f.q))
+      match.$or = [
+        { _id: f.q },
+        ...select
+          .split(" ")
+          .filter((k) => k.endsWith("Id"))
+          .map((k) => ({ [k]: f.q })),
+      ];
+    else if (["finance", "security"].includes(section)) {
+      const escaped = f.q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      match[section === "security" ? "action" : "reference"] = {
+        $regex: escaped,
+        $options: "i",
+      };
+    } else error("Search this list using an exact record or user ID.");
+  }
+  if (section === "security") {
+    for (const key of ["action", "targetType"])
+      if (query[key]) {
+        if (!/^[\w]{1,80}$/.test(query[key])) error("Invalid audit filter.");
+        match[key] = query[key];
+      }
+    for (const key of ["actorId", "targetId"])
+      if (query[key]) {
+        if (!mongoose.isValidObjectId(query[key])) error("Invalid audit ID.");
+        match[key] = query[key];
+      }
+  }
+  const [rows, total] = await Promise.all([
+    models[name]
+      .find(match)
+      .select(select)
+      .sort({ [date]: -1, _id: -1 })
+      .skip((f.page - 1) * limit)
+      .limit(limit)
+      .lean()
+      .maxTimeMS(15000),
+    models[name].countDocuments(match).maxTimeMS(15000),
+  ]);
+  return {
+    rows: rows.map((row) =>
+      safe(
+        row,
+        section === "security" &&
+          effectivePermissions(user).includes("audit:sensitive"),
+      ),
+    ),
+    total,
+    page: f.page,
+    limit,
+    pages: Math.ceil(total / limit),
+  };
+}
+async function investigate(user, type, id, query) {
+  if (!effectivePermissions(user).includes("audit:view"))
+    error("Audit access required.", 403);
+  if (
+    !["User", "Ride", "Transaction", "WithdrawalRequest"].includes(type) ||
+    !mongoose.isValidObjectId(id)
+  )
+    error("Invalid investigation target.");
+  const oid = new mongoose.Types.ObjectId(id),
+    f = filters(query);
+  const timeline = await models.AuditLog.find({
+    timestamp: f.date,
+    $or: [{ targetId: oid }, { actorId: oid }],
+  })
+    .sort({ timestamp: -1 })
+    .limit(200)
+    .lean()
+    .maxTimeMS(15000);
+  const result = {
+    timeline: timeline.map((r) =>
+      safe(r, effectivePermissions(user).includes("audit:sensitive")),
+    ),
+    note: "Audit events are capped at 200. Related records require their own report permissions.",
+  };
+  const p = effectivePermissions(user);
+  if (p.includes("analytics:finance"))
+    result.transactions = await models.Transaction.find({
+      createdAt: f.date,
+      $or: [
+        { _id: oid },
+        { driverId: oid },
+        { rideId: oid },
+        { reference: String(id) },
+      ],
+    })
+      .select("amount type status driverId rideId createdAt")
+      .limit(100)
+      .lean()
+      .maxTimeMS(15000);
+  if (p.includes("analytics:rides"))
+    result.rides = await models.Ride.find({
+      createdAt: f.date,
+      $or: [{ _id: oid }, { driverId: oid }, { passengerId: oid }],
+    })
+      .select("rideStatus paymentStatus createdAt driverId passengerId")
+      .limit(100)
+      .lean()
+      .maxTimeMS(15000);
+  return safe(result, p.includes("audit:sensitive"));
+}
+module.exports = {
+  filters,
+  safe,
+  ensure,
+  sections,
+  summary,
+  summarySection,
+  records,
+  investigate,
+};

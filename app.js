@@ -37,6 +37,8 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key"],
   optionsSuccessStatus: 204,
 }));
+// Uploads (base64 bodies) need a larger limit than the default API body size.
+app.use(["/api/uploads", "/api/users/avatar"], express.json({ limit: "30mb" }));
 app.use(express.json({
   limit: "1mb",
   verify(req, _res, buffer) {
@@ -101,6 +103,14 @@ const productionRoutes = require("./routes/productionRoutes");
 
 // ─── API Routes ─────────────────────────────────────────
 // (Auth moved to new module below)
+// Audit failed logins and server errors (from main).
+app.use('/api', (req, res, next) => {
+    res.on('finish', () => {
+        const failedLogin = req.originalUrl.split('?')[0] === '/api/auth/login' && [400,401,403].includes(res.statusCode);
+        if (res.statusCode >= 500 || failedLogin) void require('./services/auditService').log({ actorId: req.user?._id, actorRole: req.user?.role, action: failedLogin ? 'authentication_failed' : 'system_failure', targetType: 'Route', metadata: { path: req.originalUrl.split('?')[0], status: res.statusCode, method: req.method }, ipAddress: req.ip });
+    });
+    next();
+});
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/roles", roleRoutes);
@@ -136,14 +146,7 @@ app.use("/api/production", productionRoutes);
 app.use("/api/reports", require("./routes/reportRoutes"));
 app.use("/api/support", require("./routes/supportRoutes"));
 app.use("/api/referrals", require("./routes/referralRoutes"));
-// Plain audit log listing (the Audit page uses /api/reports/records/security with redaction).
-app.get("/api/audit-logs", require("./middleware/authMiddleware").protect, require("./middleware/authMiddleware").authorize("audit:view"), async (req, res) => {
-  try {
-    const page = Math.max(1, Number(req.query.page) || 1);
-    const rows = await require("./services/reportService").records("security", req.query, require("./services/accessService").effectivePermissions(req.user));
-    res.json({ data: rows.rows, total: rows.total, page, pages: rows.pages });
-  } catch (error) { res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : "Unable to load audit logs" }); }
-});
+
 const shareRoutes = require("./routes/shareRoutes");
 app.use("/api/share", shareRoutes.api);
 app.use("/share", shareRoutes.page);

@@ -14,6 +14,7 @@ const userSchema = new mongoose.Schema({
         enum: ["driver", "agent", "admin", "superadmin", "financial", "caller_support", "client", "manager", "moderator"],
         default: "driver",
     },
+    reportPermissions: { type: [String], default: undefined },
     roleId: { type: mongoose.Schema.Types.ObjectId, ref: "Role" },
     password: { type: String },
     tokenVersion: { type: Number, default: 0, select: false },
@@ -30,6 +31,7 @@ const userSchema = new mongoose.Schema({
     isVerified: { type: Boolean, default: false }, // Phone verified
     isEmailVerified: { type: Boolean, default: false },
     isActive: { type: Boolean, default: false }, // Default to false until admin approves
+    activationBlocked: { type: Boolean, default: false },
     registrationStatus: { 
         type: String, 
         enum: ["pending", "correction", "approved"], 
@@ -97,11 +99,14 @@ const userSchema = new mongoose.Schema({
         enum: ["basic", "full"],
         default: "basic",
     },
+    referredBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    referralReward: { type: Number, min: 0 },
     referralCode: { type: String, unique: true, sparse: true },
     registrationPaid: { type: Boolean, default: false },
     registrationPaypackRef: { type: String },
     fuelVouchers: [{
         code: String,
+        idempotencyKey: String,
         amount: Number,
         type: { type: String, enum: ["momo", "qr"], default: "qr" },
         status: { type: String, enum: ["pending", "active", "redeemed", "expired", "processing", "paid", "returned"], default: "active" },
@@ -119,6 +124,7 @@ const userSchema = new mongoose.Schema({
     }],
     // ── Driver Availability & Location ──────────────────────────────
     isOnline: { type: Boolean, default: false },
+    availabilityManuallyOffline: { type: Boolean, default: false },
     lastLocation: {
         latitude: { type: Number },
         longitude: { type: Number },

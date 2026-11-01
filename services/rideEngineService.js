@@ -1,9 +1,13 @@
+const { assertDriverCanGoOnline } = require("./driverOnlineEligibility");
+const rideDuration = require("./rideDuration");
+const { getRoadRoute, valid: validCoordinates } = require("./roadRouteService");
 const Ride = require("../models/Ride");
 const User = require("../models/User");
 const Transaction = require("../models/Transaction");
 const Wallet = require("../models/Wallet");
 const SupportCase = require("../models/SupportCase");
 const DriverKyc = require("../models/DriverKyc");
+const DriverProfile = require("../models/DriverProfile");
 const walletService = require("./walletService");
 const paymentService = require("./paymentService");
 const auditService = require("./auditService");
@@ -29,8 +33,11 @@ function emitToUser(userId, event, payload) {
     try { require("./socketService").getIo().to(`user_${userId}`).emit(event, payload); }
     catch (_) { /* Socket server may not be initialized in tests. */ }
     // The mobile apps listen on SSE: the specific event plus a generic "rideUpdate".
-    sseService.sendEventToUser(userId, event, payload);
-    if (payload?.rideId && event !== "rideUpdate") sseService.sendEventToUser(userId, "rideUpdate", payload);
+    // Delivery is best-effort: the ride change is already saved when this runs.
+    try {
+        sseService.sendEventToUser(userId, event, payload);
+        if (payload?.rideId && event !== "rideUpdate") sseService.sendEventToUser(userId, "rideUpdate", payload);
+    } catch (error) { console.error("Ride event delivery failed:", error.message); }
 }
 
 async function notifyUser(user, title, message, event, payload) {
@@ -72,13 +79,15 @@ function generatePin() {
  * The server is authoritative — frontend NEVER decides fare.
  */
 const estimateFare = async (pickup, destination, options = {}) => {
-    if (!pickup?.latitude || !pickup?.longitude || !destination?.latitude || !destination?.longitude) {
+    if (!validCoordinates(pickup) || !validCoordinates(destination)) {
         throw new Error("Both pickup and destination coordinates are required.");
     }
     const vehicleType = normalizeVehicleType(options.vehicleType);
     // Road distance (Google, else OpenStreetMap) when available; straight line otherwise.
     const route = await require("./routingService").getRoute(pickup, destination).catch(() => null);
-    const distanceKm = route ? route.distanceMeters / 1000 : haversine(pickup.latitude, pickup.longitude, destination.latitude, destination.longitude);
+    // No Google/OSM route: try the OSRM road service, then the straight line.
+    const road = route ? null : await getRoadRoute(pickup, destination).catch(() => null);
+    const distanceKm = route ? route.distanceMeters / 1000 : (road?.distanceKm ?? haversine(pickup.latitude, pickup.longitude, destination.latitude, destination.longitude));
     // Moto keeps the existing settings; cars use car_* settings (defaults below until an admin sets them).
     const car = vehicleType === "car";
     const prefix = car ? "car_" : "";
@@ -91,9 +100,10 @@ const estimateFare = async (pickup, destination, options = {}) => {
     const minimumFare = Math.round(suggestedFare * 0.8);
     const maximumFare = Math.round(suggestedFare * 1.2);
     const avgSpeedKmh = await systemSettingService.getSetting("ride_avg_speed_kmh", 20);
-    const durationMinutes = route ? Math.max(1, Math.round(route.durationSeconds / 60)) : Math.round((distanceKm / avgSpeedKmh) * 60);
+    const durationMinutes = route ? Math.max(1, Math.round(route.durationSeconds / 60)) : (road?.durationMinutes ?? Math.round((distanceKm / avgSpeedKmh) * 60));
     return {
         vehicleType,
+        distanceSource: route ? "road" : (road?.distanceSource || "straight_line_fallback"),
         distanceKm: Math.round(distanceKm * 10) / 10,
         durationMinutes,
         minimumFare,
@@ -115,7 +125,7 @@ const estimateOptions = async (pickup, destination, rideType = "ride") => Promis
 
 const requestRide = async (passengerId, pickup, destination, offeredFare, backupDrivers = 1, passengers = 1, paymentMethod = "momo", scheduledDate = null, scheduledTime = null, options = {}) => {
     // Validate coordinates
-    if (!pickup?.latitude || !destination?.latitude) {
+    if (!validCoordinates(pickup) || !validCoordinates(destination)) {
         throw new Error("Pickup and destination coordinates are required.");
     }
     const vehicleType = normalizeVehicleType(options.vehicleType);
@@ -472,11 +482,15 @@ const driverArrived = async (driverId, rideId) => {
 };
 
 const getDriverRequests = async (driverId) => {
-    return Ride.find({
+    const rides = await Ride.find({
         rideStatus: "searching",
         notifiedDrivers: driverId,
         declinedDrivers: { $ne: driverId },
-    }).select("pickup destination offeredFare estimatedDistanceKm estimatedDurationMin passengers scheduledDate scheduledTime requestedAt").sort({ requestedAt: -1 });
+    }).select("pickup destination offeredFare estimatedDistanceKm estimatedDurationMin passengers scheduledDate scheduledTime requestedAt").sort({ requestedAt: -1 }).lean();
+    return Promise.all(rides.map(async ride => {
+        const earning = await walletService.calculateCommission(ride.offeredFare);
+        return { ...ride, driverEarning: earning.driverEarning, commissionAmount: earning.commission, commissionRate: earning.commissionRate };
+    }));
 };
 
 const requestStart = async (driverId, rideId) => {
@@ -532,7 +546,7 @@ const confirmStop = async (passengerId, rideId) => {
     if (ride.rideStatus !== "stop_requested") throw new Error(`The ride cannot be completed while its status is ${ride.rideStatus}. Wait for the driver to request the stop.`);
     ride.rideStatus = "awaiting_payment";
     ride.stopConfirmedAt = new Date();
-    ride.actualDurationMin = Math.max(1, Math.round((Date.now() - new Date(ride.startedAt).getTime()) / 60000));
+    ride.actualDurationMin = rideDuration(ride);
     if (ride.paymentMethod === "wallet" && ride.paymentStatus !== "successful") {
         const session = await mongoose.startSession();
         try {
@@ -646,7 +660,7 @@ const completeRide = async (driverId, rideId) => {
     if (!ride) throw new Error("No in-progress ride found.");
 
     // Calculate actual duration
-    const actualDuration = Math.round((Date.now() - new Date(ride.startedAt).getTime()) / 60000);
+    const actualDuration = rideDuration(ride);
 
     ride.rideStatus = "completed";
     ride.completedAt = new Date();
@@ -809,7 +823,12 @@ const getRideStatus = async (rideId, userId) => {
         };
     }
 
-    return ride;
+    const result = ride.toObject();
+    if (result.driverId?._id) {
+        const profile = await DriverProfile.findOne({ driverId: result.driverId._id }).select("plateNumber").lean();
+        if (profile?.plateNumber) result.driverId.plateNumber = profile.plateNumber;
+    }
+    return result;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -844,15 +863,13 @@ const getDriverActiveRide = async (driverId) => {
 // 14. DRIVER AVAILABILITY
 // ═══════════════════════════════════════════════════════════════════════════
 
-const setDriverAvailability = async (driverId, isOnline) => {
+const setDriverAvailability = async (driverId, isOnline, automatic = false, tokenVersion) => {
     const driver = await User.findById(driverId);
     if (!driver) throw new Error("Driver not found.");
     if (driver.role !== "driver") throw new Error("Only drivers can toggle availability.");
     if (isOnline) {
-        const kyc = await DriverKyc.findOne({ userId: driverId, status: "approved" });
-        if (!kyc) throw new Error("Approved driver documents are required before going online.");
-        const expiryDates = [kyc.drivingLicenseExpiresAt, kyc.transportPermitExpiresAt, kyc.insuranceExpiresAt, kyc.vehicleRegistrationExpiresAt, kyc.technicalInspectionExpiresAt];
-        if (expiryDates.some((date) => !date || date <= new Date())) throw new Error("A required driver document is missing an expiry date or has expired. Renew it before going online.");
+        const kyc = await DriverKyc.findOne({ userId: driverId });
+        assertDriverCanGoOnline(driver, kyc);
     }
 
     // Cannot go offline while in an active ride
@@ -866,10 +883,17 @@ const setDriverAvailability = async (driverId, isOnline) => {
         }
     }
 
+    if (automatic) {
+        if (!isOnline) throw new Error("Automatic availability can only go online.");
+        const versionFilter = (tokenVersion || 0) === 0 ? { $or: [{ tokenVersion: 0 }, { tokenVersion: { $exists: false } }] } : { tokenVersion };
+        const updated = await User.findOneAndUpdate({ ...versionFilter, deletedAt: null, activationBlocked: { $ne: true }, _id: driverId, role: "driver", kycLevel: "full", isActive: true, isVerified: true, registrationPaid: true, availabilityManuallyOffline: { $ne: true } }, { $set: { isOnline: true } }, { new: true });
+        return { isOnline: updated ? true : false, availabilityManuallyOffline: updated?.availabilityManuallyOffline === true };
+    }
     driver.isOnline = isOnline;
+    driver.availabilityManuallyOffline = !isOnline;
     await driver.save();
 
-    return { isOnline: driver.isOnline };
+    return { isOnline: driver.isOnline, availabilityManuallyOffline: driver.availabilityManuallyOffline };
 };
 
 // ═══════════════════════════════════════════════════════════════════════════

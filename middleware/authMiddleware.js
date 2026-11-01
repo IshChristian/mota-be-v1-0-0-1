@@ -35,15 +35,21 @@ const authenticate = (allowOnboarding = false, statusOnly = false) => async (req
       }
     }
 
+    await require('../services/driverActivation').activateFullKycDriver(user);
+
     // Pending drivers may edit only the onboarding routes that explicitly opt in.
     // Approved accounts disabled by an administrator never qualify.
-    if (!user.isActive && !((allowOnboarding || statusOnly) && user.role === "driver" && (statusOnly || user.isVerified) && user.registrationStatus !== "approved" && !user.deletedAt)) {
+    if (!allowOnboarding && !statusOnly && user.role === "driver" && (!user.isVerified || !user.registrationPaid || user.kycLevel !== "full")) {
+      return res.status(403).json({message:!user.isVerified ? "Verify your phone to continue." : !user.registrationPaid ? "Complete your registration fee to continue." : "Complete KYC verification to continue."});
+    }
+    if (!user.isActive && !((statusOnly && !user.deletedAt) || (allowOnboarding || statusOnly) && user.role === "driver" && (statusOnly || user.isVerified) && user.registrationStatus !== "approved" && !user.deletedAt)) {
       return res.status(403).json({ message: "Account is deactivated. Contact admin." });
     }
 
     req.user = user;
     next();
   } catch (error) {
+    if (['TokenExpiredError','JsonWebTokenError'].includes(error.name)) void require('../services/auditService').log({action:'authentication_failed',targetType:'Session',metadata:{reason:error.name},ipAddress:req.ip});
     if (error.name === "TokenExpiredError") {
       return res.status(401).json({ message: "Token expired. Please login again." });
     }
@@ -72,14 +78,16 @@ const authorize = (...permissions) => {
       return next();
     }
 
-    // Role document (or role template) plus per-user report grants; see services/accessService.js.
-    const userPermissions = require("../services/accessService").effectivePermissions(req.user);
+    // Transitional fallback prevents legacy staff lockout before roleId migration.
+    // Once a roleId is assigned, its stored permissions are authoritative.
+    const userPermissions = require("../services/reportAccess").effectivePermissions(req.user);
 
     // Check if user has ALL required permissions (or at least one? Let's go with ALL required for this route, or we can use ANY. Let's do ANY for flexibility or require exact).
     // Usually, you might want to check if user has at least one of the required permissions, or all. Let's check for ALL permissions passed.
     const hasPermission = permissions.every(p => userPermissions.includes(p));
 
     if (!hasPermission) {
+      void require('../services/auditService').log({actorId:req.user._id,actorRole:req.user.role,action:'access_denied',targetType:'Route',metadata:{path:req.originalUrl?.split('?')[0],permissions},ipAddress:req.ip});
       return res.status(403).json({ message: "Forbidden. Insufficient permissions." });
     }
 
