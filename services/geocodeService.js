@@ -1,6 +1,7 @@
 // Place search for the app. Phones never call OpenStreetMap directly: its public
 // Nominatim server allows ~1 request/second for the whole app, so requests are
-// cached and queued here. With GOOGLE_MAPS_API_KEY, Google Places is used first.
+// cached and queued here. With GOOGLE_MAPS_API_KEY, Google Places and OpenStreetMap are
+// searched together and merged (Google first, duplicates removed).
 const axios = require("axios");
 
 const cache = new Map();
@@ -49,31 +50,76 @@ async function googleSearch(q, near) {
         headers: { "X-Goog-Api-Key": process.env.GOOGLE_MAPS_API_KEY, "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.location" },
         timeout: 8000,
     });
-    return (res.data.places || []).map((p) => ({ name: p.displayName?.text || shortName(p.formattedAddress), address: p.formattedAddress || "", latitude: p.location.latitude, longitude: p.location.longitude }));
+    return (res.data.places || []).map((p) => ({ name: p.displayName?.text || shortName(p.formattedAddress), address: p.formattedAddress || "", latitude: p.location.latitude, longitude: p.location.longitude, source: "google" }));
 }
+
+// Nominatim allows ~1 request/second for the whole app. When requests are already
+// waiting, a search skips OpenStreetMap instead of making the user wait behind them.
+let osmPending = 0;
+async function osmSearch(q) {
+    const key = `o:${q.toLowerCase()}`;
+    const hit = cached(key);
+    if (hit) return hit;
+    if (osmPending >= 2) return [];
+    osmPending++;
+    try {
+        const rows = await nominatim(`/search?q=${encodeURIComponent(q)}&format=json&countrycodes=rw&limit=10`);
+        return remember(key, rows.map((r) => ({ name: shortName(r.display_name), address: String(r.display_name || "").split(",").slice(1).join(",").trim(), latitude: Number(r.lat), longitude: Number(r.lon), source: "osm" })));
+    } finally { osmPending--; }
+}
+
+const normalize = (text) => String(text || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+function metersBetween(a, b) {
+    const rad = Math.PI / 180, dLat = (b.latitude - a.latitude) * rad, dLng = (b.longitude - a.longitude) * rad;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.latitude * rad) * Math.cos(b.latitude * rad) * Math.sin(dLng / 2) ** 2;
+    return 2 * 6371000 * Math.asin(Math.sqrt(h));
+}
+function wordOverlap(na, nb) {
+    const a = new Set(na.split(" ")), b = new Set(nb.split(" "));
+    const shared = [...a].filter((w) => b.has(w)).length;
+    return shared / new Set([...a, ...b]).size;
+}
+/** Same place: same name close by, one name containing the other nearby, or mostly the same words at the same spot ("Centre"/"Center"). */
+function samePlace(a, b) {
+    const na = normalize(a.name), nb = normalize(b.name);
+    if (!na || !nb) return false;
+    const meters = metersBetween(a, b);
+    if (na === nb) return meters < 500;
+    if ((na.includes(nb) || nb.includes(na)) && meters < 150) return true;
+    return meters < 100 && wordOverlap(na, nb) >= 0.5;
+}
+/** Google results first (better coverage in Rwanda), then OpenStreetMap places Google didn't have. */
+function mergePlaces(primary, secondary, limit = 10) {
+    const out = [];
+    for (const place of [...primary, ...secondary]) {
+        if (!Number.isFinite(place.latitude) || !Number.isFinite(place.longitude)) continue;
+        if (out.some((kept) => samePlace(kept, place))) continue;
+        out.push(place);
+        if (out.length >= limit) break;
+    }
+    return out;
+}
+
+const withTimeout = (promise, ms) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(null), ms))]);
 
 async function searchPlaces(query, near) {
     const q = String(query || "").trim().slice(0, 120);
     if (q.length < 3) return [];
-    const key = `s:${q.toLowerCase()}`;
+    // Google ranks by distance from the user, so cache per ~10 km area.
+    const area = near ? `${near.latitude.toFixed(1)},${near.longitude.toFixed(1)}` : "rw";
+    const key = `s:${area}:${q.toLowerCase()}`;
     const hit = cached(key);
     if (hit) return hit;
-    // Google first; OpenStreetMap when Google errors OR finds nothing (and vice versa without a key).
-    let results = [];
-    if (process.env.GOOGLE_MAPS_API_KEY) {
-        try { results = await googleSearch(q, near); }
-        catch (error) { console.warn("Google Places search failed, using OpenStreetMap:", error.message); }
-    }
-    if (!results.length) {
-        try {
-            const rows = await nominatim(`/search?q=${encodeURIComponent(q)}&format=json&countrycodes=rw&limit=10`);
-            results = rows.map((r) => ({ name: shortName(r.display_name), address: String(r.display_name || "").split(",").slice(1).join(",").trim(), latitude: Number(r.lat), longitude: Number(r.lon) }));
-        } catch (error) {
-            if (!process.env.GOOGLE_MAPS_API_KEY) throw error;
-            console.warn("OpenStreetMap search failed:", error.message);
-        }
-    }
-    return results.length ? remember(key, results) : results;
+    // Both providers at once; OpenStreetMap gets a short time budget so it never slows Google results down.
+    const hasGoogle = Boolean(process.env.GOOGLE_MAPS_API_KEY);
+    const [google, osm] = await Promise.all([
+        hasGoogle ? googleSearch(q, near).catch((error) => { console.warn("Google Places search failed:", error.response?.data?.error?.message || error.message); return null; }) : null,
+        (hasGoogle ? withTimeout(osmSearch(q), 2500) : osmSearch(q)).catch((error) => { console.warn("OpenStreetMap search failed:", error.message); return null; }),
+    ]);
+    if (google === null && osm === null && !hasGoogle) throw new Error("Place search is unavailable right now.");
+    const results = mergePlaces(google || [], osm || []);
+    // Cache only complete answers, so a slow OpenStreetMap reply can still be merged in next time.
+    return results.length && (!hasGoogle || (google && osm)) ? remember(key, results) : results;
 }
 
 async function reverseGeocode({ latitude, longitude }) {
@@ -84,4 +130,4 @@ async function reverseGeocode({ latitude, longitude }) {
     return remember(key, { name: shortName(row?.display_name) || "Selected location", address: row?.display_name || "", latitude, longitude });
 }
 
-module.exports = { searchPlaces, reverseGeocode };
+module.exports = { searchPlaces, reverseGeocode, mergePlaces };
