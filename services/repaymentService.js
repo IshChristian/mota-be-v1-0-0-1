@@ -68,7 +68,7 @@ const generateSchedule = async (loanId, frequency = "monthly") => {
             frequency,
             totalInstallments,
         },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: "after" }
     );
 
     return schedule;

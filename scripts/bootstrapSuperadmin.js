@@ -12,7 +12,7 @@ async function run() {
     if (!email || !password || !phone) throw new Error("SUPERADMIN_EMAIL, SUPERADMIN_PASSWORD and SUPERADMIN_PHONE are required");
     if (password.length < 10) throw new Error("SUPERADMIN_PASSWORD must contain at least 10 characters");
     await connectDB();
-    const role = await Role.findOneAndUpdate({ name: "superadmin" }, { $set: { description: "System owner with unrestricted access", permissions: STAFF_ROLE_TEMPLATES.superadmin } }, { upsert: true, new: true, setDefaultsOnInsert: true });
+    const role = await Role.findOneAndUpdate({ name: "superadmin" }, { $set: { description: "System owner with unrestricted access", permissions: STAFF_ROLE_TEMPLATES.superadmin } }, { upsert: true, returnDocument: "after", setDefaultsOnInsert: true });
     const existingByPhone = await User.findOne({ phone }); const existingByEmail = await User.findOne({ email });
     if (existingByPhone && existingByEmail && String(existingByPhone._id) !== String(existingByEmail._id)) throw new Error("Email and phone belong to different existing accounts");
     const user = existingByEmail || existingByPhone || new User({ firstName: "MOTA", lastName: "Superadmin", phone });

@@ -117,7 +117,7 @@ const requestWithdrawal = async ({ driverId, amount, phone, idempotencyKey }) =>
             const wallet = await Wallet.findOneAndUpdate(
                 { driverId, balance: { $gte: totalHeld } },
                 { $inc: { balance: -totalHeld, heldBalance: totalHeld } },
-                { new: true, session },
+                { returnDocument: "after", session },
             );
             if (!wallet) throw new Error(`Insufficient available balance. Required ${totalHeld} RWF including fee.`);
 
@@ -228,4 +228,5 @@ const settleWebhook = async (paypackRef, status, kind, amount, payload) => {
     return { handled: true };
 };
 
-module.exports = { PAYPACK_MINIMUM, requestWithdrawal, settleWebhook };
+module.exports = {
+    dispatchQueued, PAYPACK_MINIMUM, requestWithdrawal, settleWebhook };

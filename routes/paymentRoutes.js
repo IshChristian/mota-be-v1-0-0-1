@@ -77,6 +77,20 @@ router.post("/request", authMiddleware, roleMiddleware("driver"), financialWrite
  */
 router.post("/webhook", paypackWebhookAuth, paymentController.handleWebhook);
 
+// Paystack webhook: verify the HMAC-SHA512 signature, translate the event, then
+// settle through the same code path as Paypack (idempotent, amount-checked).
+router.post("/webhook/paystack", (req, res) => {
+    const paystack = require("../services/paystackProvider");
+    if (!paystack.verifySignature(req.rawBody, req.get("x-paystack-signature"))) {
+        return res.status(401).json({ message: "Invalid Paystack signature." });
+    }
+    const normalized = paystack.normalizeEvent(req.body);
+    // Paystack retries non-200 responses; events we don't act on are acknowledged.
+    if (!normalized) return res.status(200).json({ message: "Event ignored" });
+    req.body = { data: normalized };
+    return paymentController.handleWebhook(req, res);
+});
+
 /**
  * @swagger
  * /api/payment/status/{ref}:

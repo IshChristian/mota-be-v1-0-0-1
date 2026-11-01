@@ -16,6 +16,8 @@ const smsLogSchema = new mongoose.Schema({
             "cash_out",
             "admin_credit",
             "fine_payment",
+            "parcel_delivery_code",
+            "sos_alert",
         ],
     },
     status: {

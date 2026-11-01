@@ -344,13 +344,13 @@ const settleCashInTransaction = async (transactionId, payload) => {
         const tx = await Transaction.findOneAndUpdate(
             { _id: transactionId, type: "cash_in", status: "pending", rideId: null },
             { $set: { status: "successful", paypackEvent: payload } },
-            { new: true, session },
+            { returnDocument: "after", session },
         );
         if (!tx) return;
         wallet = await Wallet.findOneAndUpdate(
             { driverId: tx.driverId },
             { $inc: { balance: Math.abs(tx.amount) }, $setOnInsert: { driverId: tx.driverId } },
-            { new: true, upsert: true, session, setDefaultsOnInsert: true },
+            { returnDocument: "after", upsert: true, session, setDefaultsOnInsert: true },
         );
         credited = true;
     });

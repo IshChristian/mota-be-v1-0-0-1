@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const userController = require("../controllers/userController");
+const passengerPlaces = require("../controllers/passengerPlacesController");
 const uploadService = require("../services/uploadService");
 const { protect, protectOnboardingStatus, authorize } = require("../middleware/authMiddleware");
 
@@ -68,6 +69,12 @@ router.put("/me", userController.updateMe);
  */
 router.post("/avatar", uploadService.uploadMiddleware.single("avatar"), userController.uploadAvatar);
 
+router.get("/me/emergency-contacts", passengerPlaces.listContacts);
+router.post("/me/emergency-contacts", passengerPlaces.addContact);
+router.delete("/me/emergency-contacts/:contactId", passengerPlaces.removeContact);
+router.get("/me/places", passengerPlaces.listPlaces);
+router.post("/me/places", passengerPlaces.savePlace);
+router.delete("/me/places/:placeId", passengerPlaces.removePlace);
 router.post("/me/change-password", userController.changePassword);
 router.get("/me/export", userController.exportMyData);
 router.post("/me/contact-change/request", userController.requestContactChange);

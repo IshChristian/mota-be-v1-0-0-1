@@ -22,10 +22,16 @@ const runDailyTasks = async () => {
                 // Add two fuel vouchers of 3000 RWF each
                 for (let i = 0; i < 2; i++) {
                     const voucherCode = `FUEL-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+                    // Rewards are QR vouchers that expire at Kigali midnight and do not
+                    // count against the driver's own daily request limit.
                     user.fuelVouchers.push({
                         code: voucherCode,
-                        amount: 3000, 
+                        type: "qr",
+                        source: "reward",
+                        status: "active",
+                        amount: 3000,
                         issuedAt: new Date(),
+                        expiresAt: require("./fuelVoucherService").kigaliMidnight(),
                         isUsed: false
                     });
                 }

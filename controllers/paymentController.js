@@ -9,6 +9,25 @@ const { sendSMS } = require("../services/smsService");
 const { sendEmail } = require("../services/notificationService");
 const EventEmitter = require("events");
 const withdrawalService = require("../services/withdrawalService");
+const sseService = require("../services/sseService");
+
+/** Tell the passenger's and driver's apps that a ride payment settled. */
+const announceRidePayment = async (rideId, paymentStatus) => {
+    const ride = await Ride.findById(rideId).select("passengerId driverId rideStatus").catch(() => null);
+    if (!ride) return;
+    const payload = { rideId: String(ride._id), paymentStatus, rideStatus: ride.rideStatus };
+    for (const userId of [ride.passengerId, ride.driverId]) {
+        sseService.sendEventToUser(userId, "paymentUpdate", payload);
+        sseService.sendEventToUser(userId, "rideUpdate", payload);
+    }
+    // Push too, so a closed app still learns the result.
+    const notificationService = require("../services/notificationService");
+    const ok = paymentStatus === "successful";
+    await Promise.allSettled([
+        notificationService.sendPushNotification(ride.passengerId, ok ? "Payment received" : "Payment failed", ok ? "Your ride payment went through. Thank you!" : "Your mobile money payment failed. Open MOTA to try again or pay cash.", { ...payload, event: "paymentUpdate" }),
+        notificationService.sendPushNotification(ride.driverId, ok ? "Passenger paid" : "Passenger payment failed", ok ? "The ride payment is confirmed. Finish the trip in the app." : "The passenger's payment failed. Ask them to retry.", { ...payload, event: "paymentUpdate" }),
+    ]);
+};
 
 // ── In-process SSE bus ─────────────────────────────────────────────────────
 // Emits  "tx:<paypackRef>"  with the updated transaction document
@@ -173,6 +192,7 @@ const handleWebhook = async (req, res) => {
                     // If it was a logged ride, update ride status
                     if (tx.rideId) {
                         await Ride.findByIdAndUpdate(tx.rideId, { paymentStatus: "successful" });
+                        await announceRidePayment(tx.rideId, "successful");
                     }
 
                     const wallet = await Wallet.findOne({ driverId: tx.driverId });
@@ -262,6 +282,7 @@ const handleWebhook = async (req, res) => {
 
             if (tx.rideId) {
                 await Ride.findByIdAndUpdate(tx.rideId, { paymentStatus: "failed" });
+                await announceRidePayment(tx.rideId, "failed");
             }
         }
 

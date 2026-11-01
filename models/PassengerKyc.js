@@ -16,6 +16,8 @@ const passengerKycSchema = new mongoose.Schema({
   submittedAt: Date,
   reviewedAt: Date,
   reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  // Per-field review notes from staff (key = KYC field name).
+  fieldReviews: [{ key: { type: String, required: true }, status: { type: String, trim: true }, reason: { type: String, trim: true, maxlength: 500 }, _id: false }],
 }, { timestamps: true });
 
 module.exports = mongoose.model("PassengerKyc", passengerKycSchema);

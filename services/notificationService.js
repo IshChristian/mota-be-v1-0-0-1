@@ -45,16 +45,20 @@ const createNotification = async (userId, title, message, type = "in_app", metad
     });
 };
 
+// Ride-critical events go out on the high-priority "rides" Android channel.
+const URGENT_EVENTS = new Set(["rideRequest", "rideAccepted", "driverApproaching", "driverArrived", "rideStartRequested", "rideStopRequested", "rideCancelled", "rideExpired", "rideAssigned", "counterOffer", "chatMessage", "paymentUpdate", "safetyAlert"]);
+
 const sendPushNotification = async (userId, title, body, data = {}) => {
     const user = await User.findById(userId).select("+pushTokens");
     const tokens = (user?.pushTokens || []).map((item) => item.token);
     if (!tokens.length) return { sent: 0 };
 
+    const urgent = URGENT_EVENTS.has(data.event);
     const messages = tokens.map((to) => ({
         to,
         sound: "default",
-        channelId: data.event === "rideRequest" ? "rides" : "default",
-        priority: data.event === "rideRequest" ? "high" : "default",
+        channelId: urgent ? "rides" : "default",
+        priority: urgent ? "high" : "default",
         title,
         body,
         data,
@@ -65,7 +69,11 @@ const sendPushNotification = async (userId, title, body, data = {}) => {
         body: JSON.stringify(messages),
     });
     if (!response.ok) throw new Error(`Expo push request failed (${response.status})`);
-    return { sent: tokens.length, response: await response.json() };
+    const result = await response.json();
+    // Drop tokens Expo says are dead (app uninstalled / logged out elsewhere) so they stop failing.
+    const dead = (result?.data || []).map((ticket, i) => (ticket?.details?.error === "DeviceNotRegistered" ? tokens[i] : null)).filter(Boolean);
+    if (dead.length) await User.updateOne({ _id: userId }, { $pull: { pushTokens: { token: { $in: dead } } } }).catch(() => {});
+    return { sent: tokens.length - dead.length, removed: dead.length, response: result };
 };
 
 const getUserNotifications = async (userId, unreadOnly = false, page = 1, limit = 20) => {
@@ -96,7 +104,7 @@ const markAsRead = async (id, userId) => {
     return await Notification.findOneAndUpdate(
         { _id: id, userId },
         { read: true },
-        { new: true }
+        { returnDocument: "after" }
     );
 };
 

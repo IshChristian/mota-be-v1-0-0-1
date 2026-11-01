@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const riderFeatures = require('../services/riderFeaturesService');
 const mongoose = require('mongoose');
 const PaymentMethod = require('../models/PaymentMethod');
 const SafetyEvent = require('../models/SafetyEvent');
@@ -39,7 +40,7 @@ exports.verifyPaymentMethod = async (req, res) => {
   res.json({ message: 'Payment method verified', data: publicMethod(item) });
 };
 exports.updatePaymentMethod = async (req, res) => {
-  const item = await PaymentMethod.findOneAndUpdate({ _id: req.params.id, userId: req.user.id }, { $set: { label: String(req.body.label || '').trim() } }, { new: true, runValidators: true });
+  const item = await PaymentMethod.findOneAndUpdate({ _id: req.params.id, userId: req.user.id }, { $set: { label: String(req.body.label || '').trim() } }, { returnDocument: "after", runValidators: true });
   if (!item) return res.status(404).json({ message: 'Payment method not found' }); res.json({ data: publicMethod(item) });
 };
 exports.defaultPaymentMethod = async (req, res) => {
@@ -60,7 +61,15 @@ exports.createSafetyEvent = async (req, res) => {
   const item = await SafetyEvent.create({ reporterId: req.user.id, rideId: req.body.rideId, type: req.body.type, category: req.body.category, description: req.body.description, location: req.body.location, evidence: req.body.evidence || [] });
   const message = `Urgent MOTA ${item.type} event ${item._id} requires support review.`;
   await notificationService.createNotification(req.user.id, 'Safety request received', 'Support has received your safety request.', 'in_app', { safetyEventId: item._id, rideId: item.rideId });
-  console.warn(message); res.status(201).json({ message: 'Safety request sent to MOTA support', data: item });
+  // SOS also texts the user's emergency contacts a live trip link and last location.
+  let alert = { contactsNotified: 0, contactsAttempted: 0 };
+  if (item.type === 'sos') {
+    const user = await User.findById(req.user.id).select('firstName lastName phone emergencyContacts emergencyContactName emergencyContactPhone');
+    const ride = item.rideId ? await Ride.findById(item.rideId) : null;
+    try { alert = await riderFeatures.alertEmergencyContacts(user, ride, req.body.location); }
+    catch (error) { console.error('Emergency contact alert failed:', error.message); }
+  }
+  console.warn(message); res.status(201).json({ message: 'Safety request sent to MOTA support', data: { ...item.toObject(), ...alert } });
 };
 exports.listSafetyEvents = async (req, res) => res.json({ data: await SafetyEvent.find({ reporterId: req.user.id }).sort({ createdAt: -1 }) });
 
@@ -102,16 +111,16 @@ exports.createDisputeByPlate = async (req, res) => {
   }
 };
 exports.listDisputes = async (req, res) => res.json({ data: await RideDispute.find({ openedBy: req.user.id }).populate('rideId').sort({ createdAt: -1 }) });
-exports.replyDispute = async (req, res) => { const message = String(req.body.message || '').trim(); if (!message) return res.status(400).json({ message: 'Reply is required' }); const item = await RideDispute.findOneAndUpdate({ _id: req.params.id, openedBy: req.user.id, status: { $nin: ['resolved', 'rejected'] } }, { $push: { replies: { authorId: req.user.id, message } } }, { new: true, runValidators: true }); if (!item) return res.status(409).json({ message: 'Dispute is closed or unavailable' }); res.json({ data: item }); };
+exports.replyDispute = async (req, res) => { const message = String(req.body.message || '').trim(); if (!message) return res.status(400).json({ message: 'Reply is required' }); const item = await RideDispute.findOneAndUpdate({ _id: req.params.id, openedBy: req.user.id, status: { $nin: ['resolved', 'rejected'] } }, { $push: { replies: { authorId: req.user.id, message } } }, { returnDocument: "after", runValidators: true }); if (!item) return res.status(409).json({ message: 'Dispute is closed or unavailable' }); res.json({ data: item }); };
 
 exports.getPreferences = async (req, res) => { const user = await User.findById(req.user.id).select('notificationPreferences'); res.json({ data: user.notificationPreferences }); };
-exports.updatePreferences = async (req, res) => { const allowed = ['rides', 'wallet', 'promotions', 'security']; const updates = {}; for (const key of allowed) if (typeof req.body[key] === 'boolean') updates[`notificationPreferences.${key}`] = req.body[key]; const user = await User.findByIdAndUpdate(req.user.id, { $set: updates }, { new: true }).select('notificationPreferences'); res.json({ data: user.notificationPreferences }); };
-exports.recordConsent = async (req, res) => { const type = req.body.type; const version = String(req.body.version || '').trim(); if (!version) return res.status(400).json({ message: 'Consent version is required' }); const item = await ConsentRecord.findOneAndUpdate({ userId: req.user.id, type, version }, { granted: Boolean(req.body.granted), source: req.body.source === 'web' ? 'web' : 'mobile', ipAddress: req.ip, recordedAt: new Date() }, { upsert: true, new: true, runValidators: true }); res.json({ data: item }); };
+exports.updatePreferences = async (req, res) => { const allowed = ['rides', 'wallet', 'promotions', 'security']; const updates = {}; for (const key of allowed) if (typeof req.body[key] === 'boolean') updates[`notificationPreferences.${key}`] = req.body[key]; const user = await User.findByIdAndUpdate(req.user.id, { $set: updates }, { returnDocument: "after" }).select('notificationPreferences'); res.json({ data: user.notificationPreferences }); };
+exports.recordConsent = async (req, res) => { const type = req.body.type; const version = String(req.body.version || '').trim(); if (!version) return res.status(400).json({ message: 'Consent version is required' }); const item = await ConsentRecord.findOneAndUpdate({ userId: req.user.id, type, version }, { granted: Boolean(req.body.granted), source: req.body.source === 'web' ? 'web' : 'mobile', ipAddress: req.ip, recordedAt: new Date() }, { upsert: true, returnDocument: "after", runValidators: true }); res.json({ data: item }); };
 exports.listConsents = async (req, res) => res.json({ data: await ConsentRecord.find({ userId: req.user.id }).sort({ recordedAt: -1 }) });
-exports.platformStatus = async (_req, res) => res.json({ data: { status: process.env.MAINTENANCE_MODE === 'true' ? 'maintenance' : 'operational', minimumMobileVersion: process.env.MINIMUM_MOBILE_VERSION || '1.0.0', latestMobileVersion: process.env.LATEST_MOBILE_VERSION || process.env.MINIMUM_MOBILE_VERSION || '1.0.0', legalVersions: { terms: process.env.TERMS_VERSION || '2026-09', privacy: process.env.PRIVACY_VERSION || '2026-09' }, checkedAt: new Date().toISOString() } });
+exports.platformStatus = async (_req, res) => res.json({ data: { status: process.env.MAINTENANCE_MODE === 'true' ? 'maintenance' : 'operational', minimumMobileVersion: process.env.MINIMUM_MOBILE_VERSION || '1.0.0', latestMobileVersion: process.env.LATEST_MOBILE_VERSION || process.env.MINIMUM_MOBILE_VERSION || '1.0.0', legalVersions: { terms: process.env.TERMS_VERSION || '2026-09', privacy: process.env.PRIVACY_VERSION || '2026-09' }, features: { cashRides: true, walletRides: true, momoRidePayments: process.env.FINANCIAL_WRITES_ENABLED === 'true' }, checkedAt: new Date().toISOString() } });
 exports.listSessions = async (req, res) => res.json({ data: await Session.find({ userId: req.user.id, revokedAt: null, expiresAt: { $gt: new Date() } }).select('sessionId userAgent ipAddress lastSeenAt createdAt expiresAt').sort({ lastSeenAt: -1 }) });
-exports.revokeSession = async (req, res) => { const item = await Session.findOneAndUpdate({ userId: req.user.id, sessionId: req.params.sessionId, revokedAt: null }, { $set: { revokedAt: new Date() } }, { new: true }); if (!item) return res.status(404).json({ message: 'Active session not found' }); res.json({ message: 'Session revoked' }); };
+exports.revokeSession = async (req, res) => { const item = await Session.findOneAndUpdate({ userId: req.user.id, sessionId: req.params.sessionId, revokedAt: null }, { $set: { revokedAt: new Date() } }, { returnDocument: "after" }); if (!item) return res.status(404).json({ message: 'Active session not found' }); res.json({ message: 'Session revoked' }); };
 exports.adminSafetyEvents = async (req, res) => res.json({ data: await SafetyEvent.find(req.query.status ? { status: req.query.status } : {}).populate('reporterId', 'firstName lastName phone email').populate('rideId').sort({ createdAt: -1 }).limit(250) });
-exports.adminUpdateSafetyEvent = async (req, res) => { const allowed = {}; for (const key of ['status', 'assignedTo', 'resolution']) if (req.body[key] !== undefined) allowed[key] = req.body[key]; const item = await SafetyEvent.findByIdAndUpdate(req.params.id, { $set: allowed }, { new: true, runValidators: true }); if (!item) return res.status(404).json({ message: 'Safety event not found' }); res.json({ data: item }); };
+exports.adminUpdateSafetyEvent = async (req, res) => { const allowed = {}; for (const key of ['status', 'assignedTo', 'resolution']) if (req.body[key] !== undefined) allowed[key] = req.body[key]; const item = await SafetyEvent.findByIdAndUpdate(req.params.id, { $set: allowed }, { returnDocument: "after", runValidators: true }); if (!item) return res.status(404).json({ message: 'Safety event not found' }); res.json({ data: item }); };
 exports.adminDisputes = async (req, res) => res.json({ data: await RideDispute.find(req.query.status ? { status: req.query.status } : {}).populate('openedBy reportedUserId', 'firstName lastName phone email').populate('rideId').sort({ createdAt: -1 }).limit(250) });
-exports.adminUpdateDispute = async (req, res) => { const allowed = {}; for (const key of ['status', 'resolution']) if (req.body[key] !== undefined) allowed[key] = req.body[key]; if (req.body.refundStatus !== undefined) allowed['refund.status'] = req.body.refundStatus; const item = await RideDispute.findByIdAndUpdate(req.params.id, { $set: allowed }, { new: true, runValidators: true }); if (!item) return res.status(404).json({ message: 'Dispute not found' }); res.json({ data: item }); };
+exports.adminUpdateDispute = async (req, res) => { const allowed = {}; for (const key of ['status', 'resolution']) if (req.body[key] !== undefined) allowed[key] = req.body[key]; if (req.body.refundStatus !== undefined) allowed['refund.status'] = req.body.refundStatus; const item = await RideDispute.findByIdAndUpdate(req.params.id, { $set: allowed }, { returnDocument: "after", runValidators: true }); if (!item) return res.status(404).json({ message: 'Dispute not found' }); res.json({ data: item }); };

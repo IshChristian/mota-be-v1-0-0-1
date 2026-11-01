@@ -529,4 +529,23 @@ router.post('/offers/:rideId/received', authMiddleware, roleMiddleware('driver')
     try { await performanceService.acknowledgeOffer(req.user.id, req.params.rideId); res.json({ success: true }); }
     catch (error) { res.status(error.status || 500).json({ message: error.status ? error.message : 'Offer acknowledgment failed.' }); }
 });
+
+// Driver preferences: how far away a pickup may be before MOTA offers it (1–15 km; null = system default).
+router.get("/preferences", authMiddleware, roleMiddleware("driver"), async (req, res) => {
+  const User = require("../models/User");
+  const systemSettingService = require("../services/systemSettingService");
+  const me = await User.findById(req.user.id).select("requestRadiusKm");
+  res.json({ data: { requestRadiusKm: me?.requestRadiusKm ?? null, systemRadiusKm: await systemSettingService.getSetting("ride_search_radius_km", 5), minKm: 1, maxKm: 15 } });
+});
+router.put("/preferences", authMiddleware, roleMiddleware("driver"), async (req, res) => {
+  const User = require("../models/User");
+  const value = req.body.requestRadiusKm;
+  if (value !== null && (!Number.isFinite(Number(value)) || Number(value) < 1 || Number(value) > 15)) {
+    return res.status(400).json({ message: "requestRadiusKm must be between 1 and 15 km, or null for the default." });
+  }
+  const update = value === null ? { $unset: { requestRadiusKm: 1 } } : { $set: { requestRadiusKm: Math.round(Number(value) * 2) / 2 } };
+  const me = await User.findByIdAndUpdate(req.user.id, update, { returnDocument: "after" }).select("requestRadiusKm");
+  res.json({ message: "Preferences saved", data: { requestRadiusKm: me?.requestRadiusKm ?? null } });
+});
+
 module.exports = router;
