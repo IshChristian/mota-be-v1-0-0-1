@@ -81,6 +81,7 @@ router.patch("/withdrawals/:id/review", authorize("transaction:sync"), async (re
 });
 router.get("/kyc/:type/:id", authorize("kyc:view"), kycController.adminDetail);
 router.patch("/kyc/:type/:id/review", authorize("kyc:approve"), kycController.adminReview);
+router.patch("/kyc/:type/:id/fields", authorize("kyc:approve"), kycController.adminUpdateFields);
 
 /**
  * @swagger

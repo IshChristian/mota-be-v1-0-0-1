@@ -214,3 +214,63 @@ test("driver KYC renewal: approved+valid stays locked; expired document can be r
     await DriverKyc.updateOne({ userId: driver.user._id }, { $set: { status: "approved", insuranceExpiresAt: new Date(Date.now() + 10 * 86400000) } });
     assert.equal((await get(driver, "/api/kyc/me")).body.renewal.expiringSoon.length, 1, "renewal opens 30 days before expiry");
 });
+
+test("staff edit KYC fields: validated, audited, clears that field's review, rejects stale copies", async () => {
+    const DriverKyc = load("models/DriverKyc.js");
+    const AuditLog = load("models/AuditLog.js");
+    const admin = await staff("admin");
+    const support = await staff("caller_support");
+    const driver = await makeDriver();
+    const kyc = await DriverKyc.findOne({ userId: driver.user._id });
+    await DriverKyc.updateOne({ _id: kyc._id }, { $set: { fieldReviews: [{ key: "insuranceDocument", status: "correction", reason: "Blurry" }, { key: "selfie", status: "approved", reason: "" }] } });
+    const fresh = await get(admin, `/api/admin/kyc/driver/${kyc._id}`);
+    const patch = (who, body) => request(app).patch(`/api/admin/kyc/driver/${kyc._id}/fields`).set(who.auth).send(body);
+
+    assert.equal((await patch(support, { updates: { plateNumber: "RAC111D" }, reason: "Typo in plate" })).status, 403);
+    assert.equal((await patch(admin, { updates: { plateNumber: "RAC111D" }, reason: "x" })).status, 400, "reason required");
+    assert.equal((await patch(admin, { updates: { userId: "x" }, reason: "Fix owner" })).status, 400, "only KYC fields");
+    assert.equal((await patch(admin, { updates: { insuranceDocument: "http://insecure" }, reason: "New file" })).status, 400);
+    assert.equal((await patch(admin, { updates: { vehicleType: "bus" }, reason: "Fix type" })).status, 400);
+    assert.equal((await patch(admin, { updates: { drivingLicenseNumber: "" }, reason: "Clear it" })).status, 400, "required field can't be emptied");
+
+    const ok = await patch(admin, { updates: { plateNumber: "rac 111d", insuranceDocument: "https://res.cloudinary.com/x/new.pdf", insuranceExpiresAt: "2030-05-01", vehicleType: "car", cooperativeName: "" }, reason: "Driver sent corrected insurance in person", expectedUpdatedAt: fresh.body.data.updatedAt });
+    assert.equal(ok.status, 200, ok.body.message);
+    const after = await DriverKyc.findById(kyc._id);
+    assert.equal(after.plateNumber, "RAC 111D");
+    assert.equal(after.vehicleType, "car");
+    assert.equal(after.insuranceExpiresAt.toISOString().slice(0, 10), "2030-05-01");
+    assert.deepEqual(after.fieldReviews.map((r) => r.key), ["selfie"], "edited field's review cleared; others kept");
+    const audit = await AuditLog.findOne({ action: "kyc_fields_updated", targetId: kyc._id });
+    assert.equal(audit.metadata.reason, "Driver sent corrected insurance in person");
+    assert.equal(audit.metadata.after.vehicleType, "car");
+
+    assert.equal((await patch(admin, { updates: { plateNumber: "RAD222E" }, reason: "Another fix", expectedUpdatedAt: fresh.body.data.updatedAt })).status, 409, "stale copy");
+    const warn = await patch(admin, { updates: { insuranceExpiresAt: "2020-01-01" }, reason: "Real expiry date" });
+    assert.ok(warn.body.warnings.some((w) => /past/.test(w)));
+});
+
+test("signed uploads: /uploads/signature returns a valid Cloudinary signature the app accepts", async () => {
+    const crypto = require("crypto");
+    const passenger = await makePassenger();
+    assert.equal((await request(app).post("/api/uploads/signature")).status, 401);
+    Object.assign(process.env, { CLOUDINARY_CLOUD_NAME: "mota-test", CLOUDINARY_API_KEY: "123456", CLOUDINARY_API_SECRET: "abcd" });
+    try {
+        const res = await post(passenger, "/api/uploads/signature");
+        assert.equal(res.status, 200, res.body.message);
+        const d = res.body.data;
+        // Same checks as the mobile app's services/uploadAuthorization.ts
+        assert.match(d.cloudName, /^[a-zA-Z0-9_-]+$/);
+        assert.match(d.signature, /^[a-f0-9]{40}$/);
+        assert.equal(d.params.overwrite, false);
+        assert.ok(Number.isInteger(d.params.timestamp) && d.params.public_id);
+        assert.ok(d.params.folder.endsWith(String(passenger.user._id)));
+        // Cloudinary algorithm: sha1("folder=…&overwrite=false&public_id=…&timestamp=…" + secret)
+        const expected = crypto.createHash("sha1").update(`folder=${d.params.folder}&overwrite=false&public_id=${d.params.public_id}&timestamp=${d.params.timestamp}abcd`).digest("hex");
+        assert.equal(d.signature, expected);
+        const again = await post(passenger, "/api/uploads/signature");
+        assert.notEqual(again.body.data.params.public_id, d.params.public_id, "every upload gets its own file name");
+    } finally {
+        for (const k of ["CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET"]) delete process.env[k];
+    }
+    assert.equal((await post(passenger, "/api/uploads/signature")).status, 503, "clear error when not configured");
+});

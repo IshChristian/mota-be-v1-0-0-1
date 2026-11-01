@@ -83,6 +83,80 @@ async function adminDetail(req, res) {
   res.json({ data: record, kycType: type, requirements: type === "driver" ? driverFields : passengerFields });
 }
 
+// ── Staff field edits ───────────────────────────────────────────────────────
+const OPTIONAL_FIELDS = new Set(["dateOfBirth", "residentialAddress", "emergencyContactName", "emergencyContactPhone", "cooperativeName", "vocationalCardDocument", "vocationalCardExpiresAt"]);
+const isDocumentField = (key) => /Document$|^nationalIdFront$|^nationalIdBack$|^selfie$/.test(key);
+const isDateField = (key) => /ExpiresAt$|^dateOfBirth$/.test(key);
+
+/** Returns [cleanValue, error, warning]. undefined value = clear an optional field. */
+function cleanKycValue(key, raw) {
+  const text = raw === null || raw === undefined ? "" : String(raw).trim();
+  if (!text) return OPTIONAL_FIELDS.has(key) ? [undefined] : [null, `${key} is required and can't be emptied.`];
+  if (isDocumentField(key)) return /^https:\/\/\S+$/i.test(text) ? [text] : [null, `${key} must be a secure https link to the file.`];
+  if (isDateField(key)) {
+    const date = new Date(/^\d{4}-\d{2}-\d{2}$/.test(text) ? `${text}T12:00:00Z` : text);
+    if (Number.isNaN(date.getTime())) return [null, `${key} must be a valid date (YYYY-MM-DD).`];
+    const warning = /ExpiresAt$/.test(key) && date.getTime() <= Date.now() ? `${key} is in the past: the driver can't go online until it is renewed.` : undefined;
+    return [date, undefined, warning];
+  }
+  if (key === "vehicleType") return ["car", "moto"].includes(text) ? [text] : [null, "vehicleType must be car or moto."];
+  if (key === "powertrain") return ["electric", "diesel", "petrol"].includes(text) ? [text] : [null, "powertrain must be electric, diesel or petrol."];
+  if (key === "emergencyContactPhone") {
+    const phone = require("../utils/rwandaPhone").normalizeRwandaPhone(text);
+    return phone ? [phone] : [null, "emergencyContactPhone must be a valid Rwandan number."];
+  }
+  if (key === "plateNumber") return [text.toUpperCase().slice(0, 20)];
+  return [text.slice(0, 200)];
+}
+
+/** PATCH /api/admin/kyc/:type/:id/fields — staff correct individual KYC values. */
+async function adminUpdateFields(req, res) {
+  const type = req.params.type;
+  if (!["driver", "passenger"].includes(type)) return res.status(400).json({ message: "KYC type must be driver or passenger" });
+  const allowed = type === "driver" ? driverFields : passengerFields;
+  const updates = req.body?.updates && typeof req.body.updates === "object" ? req.body.updates : null;
+  if (!updates || !Object.keys(updates).length) return res.status(400).json({ message: "Send at least one field to update." });
+  const reason = String(req.body.reason || "").trim();
+  if (reason.length < 5) return res.status(400).json({ message: "Give a reason of at least 5 characters (it is saved in the audit log)." });
+  const unknown = Object.keys(updates).filter((k) => !allowed.includes(k));
+  if (unknown.length) return res.status(400).json({ message: `Not an editable ${type} KYC field: ${unknown.join(", ")}` });
+
+  const set = {}, unset = {}, errors = [], warnings = [];
+  for (const [key, raw] of Object.entries(updates)) {
+    const [value, error, warning] = cleanKycValue(key, raw);
+    if (error) errors.push(error);
+    else if (value === undefined) unset[key] = 1;
+    else set[key] = value;
+    if (warning) warnings.push(warning);
+  }
+  if (errors.length) return res.status(400).json({ message: errors.join(" ") });
+
+  const Model = type === "driver" ? DriverKyc : PassengerKyc;
+  const current = await Model.findById(req.params.id).catch(() => null);
+  if (!current) return res.status(404).json({ message: "KYC record not found" });
+  const filter = { _id: current._id };
+  if (req.body.expectedUpdatedAt) {
+    const expected = new Date(req.body.expectedUpdatedAt);
+    if (!Number.isNaN(expected.getTime())) filter.updatedAt = expected;
+  }
+  const changed = [...Object.keys(set), ...Object.keys(unset)];
+  const before = Object.fromEntries(changed.map((k) => [k, current[k] ?? null]));
+  try {
+    const record = await Model.findOneAndUpdate(filter, {
+      ...(Object.keys(set).length ? { $set: set } : {}),
+      ...(Object.keys(unset).length ? { $unset: unset } : {}),
+      // A changed value needs a fresh decision from the reviewer.
+      $pull: { fieldReviews: { key: { $in: changed } } },
+    }, { returnDocument: "after", runValidators: true }).populate("userId", "firstName lastName phone email role");
+    if (!record) return res.status(409).json({ message: "This KYC record changed since you opened it. Reload it and edit again." });
+    await auditService.log({ actorId: req.user.id, actorRole: req.user.role, action: "kyc_fields_updated", targetType: type === "driver" ? "DriverKyc" : "PassengerKyc", targetId: record._id, ipAddress: req.ip, metadata: { before, after: Object.fromEntries(changed.map((k) => [k, record[k] ?? null])), reason } });
+    await require("../services/notificationService").createNotification(record.userId?._id || record.userId, "Verification details updated", `MOTA staff updated your ${type} verification details (${changed.length} field${changed.length > 1 ? "s" : ""}).`, "in_app", { event: "accountUpdate" }).catch(() => {});
+    res.json({ message: `Updated ${changed.length} field${changed.length > 1 ? "s" : ""}.`, data: record, warnings });
+  } catch (error) {
+    res.status(error.code === 11000 ? 409 : 400).json({ message: error.code === 11000 ? "That value is already registered on another KYC record." : error.message });
+  }
+}
+
 async function adminReview(req, res) {
   const type = req.params.type;
   if (!['driver', 'passenger'].includes(type)) return res.status(400).json({ message: "KYC type must be driver or passenger" });
@@ -112,4 +186,4 @@ async function adminReview(req, res) {
   res.json({ message: `${type} KYC ${status}`, data: record, warnings });
 }
 
-module.exports = { getMine, submitMine, adminList, adminDetail, adminReview };
+module.exports = { getMine, submitMine, adminList, adminDetail, adminReview, adminUpdateFields };

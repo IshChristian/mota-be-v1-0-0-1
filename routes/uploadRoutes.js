@@ -28,6 +28,11 @@ router.use(protectOnboarding);
  *       201:
  *         description: File uploaded successfully
  */
+// Signs one direct-to-Cloudinary upload (used by the mobile app and the admin panel).
+router.post("/signature", (req, res) => {
+    try { res.json({ data: require("../services/uploadSignatureService").createSignature(req.user) }); }
+    catch (error) { res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : "Could not authorize the upload." }); }
+});
 router.post("/", uploadService.uploadMiddleware.single("file"), uploadController.uploadFile);
 
 /**
