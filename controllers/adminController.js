@@ -283,7 +283,7 @@ function validateSetting(key, value) {
         } catch { return "fuel_stations must be valid JSON."; }
     }
     if (key === "fuel_voucher_min_tier" && !["Bronze", "Silver", "Gold", "Platinum"].includes(value)) return "Tier must be Bronze, Silver, Gold or Platinum.";
-    if (["fuel_voucher_amount", "fuel_voucher_daily_limit", "car_ride_base_fare", "car_ride_per_km_rate", "car_ride_minimum_fare", "parcel_surcharge"].includes(key) && (!Number.isFinite(Number(value)) || Number(value) < 0)) return `${key} must be a number of 0 or more.`;
+    if (["fuel_voucher_amount", "fuel_voucher_daily_limit", "ride_base_fare", "ride_per_km_rate", "ride_minimum_fare", "car_ride_base_fare", "car_ride_per_km_rate", "car_ride_minimum_fare", "parcel_surcharge"].includes(key) && (!Number.isFinite(Number(value)) || Number(value) < 0)) return `${key} must be a number of 0 or more.`;
     return null;
 }
 

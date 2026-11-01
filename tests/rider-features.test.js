@@ -25,6 +25,21 @@ test("estimate without vehicleType prices moto and car; old clients still get to
     assert.equal(res.body.suggestedFare, motor.suggestedFare, "backwards compatible");
 });
 
+test("fare is base + 500 RWF/km by default; an admin price change applies to the next estimate", async () => {
+    const estimate = async () => (await request(app).post("/api/rides/estimate").send({ pickup: KIMIHURURA, destination: REMERA })).body.data.options;
+    const [motor, car] = await estimate();
+    const km = motor.distanceKm;
+    const expect = (base, min, perKm) => Math.max(base + Math.round(km * perKm), min);
+    assert.ok(Math.abs(motor.suggestedFare - expect(500, 500, 500)) <= 50, `moto ${motor.suggestedFare} for ${km} km`);
+    assert.ok(Math.abs(car.suggestedFare - expect(1500, 2500, 500)) <= 50, `car ${car.suggestedFare} for ${km} km`);
+    const admin = await makePassenger({ role: "admin" });
+    const save = (key, value) => request(app).post("/api/admin/configs").set(admin.auth).send({ key, value });
+    assert.equal((await save("ride_per_km_rate", "-5")).status, 400, "negative prices are refused");
+    assert.equal((await save("ride_per_km_rate", "200")).status, 200, "admin panel sends text values");
+    const [cheaper] = await estimate();
+    assert.ok(Math.abs(cheaper.suggestedFare - expect(500, 500, 200)) <= 50, `moto after change ${cheaper.suggestedFare}`);
+});
+
 test("active ride restore, PIN only for passenger, and car rides reach only car drivers", async () => {
     const passenger = await makePassenger();
     const moto = await makeDriver({ vehicleType: "moto" });

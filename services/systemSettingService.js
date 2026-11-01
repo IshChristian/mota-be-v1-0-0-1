@@ -11,6 +11,15 @@ const DEFAULT_SETTINGS = [
     { key: "fuel_voucher_min_tier", value: "Gold", category: "financial", dataType: "string", description: "Lowest driver tier allowed to request fuel vouchers (Bronze, Silver, Gold, Platinum)" },
     { key: "fuel_voucher_momo_enabled", value: true, category: "financial", dataType: "boolean", description: "Allow MoMo fuel vouchers (paid out through the withdrawal pipeline)" },
     { key: "fuel_stations", value: "[]", category: "general", dataType: "string", description: "Partner fuel stations as JSON: [{\"id\",\"name\",\"address\",\"latitude\",\"longitude\",\"acceptsQr\"}]" },
+    // Ride pricing (admin panel → Settings → Ride pricing). Fare = base + km × per-km rate, never below the minimum.
+    { key: "ride_base_fare", value: 500, category: "financial", dataType: "number", description: "Moto: base fare in RWF" },
+    { key: "ride_per_km_rate", value: 500, category: "financial", dataType: "number", description: "Moto: price per km in RWF" },
+    { key: "ride_minimum_fare", value: 500, category: "financial", dataType: "number", description: "Moto: minimum fare in RWF" },
+    { key: "car_ride_base_fare", value: 1500, category: "financial", dataType: "number", description: "Car: base fare in RWF" },
+    { key: "car_ride_per_km_rate", value: 500, category: "financial", dataType: "number", description: "Car: price per km in RWF" },
+    { key: "car_ride_minimum_fare", value: 2500, category: "financial", dataType: "number", description: "Car: minimum fare in RWF" },
+    { key: "parcel_surcharge", value: 300, category: "financial", dataType: "number", description: "Extra RWF added to parcel deliveries" },
+
     // Financial
     { key: "ride_commission_percentage", value: 10, category: "financial", dataType: "percentage", description: "Platform commission % deducted from ride fares" },
     { key: "cash_out_fee_percentage", value: 2, category: "financial", dataType: "percentage", description: "Fee % charged on driver cash-out withdrawals" },

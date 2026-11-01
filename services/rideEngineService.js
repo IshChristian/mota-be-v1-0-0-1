@@ -91,10 +91,15 @@ const estimateFare = async (pickup, destination, options = {}) => {
     // Moto keeps the existing settings; cars use car_* settings (defaults below until an admin sets them).
     const car = vehicleType === "car";
     const prefix = car ? "car_" : "";
-    const baseFare = await systemSettingService.getSetting(`${prefix}ride_base_fare`, car ? 1500 : 500);
-    const perKmRate = await systemSettingService.getSetting(`${prefix}ride_per_km_rate`, car ? 500 : 300);
-    const minFare = await systemSettingService.getSetting(`${prefix}ride_minimum_fare`, car ? 2500 : 500);
-    const parcelSurcharge = options.rideType === "parcel" ? await systemSettingService.getSetting("parcel_surcharge", 300) : 0;
+    // Settings saved from the admin panel can arrive as text ("500"); a bad value falls back to the default.
+    const money = async (key, fallback) => {
+        const n = Number(await systemSettingService.getSetting(key, fallback));
+        return Number.isFinite(n) && n >= 0 ? n : fallback;
+    };
+    const baseFare = await money(`${prefix}ride_base_fare`, car ? 1500 : 500);
+    const perKmRate = await money(`${prefix}ride_per_km_rate`, 500);
+    const minFare = await money(`${prefix}ride_minimum_fare`, car ? 2500 : 500);
+    const parcelSurcharge = options.rideType === "parcel" ? await money("parcel_surcharge", 300) : 0;
     const calculatedFare = baseFare + Math.round(distanceKm * perKmRate) + parcelSurcharge;
     const suggestedFare = Math.max(calculatedFare, minFare);
     const minimumFare = Math.round(suggestedFare * 0.8);
