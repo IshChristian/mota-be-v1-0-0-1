@@ -597,6 +597,41 @@ router.put("/registrations/:id/status", authorize("registration:review"), adminC
  */
 router.get("/paypack/transactions", authorize("user:view"), adminController.getPaypackTransactions);
 
+// MOTA's own ledger: ride payments, commissions, loans, fuel vouchers, top-ups, withdrawals…
+router.get("/ledger", authorize("finance:view"), async (req, res) => {
+    try {
+        const Transaction = require("../models/Transaction");
+        const User = require("../models/User");
+        const mongoose = require("mongoose");
+        const page = Math.max(Number(req.query.page) || 1, 1);
+        const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+        const filter = {};
+        if (req.query.type) filter.type = String(req.query.type);
+        if (req.query.status) filter.status = String(req.query.status);
+        const from = req.query.from ? new Date(String(req.query.from)) : null;
+        const to = req.query.to ? new Date(String(req.query.to)) : null;
+        if ((from && !Number.isNaN(from.getTime())) || (to && !Number.isNaN(to.getTime()))) {
+            filter.createdAt = {};
+            if (from && !Number.isNaN(from.getTime())) filter.createdAt.$gte = from;
+            if (to && !Number.isNaN(to.getTime())) filter.createdAt.$lte = to;
+        }
+        const q = String(req.query.q || "").trim();
+        if (q) {
+            const safe = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const people = await User.find({ $or: [{ phone: { $regex: safe, $options: "i" } }, { firstName: { $regex: safe, $options: "i" } }, { lastName: { $regex: safe, $options: "i" } }] }).select("_id").limit(200).lean();
+            filter.$or = [{ driverId: { $in: people.map((p) => p._id) } }, { reference: q }, ...(mongoose.isValidObjectId(q) ? [{ _id: q }] : [])];
+        }
+        const [rows, total, totals] = await Promise.all([
+            Transaction.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).populate("driverId", "firstName lastName phone role").lean(),
+            Transaction.countDocuments(filter),
+            Transaction.aggregate([{ $match: { ...filter, status: filter.status || "successful" } }, { $group: { _id: "$type", count: { $sum: 1 }, amount: { $sum: "$amount" }, fees: { $sum: { $ifNull: ["$feeAmount", 0] } } } }, { $sort: { _id: 1 } }]),
+        ]);
+        res.json({ data: rows, totals, pagination: { page, limit, total, pages: Math.ceil(total / limit) } });
+    } catch (error) {
+        res.status(500).json({ message: "Could not load transactions", error: error.message });
+    }
+});
+
 /**
  * @swagger
  * /api/admin/paypack/events:

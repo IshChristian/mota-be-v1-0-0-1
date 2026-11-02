@@ -35,7 +35,7 @@ const sendPasswordResetEmail = async (user) => {
     user.passwordResetTokenHash = crypto.createHash("sha256").update(token).digest("hex");
     user.passwordResetExpiresAt = new Date(Date.now() + 30 * 60 * 1000);
     await user.save();
-    const resetUrl = `${process.env.MOBILE_DEEP_LINK || "mota://reset-password"}?token=${token}`;
+    const resetUrl = passwordResetUrl(user, token);
 
     const html = `
         <h2>Reset Password</h2>
@@ -46,10 +46,27 @@ const sendPasswordResetEmail = async (user) => {
     return await sendEmail(user.email, "Reset Password - MOTA", "Reset your password", html);
 };
 
-const setup2FA = async (userId) => {
-    const secret = speakeasy.generateSecret({ name: `MOTA (${userId})` });
+/** Staff reset on the admin website; drivers and passengers in the app. */
+const passwordResetUrl = (user, token) => isStaff(user)
+    ? `${(process.env.ADMIN_WEB_URL || "https://mota-admin-web-app.vercel.app").replace(/\/+$/, "")}/reset-password?token=${token}`
+    : `${process.env.MOBILE_DEEP_LINK || "mota://reset-password"}?token=${token}`;
 
+const STAFF_ROLES = new Set(["superadmin", "admin", "manager", "moderator", "financial", "caller_support"]);
+const isStaff = (user) => STAFF_ROLES.has(user?.role);
+
+/** Short-lived proof that the password step passed; required to finish a 2FA sign-in. */
+const issue2FAChallenge = (user) => jwt.sign({ id: String(user._id), purpose: "2fa", tv: user.tokenVersion || 0 }, process.env.JWT_SECRET, { expiresIn: "5m" });
+const read2FAChallenge = (challenge) => {
+    try {
+        const decoded = jwt.verify(String(challenge || ""), process.env.JWT_SECRET);
+        return decoded.purpose === "2fa" ? decoded : null;
+    } catch { return null; }
+};
+
+const setup2FA = async (userId) => {
     const user = await User.findById(userId);
+    if (user.twoFactorEnabled) throw Object.assign(new Error("Two-step verification is already on. Turn it off first to set it up again."), { statusCode: 409 });
+    const secret = speakeasy.generateSecret({ name: `MOTA (${user.email || user.phone})` });
     user.twoFactorSecret = secret.base32;
     await user.save();
 
@@ -76,4 +93,8 @@ module.exports = {
     sendPasswordResetEmail,
     setup2FA,
     verify2FA,
+    issue2FAChallenge,
+    read2FAChallenge,
+    isStaff,
+    passwordResetUrl,
 };

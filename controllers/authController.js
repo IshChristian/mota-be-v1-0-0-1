@@ -177,7 +177,7 @@ const login = async (req, res) => {
             return res.status(200).json({
                 message: "2FA required",
                 require2FA: true,
-                userId: user._id
+                challenge: authService.issue2FAChallenge(user),
             });
         }
 
@@ -285,6 +285,7 @@ const resetPassword = async (req, res) => {
         user.passwordResetExpiresAt = undefined;
         user.tokenVersion = (user.tokenVersion || 0) + 1;
         await user.save();
+        await require("../services/auditService").log({ actorId: user._id, actorRole: user.role, action: "password_reset", targetType: "User", targetId: user._id, ipAddress: req.ip });
 
         res.status(200).json({ message: "Password successfully reset" });
     } catch (error) {
@@ -299,29 +300,61 @@ const setup2FA = async (req, res) => {
         const data = await authService.setup2FA(req.user.id);
         res.status(200).json({ message: "2FA setup initiated", data });
     } catch (error) {
+        res.status(error.statusCode || 500).json({ message: error.message });
+    }
+};
+
+/**
+ * Two uses:
+ * - signed in (Bearer token): confirms setup with a code and turns 2FA on;
+ * - signing in: { challenge, token } where challenge came from /login. Finishes the
+ *   sign-in with a revocable session. A bare userId is no longer accepted.
+ */
+const verify2FA = async (req, res) => {
+    try {
+        const code = String(req.body.token || req.body.code || "").replace(/\s/g, "");
+        if (req.user) {
+            const user = await User.findById(req.user.id).select("+twoFactorSecret");
+            if (!user.twoFactorSecret) return res.status(400).json({ message: "Start two-step setup first." });
+            if (!authService.verify2FA(user.twoFactorSecret, code)) return res.status(401).json({ message: "Invalid 2FA code" });
+            if (!user.twoFactorEnabled) { user.twoFactorEnabled = true; await user.save(); }
+            await require("../services/auditService").log({ actorId: user._id, actorRole: user.role, action: "two_factor_enabled", targetType: "User", targetId: user._id, ipAddress: req.ip });
+            return res.status(200).json({ message: "Two-step verification is on" });
+        }
+        const challenge = authService.read2FAChallenge(req.body.challenge);
+        if (!challenge) return res.status(401).json({ message: "Your sign-in expired. Enter your password again." });
+        const user = await User.findById(challenge.id).select("+tokenVersion +twoFactorSecret").populate("roleId", "permissions");
+        if (!user || !user.twoFactorEnabled || (user.tokenVersion || 0) !== (challenge.tv || 0)) return res.status(401).json({ message: "Your sign-in expired. Enter your password again." });
+        if (!authService.verify2FA(user.twoFactorSecret, code)) {
+            await require("../services/auditService").log({ actorId: user._id, actorRole: user.role, action: "two_factor_failed", targetType: "User", targetId: user._id, ipAddress: req.ip });
+            return res.status(401).json({ message: "Invalid 2FA code" });
+        }
+        await require("../services/driverSessionAvailability").beginDriverSession(user);
+        const sessionId = crypto.randomUUID();
+        await Session.create({ userId: user._id, sessionId, userAgent: req.get("user-agent"), ipAddress: req.ip, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) });
+        await require("../services/auditService").log({ actorId: user._id, actorRole: user.role, action: "authentication_succeeded", targetType: "Session", metadata: { method: "password+2fa" }, ipAddress: req.ip });
+        res.status(200).json({
+            message: "2FA verified",
+            token: authService.generateToken(user, sessionId),
+            user: { id: user._id, firstName: user.firstName, lastName: user.lastName, phone: user.phone, email: user.email, role: user.role, isVerified: user.isVerified, isEmailVerified: user.isEmailVerified, isActive: user.isActive, registrationPaid: user.registrationPaid, registrationStatus: user.registrationStatus, kycLevel: user.kycLevel, permissions: user.roleId?.permissions || [] },
+        });
+    } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
     }
 };
 
-const verify2FA = async (req, res) => {
+/** Turns 2FA off; needs the password and a current code. */
+const disable2FA = async (req, res) => {
     try {
-        const { token, userId } = req.body;
-
-        // If coming from login, we might not have req.user yet, so we pass userId
-        const targetUserId = req.user ? req.user.id : userId;
-        const user = await User.findById(targetUserId).select("+tokenVersion");
-
-        const isValid = authService.verify2FA(user.twoFactorSecret, token);
-        if (!isValid) return res.status(401).json({ message: "Invalid 2FA code" });
-
-        if (!user.twoFactorEnabled) {
-            user.twoFactorEnabled = true;
-            await user.save();
-        }
-
-        if (!req.user) await require("../services/driverSessionAvailability").beginDriverSession(user);
-        const jwtToken = authService.generateToken(user);
-        res.status(200).json({ message: "2FA verified", token: jwtToken });
+        const user = await User.findById(req.user.id).select("+password +twoFactorSecret");
+        if (!user.twoFactorEnabled) return res.status(400).json({ message: "Two-step verification is already off." });
+        if (!user.password || !(await bcrypt.compare(String(req.body.password || ""), user.password))) return res.status(401).json({ message: "Password is incorrect." });
+        if (!authService.verify2FA(user.twoFactorSecret, String(req.body.code || "").replace(/\s/g, ""))) return res.status(401).json({ message: "Invalid 2FA code" });
+        user.twoFactorEnabled = false;
+        user.twoFactorSecret = undefined;
+        await user.save();
+        await require("../services/auditService").log({ actorId: user._id, actorRole: user.role, action: "two_factor_disabled", targetType: "User", targetId: user._id, ipAddress: req.ip });
+        res.status(200).json({ message: "Two-step verification is off" });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
     }
@@ -517,6 +550,7 @@ module.exports = {
     resetPassword,
     setup2FA,
     verify2FA,
+    disable2FA,
     verifyOTP,
     checkRegistrationPayment,
     resendOTP,

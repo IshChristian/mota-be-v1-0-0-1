@@ -208,7 +208,11 @@ router.post("/resend-email-otp", authController.resendEmailOTP);
  *       200:
  *         description: 2FA verified, returns JWT
  */
-router.post("/2fa/verify", authController.verify2FA);
+// Signed in → confirms setup; signing in → needs the challenge from /login. Rate limited against code guessing.
+const twoFactorLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: "draft-8", legacyHeaders: false, message: { message: "Too many attempts. Wait 15 minutes and try again." } });
+const optionalProtect = (req, res, next) => (String(req.headers.authorization || "").startsWith("Bearer ") ? protect(req, res, next) : next());
+router.post("/2fa/verify", twoFactorLimiter, optionalProtect, authController.verify2FA);
+router.post("/2fa/disable", protect, authController.disable2FA);
 
 // Protected routes
 router.post("/submit-registration", protectOnboarding, authController.submitRegistration);

@@ -134,6 +134,7 @@ const changePassword = async (req, res) => {
         if (!user?.password || !await bcrypt.compare(String(currentPassword || ""), user.password)) return res.status(401).json({ message: "Current password is incorrect" });
         if (await bcrypt.compare(newPassword, user.password)) return res.status(400).json({ message: "New password must be different" });
         user.password = await bcrypt.hash(newPassword, 12); user.tokenVersion = (user.tokenVersion || 0) + 1; await user.save();
+        await require("../services/auditService").log({ actorId: user._id, actorRole: user.role, action: "password_changed", targetType: "User", targetId: user._id, ipAddress: req.ip });
         res.json({ message: "Password changed. Please sign in again on all devices." });
     } catch (error) { res.status(500).json({ message: "Unable to change password" }); }
 };

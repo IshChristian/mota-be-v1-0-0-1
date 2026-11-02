@@ -111,6 +111,7 @@ app.use('/api', (req, res, next) => {
     });
     next();
 });
+app.use("/api", require("./middleware/maintenanceMode"));
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/roles", roleRoutes);

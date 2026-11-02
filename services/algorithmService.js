@@ -24,7 +24,7 @@ const TIER_MULTIPLIERS = {
     Platinum: 2.0,
 };
 
-const BASE_DAILY_PAY = 22000;
+let BASE_DAILY_PAY = 22000;
 
 // ─── CONFIGURABLE TIER FEATURES ─────────────────────────────────────────────
 const DEFAULT_TIER_FEATURES = {
@@ -34,7 +34,20 @@ const DEFAULT_TIER_FEATURES = {
 };
 
 // ─── DAILY TARGET FOR STREAK ─────────────────────────────────────────────────
-const DAILY_STREAK_TARGET = 20;
+let DAILY_STREAK_TARGET = 20;
+
+/** Reloads tier thresholds, multipliers, base pay and streak target from settings (admin panel → Settings). */
+const refreshConfig = async () => {
+    const n = async (key, fallback) => { const v = Number(await getSetting(key, fallback)); return Number.isFinite(v) && v >= 0 ? v : fallback; };
+    TIER_THRESHOLDS.Silver = await n("perf_tier_silver_monthly_rides", 600);
+    TIER_THRESHOLDS.Gold = await n("perf_tier_gold_monthly_rides", 800);
+    TIER_THRESHOLDS.Platinum = await n("perf_tier_platinum_monthly_rides", 1000);
+    TIER_MULTIPLIERS.Silver = await n("perf_multiplier_silver", 1.2);
+    TIER_MULTIPLIERS.Gold = await n("perf_multiplier_gold", 1.5);
+    TIER_MULTIPLIERS.Platinum = await n("perf_multiplier_platinum", 2.0);
+    BASE_DAILY_PAY = await n("perf_base_daily_pay", 22000);
+    DAILY_STREAK_TARGET = await n("perf_daily_streak_target", 20);
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CORE: Get or Create RiderAlgorithm record
@@ -62,6 +75,7 @@ const getOrCreateRider = async (riderId) => {
 // CORE FUNCTION: Process Ride
 // ═══════════════════════════════════════════════════════════════════════════════
 const processRide = async (riderId) => {
+    await refreshConfig();
     const rider = await getOrCreateRider(riderId);
 
     // Idempotency: check if we already processed a ride for this exact moment
@@ -291,6 +305,7 @@ const calculateRevenue = async () => {
 // GET RIDER STATUS
 // ═══════════════════════════════════════════════════════════════════════════════
 const getRiderStatus = async (riderId) => {
+    await refreshConfig();
     const rider = await getOrCreateRider(riderId);
 
     return {
@@ -315,6 +330,7 @@ const getRiderStatus = async (riderId) => {
 // GET RIDER EARNINGS
 // ═══════════════════════════════════════════════════════════════════════════════
 const getRiderEarnings = async (riderId) => {
+    await refreshConfig();
     const rider = await getOrCreateRider(riderId);
 
     const dailyPay = calculateDailyPay(rider);
@@ -360,6 +376,7 @@ const dailyResetJob = async () => {
  * Resets monthly_rides, streak_days, stores previous cycle stats
  */
 const monthlyResetJob = async () => {
+    await refreshConfig();
     try {
         const now = new Date();
         const thirtyDaysAgo = new Date(now);
@@ -446,7 +463,8 @@ module.exports = {
     TIER_THRESHOLDS,
     TIER_MULTIPLIERS,
     TIER_ORDER,
-    BASE_DAILY_PAY,
-    DAILY_STREAK_TARGET,
+    refreshConfig,
+    get BASE_DAILY_PAY() { return BASE_DAILY_PAY; },
+    get DAILY_STREAK_TARGET() { return DAILY_STREAK_TARGET; },
     DEFAULT_TIER_FEATURES,
 };

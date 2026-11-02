@@ -274,8 +274,16 @@ const getStats = async (req, res) => {
     }
 };
 
+const LIFETIME_TIERS = ["starter", "bronze", "silver", "gold", "platinum", "gorilla"];
+
 /** Returns an error message for values the app can't use, else null. */
-function validateSetting(key, value) {
+function validateSetting(key, value, dataType) {
+    if (dataType === "percentage" && (!Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) > 100)) return `${key} must be a percentage between 0 and 100.`;
+    if (dataType === "number" && (value === "" || value === null || !Number.isFinite(Number(value)) || Number(value) < 0)) return `${key} must be a number of 0 or more.`;
+    if (dataType === "boolean" && ![true, false, "true", "false"].includes(value)) return `${key} must be on or off.`;
+    if (key === "fuel_reward_tier" && !LIFETIME_TIERS.includes(String(value).toLowerCase())) return `Tier must be one of ${LIFETIME_TIERS.join(", ")}.`;
+    if (/^perf_tier_/.test(key) && !Number.isInteger(Number(value))) return `${key} must be a whole number of rides.`;
+    if (key === "support_email" && value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value))) return "Enter a valid support email.";
     if (key === "fuel_stations") {
         try {
             const list = JSON.parse(value);
@@ -294,14 +302,17 @@ const updateSystemConfig = async (req, res) => {
             return res.status(400).json({ message: "Key and value are required" });
         }
         // Financial settings (fees, commission, rewards, fuel) need settings:financial, not just settings:update.
-        const existing = await SystemConfig.findOne({ key }).select("category").lean();
+        const existing = await SystemConfig.findOne({ key }).select("category dataType value").lean();
         const category = existing?.category || (/fee|commission|reward|fuel_voucher|loan|fare|cash_out|price|amount/.test(key) ? "financial" : "general");
         if (category === "financial" && !require("../services/accessService").can(req.user, "settings:financial")) {
             return res.status(403).json({ message: "Changing financial settings requires the settings:financial permission." });
         }
-        const invalid = validateSetting(key, value);
+        const invalid = validateSetting(key, value, existing?.dataType);
         if (invalid) return res.status(400).json({ message: invalid });
-        const config = await configService.setConfig(key, value, description, req.user.id);
+        // Store numbers and switches as their real types so every reader gets the same value.
+        const typed = existing?.dataType === "number" || existing?.dataType === "percentage" ? Number(value) : existing?.dataType === "boolean" ? value === true || value === "true" : value;
+        const config = await configService.setConfig(key, typed, description, req.user.id);
+        await require("../services/auditService").log({ actorId: req.user.id, actorRole: req.user.role, action: "setting_changed", targetType: "SystemConfig", metadata: { key, from: existing?.value, to: typed }, ipAddress: req.ip }).catch(() => {});
         res.status(200).json({ message: "System configuration updated", data: config });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });

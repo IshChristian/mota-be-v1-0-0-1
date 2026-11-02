@@ -40,7 +40,24 @@ const DEFAULT_SETTINGS = [
     { key: "app_name", value: "MOTA", category: "general", dataType: "string", description: "Platform display name" },
     { key: "support_phone", value: "+250788000000", category: "general", dataType: "string", description: "Support phone number" },
     { key: "support_email", value: "support@mota.rw", category: "general", dataType: "string", description: "Support email address" },
-    { key: "maintenance_mode", value: false, category: "general", dataType: "boolean", description: "Enable/disable platform maintenance mode" },
+    { key: "maintenance_mode", value: false, category: "general", dataType: "boolean", description: "Pause the driver and passenger apps (staff keep access)" },
+    { key: "maintenance_message", value: "MOTA is being updated. Please try again shortly.", category: "general", dataType: "string", description: "Message shown in the apps during maintenance" },
+
+    // Daily fuel reward (cron): QR vouchers given each day to drivers on a lifetime tier.
+    { key: "fuel_reward_enabled", value: true, category: "financial", dataType: "boolean", description: "Give daily reward fuel vouchers" },
+    { key: "fuel_reward_tier", value: "silver", category: "financial", dataType: "string", description: "Lifetime tier that receives the daily reward vouchers (starter, bronze, silver, gold, platinum, gorilla)" },
+    { key: "fuel_reward_count", value: 2, category: "financial", dataType: "number", description: "Reward vouchers per driver per day" },
+    { key: "fuel_reward_amount", value: 3000, category: "financial", dataType: "number", description: "Value of one reward voucher in RWF" },
+
+    // Monthly performance tiers (unlock fuel vouchers, earnings multiplier)
+    { key: "perf_tier_silver_monthly_rides", value: 600, category: "general", dataType: "number", description: "Rides this month to reach Silver performance tier" },
+    { key: "perf_tier_gold_monthly_rides", value: 800, category: "general", dataType: "number", description: "Rides this month to reach Gold performance tier" },
+    { key: "perf_tier_platinum_monthly_rides", value: 1000, category: "general", dataType: "number", description: "Rides this month to reach Platinum performance tier" },
+    { key: "perf_multiplier_silver", value: 1.2, category: "financial", dataType: "number", description: "Earnings multiplier at Silver performance tier" },
+    { key: "perf_multiplier_gold", value: 1.5, category: "financial", dataType: "number", description: "Earnings multiplier at Gold performance tier" },
+    { key: "perf_multiplier_platinum", value: 2, category: "financial", dataType: "number", description: "Earnings multiplier at Platinum performance tier" },
+    { key: "perf_base_daily_pay", value: 22000, category: "financial", dataType: "number", description: "Base daily pay in RWF shown to drivers (before the multiplier)" },
+    { key: "perf_daily_streak_target", value: 20, category: "general", dataType: "number", description: "Rides in a day that count towards a streak" },
 
     // Tier Thresholds (Lifetime Rides)
     { key: "tier_bronze_rides", value: 600, category: "general", dataType: "number", description: "Total rides required for Bronze tier" },

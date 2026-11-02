@@ -11,16 +11,21 @@ const runDailyTasks = async () => {
 
         // 1. Distribute Fuel Vouchers to Tier 2 (Silver) users
         // "tier 2" typically translates to "silver" in our tier structure
-        const tier2Drivers = await Tier.find({ tier: "silver" });
+        const { getSetting } = require("./systemSettingService");
+        const rewardOn = await getSetting("fuel_reward_enabled", true);
+        const rewardTier = String(await getSetting("fuel_reward_tier", "silver")).toLowerCase();
+        const rewardCount = Math.max(0, Math.round(Number(await getSetting("fuel_reward_count", 2)) || 0));
+        const rewardAmount = Math.max(0, Math.round(Number(await getSetting("fuel_reward_amount", 3000)) || 0));
+        const tier2Drivers = rewardOn === true || rewardOn === "true" ? await Tier.find({ tier: rewardTier }) : [];
         
         let vouchersDistributed = 0;
         for (const t of tier2Drivers) {
             const user = await User.findById(t.driverId);
             
             // Only reward active drivers
-            if (user && user.isActive) {
+            if (user && user.isActive && rewardCount > 0 && rewardAmount > 0) {
                 // Add two fuel vouchers of 3000 RWF each
-                for (let i = 0; i < 2; i++) {
+                for (let i = 0; i < rewardCount; i++) {
                     const voucherCode = `FUEL-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
                     // Rewards are QR vouchers that expire at Kigali midnight and do not
                     // count against the driver's own daily request limit.
@@ -29,20 +34,20 @@ const runDailyTasks = async () => {
                         type: "qr",
                         source: "reward",
                         status: "active",
-                        amount: 3000,
+                        amount: rewardAmount,
                         issuedAt: new Date(),
                         expiresAt: require("./fuelVoucherService").kigaliMidnight(),
                         isUsed: false
                     });
                 }
                 await user.save();
-                vouchersDistributed += 2;
+                vouchersDistributed += rewardCount;
 
                 // Optionally send SMS Notification to inform driver
                 if (user.phone) {
                     await sendSMS(
                         user.phone, 
-                        `MOTA Rewards: You just received your 2 daily Fuel Vouchers (3000 RWF each)! Check your app to redeem them.`, 
+                        `MOTA Rewards: You just received ${rewardCount} daily fuel voucher${rewardCount === 1 ? "" : "s"} (${rewardAmount} RWF each). Check your app to redeem them.`, 
                         "reward"
                     );
                 }

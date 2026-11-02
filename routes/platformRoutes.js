@@ -6,6 +6,33 @@ const roleMiddleware = require("../middleware/roleMiddleware");
 const SystemConfig = require("../models/SystemConfig");
 
 // Public release metadata contains only version and administrator-approved HTTPS destinations.
+/** Prices, fees and contacts set in the admin panel, so the apps never show stale hard-coded figures. */
+router.get("/pricing", async (_req, res) => {
+    try {
+        const { getSetting } = require("../services/systemSettingService");
+        const num = async (key, fallback) => { const v = Number(await getSetting(key, fallback)); return Number.isFinite(v) ? v : fallback; };
+        const on = async (key, fallback) => { const v = await getSetting(key, fallback); return v === true || v === "true"; };
+        res.set("Cache-Control", "public, max-age=60");
+        res.json({ data: {
+            appName: await getSetting("app_name", "MOTA"),
+            support: { phone: await getSetting("support_phone", ""), email: await getSetting("support_email", "") },
+            maintenance: { on: await on("maintenance_mode", false), message: await getSetting("maintenance_message", "") },
+            registrationFee: { driver: await num("registration_fee", 5000), agent: await num("agent_registration_fee", 10000) },
+            fees: { cashOutPercent: await num("cash_out_fee_percentage", 2), transferPercent: await num("transfer_fee_percentage", 1), commissionPercent: await num("ride_commission_percentage", 10) },
+            fares: {
+                moto: { base: await num("ride_base_fare", 500), perKm: await num("ride_per_km_rate", 500), minimum: await num("ride_minimum_fare", 500) },
+                car: { base: await num("car_ride_base_fare", 1500), perKm: await num("car_ride_per_km_rate", 500), minimum: await num("car_ride_minimum_fare", 2500) },
+                parcelSurcharge: await num("parcel_surcharge", 300),
+            },
+            loans: { interestPercent: await num("fine_loan_interest_rate", 5), maxAmount: await num("fine_loan_max_amount", 50000), autoRepaymentPercent: await num("fine_loan_auto_repayment_percentage", 10), maxDurationDays: await num("fine_loan_max_duration_days", 90) },
+            fuel: { voucherAmount: await num("fuel_voucher_amount", 1000), dailyLimit: await num("fuel_voucher_daily_limit", 2) },
+            referralReward: await num("referral_reward_amount", 5000),
+        } });
+    } catch (_error) {
+        res.status(503).json({ message: "Pricing is unavailable" });
+    }
+});
+
 router.get("/mobile-release", async (_req, res) => {
     try {
         const config = await SystemConfig.findOne({ key: "mobile_release" }).lean();

@@ -90,7 +90,7 @@ const userSchema = new mongoose.Schema({
     },
     // 2FA Fields
     twoFactorEnabled: { type: Boolean, default: false },
-    twoFactorSecret: { type: String },
+    twoFactorSecret: { type: String, select: false }, // never returned in API responses
     // Social Login
     googleId: { type: String, sparse: true, unique: true },
     githubId: { type: String, sparse: true, unique: true },
