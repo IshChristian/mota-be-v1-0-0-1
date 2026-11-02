@@ -43,6 +43,12 @@ const DEFAULT_SETTINGS = [
     { key: "maintenance_mode", value: false, category: "general", dataType: "boolean", description: "Pause the driver and passenger apps (staff keep access)" },
     { key: "maintenance_message", value: "MOTA is being updated. Please try again shortly.", category: "general", dataType: "string", description: "Message shown in the apps during maintenance" },
 
+    // Read by the code but previously never seeded, so admins couldn't see them.
+    { key: "loan_min_transactions_required", value: 5, category: "loan", dataType: "number", description: "Successful transactions a driver needs before requesting a fine loan" },
+    { key: "ride_search_radius_km", value: 5, category: "general", dataType: "number", description: "Default distance (km) within which drivers are offered a ride request" },
+    { key: "ride_avg_speed_kmh", value: 20, category: "general", dataType: "number", description: "Average speed (km/h) used to estimate trip and arrival times" },
+    { key: "savings_monthly_reward_rate", value: 2, category: "financial", dataType: "percentage", description: "Monthly reward % on savings held 30+ days" },
+
     // Daily fuel reward (cron): QR vouchers given each day to drivers on a lifetime tier.
     { key: "fuel_reward_enabled", value: true, category: "financial", dataType: "boolean", description: "Give daily reward fuel vouchers" },
     { key: "fuel_reward_tier", value: "silver", category: "financial", dataType: "string", description: "Lifetime tier that receives the daily reward vouchers (starter, bronze, silver, gold, platinum, gorilla)" },

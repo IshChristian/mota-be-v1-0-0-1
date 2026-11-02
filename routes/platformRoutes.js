@@ -27,6 +27,7 @@ router.get("/pricing", async (_req, res) => {
             loans: { interestPercent: await num("fine_loan_interest_rate", 5), maxAmount: await num("fine_loan_max_amount", 50000), autoRepaymentPercent: await num("fine_loan_auto_repayment_percentage", 10), maxDurationDays: await num("fine_loan_max_duration_days", 90) },
             fuel: { voucherAmount: await num("fuel_voucher_amount", 1000), dailyLimit: await num("fuel_voucher_daily_limit", 2) },
             referralReward: await num("referral_reward_amount", 5000),
+            savings: { monthlyRewardPercent: await num("savings_monthly_reward_rate", 2) },
         } });
     } catch (_error) {
         res.status(503).json({ message: "Pricing is unavailable" });

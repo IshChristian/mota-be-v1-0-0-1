@@ -33,7 +33,22 @@ test("public pricing reflects admin settings immediately", async () => {
     assert.equal(res.status, 200);
     assert.equal(res.body.data.registrationFee.driver, 7000, "stored as a number and served to the app");
     assert.equal(res.body.data.fees.cashOutPercent, 3);
+    assert.equal(res.body.data.savings.monthlyRewardPercent, 2);
     assert.equal((await SystemConfig.findOne({ key: "registration_fee" })).value, 7000);
+});
+
+test("every setting the code reads has a default the admin panel can show", async () => {
+    const fs = require("fs"); const path = require("path");
+    const root = path.resolve(__dirname, "..");
+    const defined = new Set((await SystemConfig.find({}).lean()).map((c) => c.key));
+    const read = new Set();
+    for (const dir of ["services", "controllers", "routes", "middleware"]) {
+        for (const file of fs.readdirSync(path.join(root, dir)).filter((f) => f.endsWith(".js"))) {
+            for (const m of fs.readFileSync(path.join(root, dir, file), "utf8").matchAll(/(?:getSetting|getConfig)\(\s*["']([a-z_]+)["']/g)) read.add(m[1]);
+        }
+    }
+    const missing = [...read].filter((k) => !defined.has(k));
+    assert.deepEqual(missing, [], "settings read in code but not seeded");
 });
 
 test("settings are validated by type", async () => {

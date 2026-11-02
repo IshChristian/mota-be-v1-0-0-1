@@ -185,7 +185,7 @@ async function summarySection(section, f) {
       ]),
       run("User", [
         { $match: { role: "driver", isActive: true, deletedAt: null } },
-        { $count: "count" },
+        { $group: { _id: null, count: { $sum: 1 }, online: { $sum: { $cond: [{ $eq: ["$isOnline", true] }, 1, 0] } } } },
       ]),
     ]);
     return {
@@ -195,9 +195,10 @@ async function summarySection(section, f) {
       funnel: funnel[0] || {},
       cards: {
         "New accounts": breakdown.reduce((s, r) => s + r.count, 0),
-        "Active drivers now": stock[0]?.count || 0,
+        "Driver accounts active": stock[0]?.count || 0,
+        "Drivers online now": stock[0]?.online || 0,
       },
-      note: "Verification counts are current states for accounts created in this period. Email verification is optional; passenger registration is free. Active drivers is a current snapshot.",
+      note: "Verification counts are current states for accounts created in this period. Email verification is optional; passenger registration is free. Driver accounts and drivers online are current snapshots.",
     };
   }
   if (section === "rides") {
