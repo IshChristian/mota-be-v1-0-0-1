@@ -21,7 +21,7 @@ const readPoint = (lat, lng) => {
   return Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180 ? { latitude, longitude } : null;
 };
 
-/** GET /api/maps/search?q=…&lat=&lng= — places in Rwanda (cached; Google if configured, else OpenStreetMap). */
+/** GET /api/maps/search?q=…&lat=&lng= — places in Rwanda from free sources (MOTA places, Photon, Nominatim; Google only if PLACES_GOOGLE_ENABLED). Cached. */
 router.get("/search", async (req, res) => {
   try {
     res.json({ data: await geocode.searchPlaces(req.query.q, readPoint(req.query.lat, req.query.lng) || undefined) });
