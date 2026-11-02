@@ -39,7 +39,7 @@ const checkEligibility = async (driverId) => {
     // Rule 5: Only one active loan at a time
     const activeLoan = await Loan.findOne({
         driverId,
-        loanStatus: { $in: ["pending_review", "approved", "disbursed", "active"] },
+        loanStatus: { $in: ["pending", "active"] },
     });
     if (activeLoan) {
         return { eligible: false, reason: "You already have an active or pending loan.", maxAmount: 0, activeLoanId: activeLoan._id };

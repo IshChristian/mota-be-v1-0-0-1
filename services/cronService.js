@@ -49,9 +49,28 @@ const runDailyTasks = async () => {
             }
         }
         
+        try {
+            const reminders = await require("./repaymentService").sendUpcomingReminders();
+            if (reminders) console.log(`Sent ${reminders} loan installment reminders.`);
+        } catch (reminderErr) {
+            console.error("Loan reminders failed:", reminderErr.message);
+        }
+
         console.log(`✅ Daily tasks successfully executed. Distributed ${vouchersDistributed} Fuel Vouchers to Tier 2 drivers.`);
     } catch (err) {
         console.error("❌ Daily tasks failed:", err.message);
+    }
+};
+
+const runLoanChecks = async () => {
+    try {
+        const repaymentService = require("./repaymentService");
+        const loanService = require("./loanService");
+        const overdue = await repaymentService.checkOverdueInstallments();
+        const defaulted = await loanService.checkOverdueLoans();
+        if (overdue || defaulted) console.log(`Loans: ${overdue} now overdue, ${defaulted} defaulted.`);
+    } catch (err) {
+        console.error("Loan checks failed:", err.message);
     }
 };
 
@@ -126,6 +145,9 @@ const initCron = () => {
             runDailyTasks();
         }
     }, 60 * 60 * 1000); // Check every 1 hour
+
+    // Loans: missed installments → overdue (one SMS on the change); past the final due date → defaulted.
+    setInterval(runLoanChecks, 60 * 60 * 1000);
 
     // Realtime background sync poller - checks every 1 second for stuck pending transactions
     setInterval(() => {

@@ -2,12 +2,15 @@ const User = require("../models/User");
 const Transaction = require("../models/Transaction");
 const Ride = require("../models/Ride");
 
+const ACTIVE_RIDE_STATUSES = ["requested", "searching", "accepted", "approaching", "arrived", "start_requested", "in_progress", "stop_requested", "awaiting_payment"];
+
 const getSystemStats = async () => {
     const totalUsers = await User.countDocuments();
     const totalDrivers = await User.countDocuments({ role: "driver" });
     const totalAgents = await User.countDocuments({ role: "agent" });
-    const activeRides = await Ride.countDocuments({ paymentStatus: "pending" });
-    const completedRides = await Ride.countDocuments({ paymentStatus: "successful" });
+    // By trip state, so cancelled/expired unpaid rides aren't counted as active (matches the operations queue).
+    const activeRides = await Ride.countDocuments({ rideStatus: { $in: ACTIVE_RIDE_STATUSES } });
+    const completedRides = await Ride.countDocuments({ rideStatus: "completed" });
 
     // Calculate total revenue (commissions)
     const result = await Ride.aggregate([

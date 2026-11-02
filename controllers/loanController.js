@@ -17,7 +17,7 @@ const requestLoan = async (req, res) => {
         if (!tinNumber) {
             return res.status(400).json({ message: "tinNumber is required" });
         }
-        if (String(tinNumber).length !== 9) {
+        if (!/^\d{9}$/.test(String(tinNumber).trim())) {
             return res.status(400).json({ message: "TIN number must be exactly 9 digits" });
         }
 
@@ -26,13 +26,13 @@ const requestLoan = async (req, res) => {
             return res.status(400).json({ message: "ticketNumber is required" });
         }
 
-        const loan = await loanService.requestLoan(driverId, String(tinNumber), String(ticketNumber).trim());
+        const loan = await loanService.requestLoan(driverId, String(tinNumber).trim(), String(ticketNumber).trim());
         res.status(201).json({
-            message: "Loan request submitted. Pending to be approval.",
+            message: "Loan request submitted. Waiting for approval.",
             data: loan,
         });
     } catch (error) {
-        res.status(400).json({ message: error.message });
+        res.status(error.statusCode || 400).json({ message: error.message });
     }
 };
 
@@ -56,7 +56,7 @@ const getMyLoans = async (req, res) => {
 const repayLoan = async (req, res) => {
     try {
         const { loanId, amount } = req.body;
-        if (!loanId || !amount || amount <= 0) {
+        if (!loanId || amount === undefined || amount === null || amount === "") {
             return res.status(400).json({ message: "loanId and a positive amount are required" });
         }
         const result = await loanService.repayLoan(loanId, amount, req.user.id);
@@ -65,7 +65,7 @@ const repayLoan = async (req, res) => {
             data: result,
         });
     } catch (error) {
-        res.status(400).json({ message: error.message });
+        res.status(error.statusCode || 400).json({ message: error.message });
     }
 };
 
@@ -114,7 +114,7 @@ const approveLoan = async (req, res) => {
             data: loan,
         });
     } catch (error) {
-        res.status(400).json({ message: error.message });
+        res.status(error.statusCode || 400).json({ message: error.message });
     }
 };
 

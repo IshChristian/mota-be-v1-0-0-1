@@ -19,7 +19,7 @@ async function summary(req, res) {
   const [wallet, savings, activeLoan, tier, kyc, recentTransactions] = await Promise.all([
     Wallet.findOne({ driverId }).lean(),
     SavingsAccount.findOne({ driverId }).lean(),
-    Loan.findOne({ driverId, loanStatus: { $in: ["pending", "active"] } }).sort({ createdAt: -1 }).lean(),
+    Loan.findOne({ driverId, loanStatus: { $in: ["pending", "active", "overdue"] } }).sort({ createdAt: -1 }).lean(),
     Tier.findOne({ driverId }).lean(),
     DriverKyc.findOne({ userId: driverId }).select("status remarks submittedAt reviewedAt").lean(),
     Transaction.find({ driverId }).sort({ createdAt: -1 }).limit(8).lean(),
@@ -31,7 +31,8 @@ async function summary(req, res) {
         held: wallet?.heldBalance || 0,
         fuelCredits: wallet?.fuelCredits || 0,
         savings: savings?.balance || 0,
-        loanOutstanding: activeLoan?.remainingBalance || 0,
+        // A pending request isn't owed yet; only approved loans being repaid count.
+        loanOutstanding: ["active", "overdue"].includes(activeLoan?.loanStatus) ? activeLoan.remainingBalance : 0,
       },
       tier: tier || { tier: "starter", multiplier: 1, totalRides: 0, monthlyRides: 0 },
       kyc: kyc || { status: "not_submitted" },

@@ -5,135 +5,114 @@ const Wallet = require("../models/Wallet");
 const User = require("../models/User");
 const systemSettingService = require("./systemSettingService");
 const { sendSMS } = require("./smsService");
-const riskScoringService = require("./riskScoringService");
+const mongoose = require("mongoose");
+const lendingPolicyService = require("./lendingPolicyService");
+const repaymentService = require("./repaymentService");
+
+const httpError = (statusCode, message) => Object.assign(new Error(message), { statusCode });
+// Loans still being repaid. "overdue" = a missed installment; it is still collected.
+const OPEN = ["active", "overdue"];
 
 /**
- * Request a fine loan (driver-initiated)
+ * Request a loan for a fine the driver submitted and an admin approved
+ * (POST /api/fine-requests → admin approves → this). The loan pays the fine's
+ * remaining amount, capped by the system maximum and the driver's own limit;
+ * interest is charged once, on the loan.
  * @param {ObjectId} driverId
  * @param {string}   tinNumber    - 9-digit TIN number
- * @param {string}   ticketNumber - Traffic ticket/fine reference number
+ * @param {string}   ticketNumber - the fine's ticket / reference number
  */
 const requestLoan = async (driverId, tinNumber, ticketNumber) => {
-    // ── 1. Uniqueness: reject if same ticketNumber already used for this TIN ──
-    const duplicateTicket = await Fine.findOne({ fineId: tinNumber, ticketNumber });
-    if (duplicateTicket) {
-        // Also check if that fine already has an active/pending loan
-        const duplicateLoan = await Loan.findOne({
-            fineId: duplicateTicket._id,
-            loanStatus: { $in: ["pending", "active"] },
-        });
-        if (duplicateLoan) {
-            throw new Error(`Ticket number '${ticketNumber}' has already been used to request a loan for this TIN number.`);
-        }
-    }
+    const ticket = String(ticketNumber || "").trim();
+    const policy = await lendingPolicyService.checkEligibility(driverId);
+    if (!policy.eligible) throw httpError(403, policy.reason);
 
-    // ── 2. Find or auto-create the Fine record for this TIN ─────────────
-    let fine = await Fine.findOne({ fineId: tinNumber, ticketNumber });
-
+    const fine = await Fine.findOne({
+        driverId,
+        $or: [{ ticketNumber: ticket }, { fineId: ticket }],
+        status: { $in: ["approved", "partially_paid"] },
+    }).sort({ createdAt: -1 });
     if (!fine) {
-        fine = await Fine.create({
-            driverId,
-            fineId: tinNumber,
-            ticketNumber,
-            amount: 0,
-            status: "pending",
-        });
-    } else {
-        if (fine.driverId.toString() !== driverId.toString()) {
-            throw new Error("This fine does not belong to your account.");
-        }
-        if (fine.status === "paid") {
-            throw new Error("This fine is already paid.");
-        }
+        throw httpError(404, `No approved fine with ticket number '${ticket}'. Submit the fine for review first; you can request the loan once it is approved.`);
     }
+    const remainingFine = Math.max(0, (fine.amount || 0) - (fine.paidAmount || 0));
+    if (remainingFine <= 0) throw httpError(409, "This fine is already paid.");
 
-    // ── 3. Block duplicate active/pending loans on the same fine ───────
-    const existingLoan = await Loan.findOne({
-        fineId: fine._id,
-        loanStatus: { $in: ["pending", "active"] },
-    });
-    if (existingLoan) {
-        throw new Error("An active or pending loan already exists for this ticket.");
-    }
+    const existingLoan = await Loan.exists({ fineId: fine._id, loanStatus: { $in: ["pending", ...OPEN] } });
+    if (existingLoan) throw httpError(409, "A loan for this ticket is already pending or being repaid.");
 
-    // ── 4. Determine loan amount from settings ────────────────────
-    const remainingFine = fine.totalAmountWithInterest - fine.paidAmount;
-    const maxLoanAmount = await systemSettingService.getSetting("fine_loan_max_amount", 50000);
-    const loanAmount = remainingFine > 0 ? Math.min(remainingFine, maxLoanAmount) : 0;
+    const maxLoanAmount = Number(await systemSettingService.getSetting("fine_loan_max_amount", 50000)) || 0;
+    const driverLoanLimit = Number(policy.maxAmount) || 0;
+    const loanAmount = Math.min(remainingFine, maxLoanAmount, driverLoanLimit);
+    if (loanAmount <= 0) throw httpError(403, "Your current loan limit is 0 RWF. Complete more rides and repay on time to raise it.");
 
-    const interestRate = await systemSettingService.getSetting("fine_loan_interest_rate", 5);
+    const interestRate = Number(await systemSettingService.getSetting("fine_loan_interest_rate", 5)) || 0;
     const totalWithInterest = Math.round(loanAmount * (1 + interestRate / 100));
 
-    const maxDurationDays = await systemSettingService.getSetting("fine_loan_max_duration_days", 90);
-    const dueDate = new Date();
-    dueDate.setDate(dueDate.getDate() + maxDurationDays);
-
-    // ── 5. Get driver’s personal loan eligibility cap from risk score ──
-    let driverLoanLimit = maxLoanAmount;
-    try {
-        const riskScore = await riskScoringService.getRiskScore(driverId);
-        driverLoanLimit = riskScore.maxLoanEligible;
-    } catch (_) {
-        // If risk score fails, fall back to system max
-    }
-
-    // ── 6. Create the Loan ──────────────────────────────────────
     const loan = await Loan.create({
         driverId,
         fineId: fine._id,
         tinNumber,
-        ticketNumber,
+        ticketNumber: ticket,
         loanAmount,
         interestRate,
         totalWithInterest,
         remainingBalance: totalWithInterest,
         loanStatus: "pending",
-        dueDate,
     });
 
-    // ── 7. Return loan + driver’s limit in response ──────────────────
     return {
         loan,
+        fineAmount: remainingFine,
+        // When the fine is bigger than the limit the loan covers part of it; the driver pays the rest.
+        coversWholeFine: loanAmount >= remainingFine,
         driverLoanLimit,
         systemMaxLoan: maxLoanAmount,
     };
 };
 
 /**
- * Approve a loan (admin-initiated)
+ * Approve a loan (admin-initiated). MOTA pays the fine; the driver repays the loan.
  */
 const approveLoan = async (loanId, adminId) => {
-    const loan = await Loan.findById(loanId);
-    if (!loan) throw new Error("Loan not found");
-    if (loan.loanStatus !== "pending") throw new Error("Loan is not in pending status");
-
-    loan.loanStatus = "active";
-    loan.issuedAt = new Date();
-    loan.approvedBy = adminId;
-    await loan.save();
+    const maxDurationDays = Number(await systemSettingService.getSetting("fine_loan_max_duration_days", 90)) || 90;
+    const issuedAt = new Date();
+    const dueDate = new Date(issuedAt.getTime() + maxDurationDays * 86400000);
+    // Atomic pending → active: two clicks (or two admins) approve it once.
+    const loan = await Loan.findOneAndUpdate(
+        { _id: loanId, loanStatus: "pending" },
+        { $set: { loanStatus: "active", issuedAt, dueDate, approvedBy: adminId } },
+        { returnDocument: "after" }
+    );
+    if (!loan) {
+        if (!(await Loan.exists({ _id: loanId }))) throw httpError(404, "Loan not found");
+        throw httpError(409, "Loan is not in pending status");
+    }
 
     // Pay off the fine with this loan
     const fine = await Fine.findById(loan.fineId);
     if (fine) {
-        fine.paidAmount += loan.loanAmount;
-        if (fine.paidAmount >= fine.totalAmountWithInterest) {
-            fine.status = "paid";
-        } else {
-            fine.status = "partially_paid";
-        }
+        fine.paidAmount = (fine.paidAmount || 0) + loan.loanAmount;
+        fine.status = fine.paidAmount >= fine.amount ? "paid" : "partially_paid";
         await fine.save();
     }
 
-    // Record transaction
     await Transaction.create({
         driverId: loan.driverId,
         amount: loan.loanAmount,
         type: "fine_loan_issued",
         status: "successful",
+        reference: String(loan._id),
         description: `Fine loan issued. Amount: ${loan.loanAmount} RWF. Total with interest: ${loan.totalWithInterest} RWF.`,
     });
 
-    // Notify driver
+    try {
+        const frequency = await lendingPolicyService.determineRepaymentFrequency(loan.driverId);
+        await repaymentService.generateSchedule(loan._id, frequency);
+    } catch (error) {
+        console.error("Repayment schedule not created:", error.message);
+    }
+
     const driver = await User.findById(loan.driverId);
     if (driver) {
         await sendSMS(
@@ -150,57 +129,71 @@ const approveLoan = async (loanId, adminId) => {
  * Reject a loan (admin-initiated)
  */
 const rejectLoan = async (loanId, adminId) => {
-    const loan = await Loan.findById(loanId);
-    if (!loan) throw new Error("Loan not found");
-    if (loan.loanStatus !== "pending") throw new Error("Loan is not in pending status");
-
-    loan.loanStatus = "rejected";
-    loan.approvedBy = adminId;
-    await loan.save();
-
+    const loan = await Loan.findOneAndUpdate(
+        { _id: loanId, loanStatus: "pending" },
+        { $set: { loanStatus: "rejected", approvedBy: adminId } },
+        { returnDocument: "after" }
+    );
+    if (!loan) {
+        if (!(await Loan.exists({ _id: loanId }))) throw httpError(404, "Loan not found");
+        throw httpError(409, "Loan is not in pending status");
+    }
     return loan;
 };
 
-/**
- * Manual loan repayment from wallet
- */
-const repayLoan = async (loanId, amount, driverId) => {
-    const loan = await Loan.findById(loanId);
-    if (!loan) throw new Error("Loan not found");
-    if (loan.loanStatus !== "active") throw new Error("Loan is not active");
-    if (loan.driverId.toString() !== driverId.toString()) throw new Error("Unauthorized");
-    if (amount <= 0) throw new Error("Amount must be positive");
-
-    const paymentAmount = Math.min(amount, loan.remainingBalance);
-
-    // Debit driver wallet
-    const wallet = await Wallet.findOne({ driverId });
-    if (!wallet || wallet.balance < paymentAmount) {
-        throw new Error(`Insufficient wallet balance. Required: ${paymentAmount} RWF`);
-    }
-
-    wallet.balance -= paymentAmount;
-    await wallet.save();
-
-    // Update loan
-    loan.remainingBalance -= paymentAmount;
-    if (loan.remainingBalance <= 0) {
-        loan.remainingBalance = 0;
+/** Applies `payment` to a loan inside a session; closes it when fully repaid. */
+function applyPayment(loan, payment) {
+    loan.remainingBalance = Math.max(0, loan.remainingBalance - payment);
+    if (loan.remainingBalance === 0) {
         loan.loanStatus = "successful";
         loan.completedAt = new Date();
     }
-    await loan.save();
+}
 
-    // Record transaction
-    await Transaction.create({
-        driverId,
-        amount: paymentAmount,
-        type: "fine_loan_repayment",
-        status: "successful",
-        description: `Manual loan repayment. Loan remaining: ${loan.remainingBalance} RWF.`,
+const recordOnSchedule = async (payments) => {
+    for (const { loanId, amount, transactionId } of payments) {
+        try { await repaymentService.recordRepayment(loanId, amount, transactionId); }
+        catch (error) { console.error("Repayment schedule update failed:", error.message); }
+    }
+};
+
+/**
+ * Manual loan repayment from wallet. Wallet debit, loan balance and ledger entry
+ * are one transaction, so concurrent repayments can't overdraw the wallet.
+ */
+const repayLoan = async (loanId, amount, driverId) => {
+    const requested = Math.round(Number(amount));
+    if (!Number.isFinite(requested) || requested <= 0) throw httpError(400, "Amount must be a positive number");
+    if (!mongoose.isValidObjectId(loanId)) throw httpError(404, "Loan not found");
+
+    let loan, wallet, tx, paymentAmount;
+    await mongoose.connection.transaction(async (session) => {
+        loan = await Loan.findById(loanId).session(session);
+        if (!loan) throw httpError(404, "Loan not found");
+        if (loan.driverId.toString() !== driverId.toString()) throw httpError(403, "Unauthorized");
+        if (!OPEN.includes(loan.loanStatus)) throw httpError(409, "Loan is not active");
+
+        paymentAmount = Math.min(requested, loan.remainingBalance);
+        wallet = await Wallet.findOneAndUpdate(
+            { driverId, balance: { $gte: paymentAmount } },
+            { $inc: { balance: -paymentAmount } },
+            { session, returnDocument: "after" }
+        );
+        if (!wallet) throw httpError(400, `Insufficient wallet balance. Required: ${paymentAmount} RWF`);
+
+        applyPayment(loan, paymentAmount);
+        await loan.save({ session });
+        [tx] = await Transaction.create([{
+            driverId,
+            amount: paymentAmount,
+            type: "fine_loan_repayment",
+            status: "successful",
+            reference: String(loan._id),
+            description: `Manual loan repayment. Loan remaining: ${loan.remainingBalance} RWF.`,
+        }], { session });
     });
+    await recordOnSchedule([{ loanId: loan._id, amount: paymentAmount, transactionId: tx._id }]);
 
-    // Notify
     const driver = await User.findById(driverId);
     if (driver) {
         const msg = loan.loanStatus === "successful"
@@ -213,56 +206,51 @@ const repayLoan = async (loanId, amount, driverId) => {
 };
 
 /**
- * Auto-deduct loan repayment from ride earnings
- * Called after each ride payment is credited
- * Returns the amount deducted (0 if no active loans)
+ * Auto-deduct loan repayment from ride earnings (after the ride payment is credited).
+ * Takes the configured % of the ride, but never more than the wallet holds, and
+ * reduces the loans only by what was actually taken. Returns the amount deducted.
  */
 const autoDeductFromRide = async (driverId, rideEarning) => {
-    const activeLoans = await Loan.find({ driverId, loanStatus: "active" }).sort({ issuedAt: 1 });
-    if (activeLoans.length === 0) return 0;
-
-    const repaymentPercentage = await systemSettingService.getSetting("fine_loan_auto_repayment_percentage", 10);
-    const deductionAmount = Math.round(rideEarning * (repaymentPercentage / 100));
+    if (!(await Loan.exists({ driverId, loanStatus: { $in: OPEN } }))) return 0;
+    const repaymentPercentage = Number(await systemSettingService.getSetting("fine_loan_auto_repayment_percentage", 10)) || 0;
+    const deductionAmount = Math.round((Number(rideEarning) || 0) * (repaymentPercentage / 100));
     if (deductionAmount <= 0) return 0;
 
     let totalDeducted = 0;
-    let remaining = deductionAmount;
+    let payments = [];
+    await mongoose.connection.transaction(async (session) => {
+        totalDeducted = 0;
+        payments = [];
+        const openLoans = await Loan.find({ driverId, loanStatus: { $in: OPEN } }).sort({ issuedAt: 1 }).session(session);
+        const owed = openLoans.reduce((sum, l) => sum + l.remainingBalance, 0);
+        const wallet = await Wallet.findOne({ driverId }).session(session);
+        const take = Math.min(deductionAmount, owed, Math.max(0, wallet?.balance || 0));
+        if (take <= 0) return;
 
-    for (const loan of activeLoans) {
-        if (remaining <= 0) break;
+        const debited = await Wallet.updateOne({ _id: wallet._id, balance: { $gte: take } }, { $inc: { balance: -take } }, { session });
+        if (!debited.modifiedCount) return;
 
-        const payment = Math.min(remaining, loan.remainingBalance);
-        loan.remainingBalance -= payment;
-
-        if (loan.remainingBalance <= 0) {
-            loan.remainingBalance = 0;
-            loan.loanStatus = "successful";
-            loan.completedAt = new Date();
+        let remaining = take;
+        for (const loan of openLoans) {
+            if (remaining <= 0) break;
+            const payment = Math.min(remaining, loan.remainingBalance);
+            if (payment <= 0) continue;
+            applyPayment(loan, payment);
+            await loan.save({ session });
+            const [tx] = await Transaction.create([{
+                driverId,
+                amount: payment,
+                type: "fine_loan_repayment",
+                status: "successful",
+                reference: String(loan._id),
+                description: `Auto loan repayment (${repaymentPercentage}% of ride). Loan remaining: ${loan.remainingBalance} RWF.`,
+            }], { session });
+            payments.push({ loanId: loan._id, amount: payment, transactionId: tx._id });
+            remaining -= payment;
+            totalDeducted += payment;
         }
-        await loan.save();
-
-        remaining -= payment;
-        totalDeducted += payment;
-
-        // Record transaction
-        await Transaction.create({
-            driverId,
-            amount: payment,
-            type: "fine_loan_repayment",
-            status: "successful",
-            description: `Auto loan repayment (${repaymentPercentage}% of ride). Loan remaining: ${loan.remainingBalance} RWF.`,
-        });
-    }
-
-    if (totalDeducted > 0) {
-        // Debit the driver's wallet for the deduction
-        const wallet = await Wallet.findOne({ driverId });
-        if (wallet && wallet.balance >= totalDeducted) {
-            wallet.balance -= totalDeducted;
-            await wallet.save();
-        }
-    }
-
+    });
+    await recordOnSchedule(payments);
     return totalDeducted;
 };
 
@@ -298,7 +286,7 @@ const getAllLoans = async (status = null, page = 1, limit = 20) => {
 const checkOverdueLoans = async () => {
     const now = new Date();
     const overdue = await Loan.updateMany(
-        { loanStatus: "active", dueDate: { $lt: now } },
+        { loanStatus: { $in: OPEN }, dueDate: { $lt: now } },
         { $set: { loanStatus: "defaulted" } }
     );
     return overdue.modifiedCount;
