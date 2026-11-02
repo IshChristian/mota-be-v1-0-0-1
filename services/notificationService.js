@@ -48,17 +48,23 @@ const createNotification = async (userId, title, message, type = "in_app", metad
 // Ride-critical events go out on the high-priority "rides" Android channel.
 const URGENT_EVENTS = new Set(["rideRequest", "rideAccepted", "driverApproaching", "driverArrived", "rideStartRequested", "rideStopRequested", "rideCancelled", "rideExpired", "rideAssigned", "counterOffer", "chatMessage", "paymentUpdate", "safetyAlert"]);
 
+const RIDE_REQUEST_SOUND = "mota_ride_request.wav"; // bundled in the app (assets/sounds)
+
 const sendPushNotification = async (userId, title, body, data = {}) => {
     const user = await User.findById(userId).select("+pushTokens");
     const tokens = (user?.pushTokens || []).map((item) => item.token);
     if (!tokens.length) return { sent: 0 };
 
     const urgent = URGENT_EVENTS.has(data.event);
+    // New ride requests ring with MOTA's own sound and long vibration (app channel "ride_requests")
+    // and expire after 2 minutes: a phone that was offline must not ring for an offer that's gone.
+    const rideRequest = data.event === "rideRequest";
     const messages = tokens.map((to) => ({
         to,
-        sound: "default",
-        channelId: urgent ? "rides" : "default",
+        sound: rideRequest ? RIDE_REQUEST_SOUND : "default",
+        channelId: rideRequest ? "ride_requests" : urgent ? "rides" : "default",
         priority: urgent ? "high" : "default",
+        ...(rideRequest ? { ttl: 120 } : {}),
         title,
         body,
         data,
