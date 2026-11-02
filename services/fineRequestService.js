@@ -153,7 +153,8 @@ const approveFineRequest = async (requestId, adminId, overrides = {}) => {
     // Notify driver
     const driver = await User.findById(fineRequest.driverId);
     if (driver) {
-        const smsMsg = `MOTA: Your fine request (${fineRequest.fineId}) has been APPROVED. Amount: ${finalAmount} RWF. Total with interest: ${totalWithInterest} RWF. Please proceed with payment.`;
+        // The loan carries the interest (shown when the driver requests it), so the fine itself is quoted as-is.
+        const smsMsg = `MOTA: Your fine ${fineRequest.fineId} (${finalAmount} RWF) has been APPROVED. Open Loans in the MOTA app and tap Request loan to have MOTA pay it.`;
         if (driver.phone) await sendSMS(driver.phone, smsMsg, "fine_approved");
 
         if (driver.email) {
@@ -162,10 +163,8 @@ const approveFineRequest = async (requestId, adminId, overrides = {}) => {
                 <ul>
                     <li><b>Fine ID:</b> ${fineRequest.fineId}</li>
                     <li><b>Amount:</b> ${finalAmount} RWF</li>
-                    <li><b>Interest:</b> ${interestRate}%</li>
-                    <li><b>Total Due:</b> ${totalWithInterest} RWF</li>
                 </ul>
-                <p>Please log in to your MOTA account to make payment.</p>`;
+                <p>Open Loans in the MOTA app and tap Request loan to have MOTA pay this fine.</p>`;
             await sendEmail(driver.email, "MOTA Fine Approved", smsMsg, html);
         }
     }

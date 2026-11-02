@@ -44,7 +44,8 @@ const loanSchema = new mongoose.Schema(
         },
         loanStatus: {
             type: String,
-            enum: ["pending", "active", "successful", "defaulted", "rejected"],
+            // overdue: an installment was missed (still being repaid); defaulted: past the final due date.
+            enum: ["pending", "active", "overdue", "successful", "defaulted", "rejected"],
             default: "pending",
         },
         issuedAt: {
