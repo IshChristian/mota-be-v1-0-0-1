@@ -8,6 +8,7 @@ const mongoose = require("mongoose");
 const swaggerUi = require("swagger-ui-express");
 const swaggerSpec = require("./swagger");
 const financialWriteGuard = require("./middleware/financialWriteGuard");
+const { isAllowedOrigin } = require("./config/corsOrigins");
 
 // Load environment variables
 dotenv.config();
@@ -19,16 +20,9 @@ const app = express();
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
 app.use(helmet());
-const normalizeOrigin = (value) => {
-  try { return new URL(value.trim()).origin; } catch { return ""; }
-};
-const allowedOrigins = new Set([
-  "https://mota-admin-web-app.vercel.app",
-  ...(process.env.CORS_ALLOWED_ORIGINS || "").split(/[\n,]/),
-].map(normalizeOrigin).filter(Boolean));
 app.use(cors({
   origin(origin, callback) {
-    if (!origin || allowedOrigins.has(normalizeOrigin(origin))) return callback(null, true);
+    if (isAllowedOrigin(origin)) return callback(null, true);
     console.warn(`[CORS] Rejected origin: ${origin}`);
     return callback(null, false);
   },
