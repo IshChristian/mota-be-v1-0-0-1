@@ -36,9 +36,14 @@ router.post("/location", authMiddleware, async (req, res) => {
             !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
             return res.status(400).json({ message: "Valid latitude and longitude are required." });
         }
-        // Same path as PUT /api/driver/location, so the passenger's map updates live.
-        await rideEngineService.updateDriverLocation(req.user.id, latitude, longitude, heading, speed);
-        res.status(200).json({ message: "Location updated." });
+        if (req.user.role === "driver") {
+            // Same path as PUT /api/driver/location, so the passenger's map updates live.
+            await rideEngineService.updateDriverLocation(req.user.id, latitude, longitude, heading, speed);
+            return res.status(200).json({ message: "Location updated." });
+        }
+        // Passengers: shared with the assigned driver until pickup, never stored otherwise.
+        const result = await rideEngineService.updatePassengerLocation(req.user.id, latitude, longitude);
+        res.status(200).json({ message: result.shared ? "Location shared with your driver." : "No driver is on the way.", shared: result.shared });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
     }
@@ -54,11 +59,11 @@ router.get("/nearby-drivers", authMiddleware, async (req, res) => {
         }
         const vehicleType = req.query.vehicleType ? rideEngineService.normalizeVehicleType(req.query.vehicleType) : undefined;
         const drivers = await rideEngineService.findNearbyDrivers(lat, lng, radius, 25, { vehicleType, exclude: [req.user.id] });
-        // Positions are rounded (~100 m) and names omitted: passengers see availability, not who is where.
+        // Positions are rounded (~11 m) so drivers can be seen moving; names and contacts are never sent.
         res.status(200).json({ data: drivers.map((driver) => ({
             id: driver._id,
-            latitude: Math.round(driver.lastLocation.latitude * 1000) / 1000,
-            longitude: Math.round(driver.lastLocation.longitude * 1000) / 1000,
+            latitude: Math.round(driver.lastLocation.latitude * 10000) / 10000,
+            longitude: Math.round(driver.lastLocation.longitude * 10000) / 10000,
             heading: driver.lastLocation.heading,
             distanceKm: Math.round(driver.distanceKm * 10) / 10,
         })) });

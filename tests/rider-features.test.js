@@ -216,14 +216,15 @@ test("unanswered requests are re-offered to new drivers, then expire", async () 
     assert.equal((await Ride.findById(id)).rideStatus, "expired");
 });
 
-test("nearby drivers are coarse, anonymous and filterable by vehicle", async () => {
+test("nearby drivers are rounded, anonymous and filterable by vehicle", async () => {
     const passenger = await makePassenger();
     await makeDriver({ vehicleType: "moto" });
     await makeDriver({ vehicleType: "car" });
     const all = await get(`/api/realtime/nearby-drivers?lat=${KIMIHURURA.latitude}&lng=${KIMIHURURA.longitude}`, passenger);
     assert.equal(all.body.data.length, 2);
     assert.equal(all.body.data[0].firstName, undefined);
-    assert.ok(String(all.body.data[0].latitude).split(".")[1].length <= 3);
+    // ~11 m: enough to watch available drivers move, never names or contacts.
+    assert.ok(String(all.body.data[0].latitude).split(".")[1].length <= 4);
     const cars = await get(`/api/realtime/nearby-drivers?lat=${KIMIHURURA.latitude}&lng=${KIMIHURURA.longitude}&vehicleType=car`, passenger);
     assert.equal(cars.body.data.length, 1);
 });

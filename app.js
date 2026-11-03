@@ -28,7 +28,8 @@ app.use(cors({
   },
   credentials: true,
   methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key"],
+  // The live event stream (react-native-sse) also sends Cache-Control, X-Requested-With and Last-Event-ID.
+  allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key", "Cache-Control", "X-Requested-With", "Last-Event-ID"],
   optionsSuccessStatus: 204,
 }));
 // Uploads (base64 bodies) need a larger limit than the default API body size.

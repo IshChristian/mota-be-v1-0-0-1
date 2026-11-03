@@ -72,7 +72,10 @@ async function rideView(rideDoc, viewerId) {
         driverComment: ride.driverComment,
         createdAt: ride.createdAt,
     };
-    if (isDriver) { view.driverEarning = ride.driverEarning; view.commissionAmount = ride.commissionAmount; }
+    if (isDriver) {
+        view.driverEarning = ride.driverEarning; view.commissionAmount = ride.commissionAmount;
+        if (ride.passengerLocation?.latitude != null && ["accepted", "approaching", "arrived", "start_requested"].includes(ride.rideStatus)) view.passengerLocation = ride.passengerLocation;
+    }
     if (isPassenger) {
         view.counterOffers = (ride.counterOffers || []).filter((o) => o.status === "pending");
         // The passenger shows this PIN to the driver; the driver never receives it.
