@@ -8,7 +8,7 @@
 // Production web domains are added with CORS_ALLOWED_ORIGINS (comma or newline
 // separated), e.g. "https://app.mota.africa,https://mota-web.vercel.app".
 
-const DEFAULT_ORIGINS = ["https://mota-admin-web-app.vercel.app", "https://mota.tiangroupinv.rw", "http://localhost:8081"];
+const DEFAULT_ORIGINS = ["https://mota-admin-web-app.vercel.app", "https://mota.tiangroupinv.rw", "http://localhost:8081", "https://motaapp.tiangroupinv.rw", "https://motadashboard.vercel.app"];
 
 // Expo web (8081), Vite (5173) and any other local dev server.
 const LOCAL_DEV_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?$/;
