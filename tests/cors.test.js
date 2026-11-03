@@ -35,6 +35,15 @@ test("browser preflight from the Expo web app gets CORS headers", async () => {
     assert.match(res.headers["access-control-allow-headers"], /Authorization/);
 });
 
+test("the live event stream's preflight is allowed from the web app", async () => {
+    const res = await request(app).options("/api/realtime/events")
+        .set("Origin", "http://localhost:8081")
+        .set("Access-Control-Request-Method", "GET")
+        .set("Access-Control-Request-Headers", "accept,authorization,cache-control,x-requested-with,last-event-id");
+    assert.equal(res.status, 204);
+    for (const header of ["Cache-Control", "X-Requested-With", "Last-Event-ID"]) assert.match(res.headers["access-control-allow-headers"], new RegExp(header));
+});
+
 test("a request from an unknown site gets no CORS headers", async () => {
     const res = await request(app).get("/api/platform/mobile-release").set("Origin", "https://evil.example");
     assert.equal(res.headers["access-control-allow-origin"], undefined);

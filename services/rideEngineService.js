@@ -237,8 +237,8 @@ const offerPayload = async (ride, driver) => {
         rideId: ride._id,
         rideType: ride.rideType || "ride",
         vehicleType: ride.vehicleType || "motor",
-        pickup: { address: ride.pickup.name || ride.pickup.address, distanceKm: pickupDist == null ? null : Math.round(pickupDist * 10) / 10 },
-        destination: { address: ride.destination.name || ride.destination.address, distanceKm: Math.round((ride.estimatedDistanceKm || 0) * 10) / 10 },
+        pickup: { address: ride.pickup.name || ride.pickup.address, latitude: pickupLat, longitude: pickupLng, distanceKm: pickupDist == null ? null : Math.round(pickupDist * 10) / 10 },
+        destination: { address: ride.destination.name || ride.destination.address, latitude: ride.destination.latitude ?? ride.destination.lat, longitude: ride.destination.longitude ?? ride.destination.lng, distanceKm: Math.round((ride.estimatedDistanceKm || 0) * 10) / 10 },
         offeredFare: fare,
         maximumFare: ride.maximumFare,
         driverEarning,
@@ -926,6 +926,21 @@ const updateDriverLocation = async (driverId, latitude, longitude, heading, spee
     }
 };
 
+// The passenger's position is shared with the assigned driver only while the
+// driver is coming to pick them up; it stops once the trip starts.
+const PASSENGER_SHARE = ["accepted", "approaching", "arrived", "start_requested"];
+const updatePassengerLocation = async (passengerId, latitude, longitude) => {
+    const at = new Date();
+    const ride = await Ride.findOneAndUpdate(
+        { passengerId, driverId: { $ne: null }, rideStatus: { $in: PASSENGER_SHARE } },
+        { $set: { passengerLocation: { latitude, longitude, at } } },
+        { returnDocument: "after" },
+    ).select("driverId");
+    if (!ride) return { shared: false };
+    sseService.sendEventToUser(ride.driverId, "passengerLocation", { rideId: ride._id, latitude, longitude, at: at.toISOString() });
+    return { shared: true };
+};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 16. EXPIRE STALE RIDE REQUESTS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -971,6 +986,7 @@ const expireStaleRequests = async (now = new Date()) => {
 };
 
 module.exports = {
+    updatePassengerLocation,
     recordCashCollected,
     estimateFare,
     estimateOptions,

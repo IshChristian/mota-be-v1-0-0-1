@@ -144,6 +144,12 @@ const rideSchema = new mongoose.Schema({
     acceptedAt: { type: Date },
     arrivedAt: { type: Date },
     approachAlertSentAt: { type: Date },
+    // The passenger's live position while the driver is on the way (shared only with the assigned driver).
+    passengerLocation: {
+        latitude: { type: Number },
+        longitude: { type: Number },
+        at: { type: Date },
+    },
     startedAt: { type: Date },
     startRequestedAt: { type: Date },
     startConfirmedAt: { type: Date },
