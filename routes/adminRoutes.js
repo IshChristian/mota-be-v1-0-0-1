@@ -627,7 +627,7 @@ router.put("/registrations/:id/status", authorize("registration:review"), adminC
  *       500:
  *         description: Server error
  */
-router.get("/paypack/transactions", authorize("user:view"), adminController.getPaypackTransactions);
+router.get("/paypack/transactions", authorize("transaction:view"), adminController.getPaypackTransactions);
 
 /**
  * @swagger
@@ -662,7 +662,7 @@ router.get("/paypack/transactions", authorize("user:view"), adminController.getP
  *       500:
  *         description: Server error
  */
-router.get("/paypack/events", authorize("user:view"), adminController.getPaypackEvents);
+router.get("/paypack/events", authorize("transaction:view"), adminController.getPaypackEvents);
 
 /**
  * @swagger
@@ -688,6 +688,6 @@ router.get("/paypack/events", authorize("user:view"), adminController.getPaypack
  *       500:
  *         description: Server error
  */
-router.post("/paypack/sync", authorize("user:update"), adminController.syncTransactionsWithPaypack);
+router.post("/paypack/sync", authorize("transaction:sync"), adminController.syncTransactionsWithPaypack);
 
 module.exports = router;
