@@ -71,3 +71,66 @@ test("no admin list sends account secrets (drivers list)", async () => {
     assert.ok(rows.length >= 1);
     for (const row of rows) for (const key of SECRETS) assert.equal(row[key], undefined, `${key} hidden`);
 });
+
+// ── Single-use access requests ───────────────────────────────────────────
+const Notification = () => load("models/Notification.js");
+const AccessRequest = () => load("models/AccessRequest.js");
+const ask = (who, body) => request(app).post("/api/access-requests").set(who.auth).send(body);
+const decide = (who, id, decision, note = "ok") => request(app).post(`/api/access-requests/${id}/${decision}`).set(who.auth).send({ note });
+const removeUser = (who, id) => request(app).delete(`/api/admin/users/${id}`).set(who.auth);
+
+test("an approved request allows that one action on that one user, once", async () => {
+    const owner = await makePassenger({ role: "superadmin" });
+    const hr = await makePassenger({ role: "admin" });
+    const target = await makePassenger();
+    const other = await makePassenger();
+    assert.equal((await removeUser(hr, target.user._id)).status, 403, "admins can't delete users");
+
+    const asked = await ask(hr, { permission: "user:delete", targetType: "User", targetId: String(target.user._id), reason: "Duplicate account, customer asked" });
+    assert.equal(asked.status, 201, asked.body.message);
+    assert.ok(await Notification().findOne({ userId: owner.user._id, title: "Access request" }), "superadmin is told");
+    assert.equal((await removeUser(hr, target.user._id)).status, 403, "not before approval");
+
+    const approved = await decide(owner, asked.body.data._id, "approve");
+    assert.equal(approved.status, 200, approved.body.message);
+    assert.ok(await Notification().findOne({ userId: hr.user._id, title: "Access request approved" }));
+    assert.equal((await removeUser(hr, other.user._id)).status, 403, "only the approved user");
+    assert.equal((await removeUser(hr, target.user._id)).status, 200, "the approved action works");
+    const used = await AccessRequest().findById(asked.body.data._id).lean();
+    assert.equal(used.status, "used");
+    assert.equal((await removeUser(hr, other.user._id)).status, 403, "and it can't be reused");
+});
+
+test("one approval used twice at the same moment works once", async () => {
+    const owner = await makePassenger({ role: "superadmin" });
+    const hr = await makePassenger({ role: "admin" });
+    const target = await makePassenger();
+    const asked = await ask(hr, { permission: "user:delete", targetType: "User", targetId: String(target.user._id), reason: "Duplicate account" });
+    await decide(owner, asked.body.data._id, "approve");
+    const results = await Promise.all([removeUser(hr, target.user._id), removeUser(hr, target.user._id)]);
+    assert.equal(results.filter((r) => r.status === 403).length, 1, "one of them is refused");
+});
+
+test("only a superadmin approves; expired or declined approvals don't work", async () => {
+    const owner = await makePassenger({ role: "superadmin" });
+    const hr = await makePassenger({ role: "admin" });
+    const target = await makePassenger();
+    const asked = await ask(hr, { permission: "user:delete", targetType: "User", targetId: String(target.user._id), reason: "Duplicate account" });
+    assert.equal((await decide(hr, asked.body.data._id, "approve")).status, 403, "can't approve your own or anyone's");
+    await decide(owner, asked.body.data._id, "approve");
+    await AccessRequest().updateOne({ _id: asked.body.data._id }, { $set: { expiresAt: new Date(Date.now() - 1000) } });
+    assert.equal((await removeUser(hr, target.user._id)).status, 403, "expired");
+
+    const again = await ask(hr, { permission: "user:delete", targetType: "User", targetId: String(target.user._id), reason: "Still a duplicate" });
+    assert.equal((await decide(owner, again.body.data._id, "decline", "Merge instead")).status, 200);
+    assert.equal((await removeUser(hr, target.user._id)).status, 403, "declined");
+});
+
+test("requests are refused for permissions you have or that only the superadmin holds", async () => {
+    const hr = await makePassenger({ role: "admin" });
+    assert.equal((await ask(hr, { permission: "user:view", reason: "Need to look users up" })).status, 400);
+    assert.equal((await ask(hr, { permission: "access_request:approve", reason: "Approve for others" })).status, 400);
+    assert.equal((await ask(hr, { permission: "made:up", reason: "Something else" })).status, 400);
+    const mine = await request(app).get("/api/access-requests?mine=1").set(hr.auth);
+    assert.equal(mine.status, 200);
+});

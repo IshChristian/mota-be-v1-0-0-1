@@ -110,6 +110,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/roles", roleRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/access-requests", require("./routes/accessRequestRoutes"));
 app.use("/api/settings", settingRoutes);
 app.use("/api/search", searchRoutes);
 app.use("/api/uploads", uploadRoutes);
