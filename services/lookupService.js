@@ -271,8 +271,8 @@ const computeFinancialSummary = async (driverId, transactions) => {
         .reduce((sum, t) => sum + Math.abs(t.amount), 0);
 
     const commissionPaid = transactions
-        .filter(t => t.type === "platform_commission")
-        .reduce((sum, t) => sum + t.amount, 0);
+        .filter(t => t.type === "platform_commission" && t.status === "successful")
+        .reduce((sum, t) => sum + Math.abs(t.amount), 0);
 
     return {
         totalEarnings: earnings,

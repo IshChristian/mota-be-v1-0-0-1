@@ -556,11 +556,12 @@ const confirmStop = async (passengerId, rideId) => {
         const session = await mongoose.startSession();
         try {
             await session.withTransaction(async () => {
-                const { commission, driverEarning } = await walletService.calculateCommission(ride.fare);
+                // Settle with the commission the driver was shown when accepting.
+                const { commission, driverEarning } = await walletService.rideCommission(ride);
                 const passengerWallet = await Wallet.findOneAndUpdate({ driverId: passengerId, balance: { $gte: ride.fare } }, { $inc: { balance: -ride.fare } }, { returnDocument: "after", session });
                 if (!passengerWallet) throw new Error("Insufficient wallet balance. Top up before completing payment.");
-                await Wallet.findOneAndUpdate({ driverId: ride.driverId }, { $inc: { balance: driverEarning }, $setOnInsert: { driverId: ride.driverId } }, { upsert: true, returnDocument: "after", session });
-                await Transaction.create([{ driverId: passengerId, rideId: ride._id, amount: -ride.fare, type: "ride_payment", status: "successful", description: `Wallet payment for ride ${ride._id}` }, { driverId: ride.driverId, rideId: ride._id, amount: driverEarning, feeAmount: commission, type: "ride_payment", status: "successful", description: `Ride earning after ${commission} RWF commission` }], { session, ordered: true });
+                await Transaction.create([{ driverId: passengerId, rideId: ride._id, amount: -ride.fare, type: "ride_payment", status: "successful", description: `Wallet payment for ride ${ride._id}` }], { session });
+                await walletService.creditRideEarning({ driverId: ride.driverId, rideId: ride._id, fare: ride.fare, commission }, session);
                 ride.paymentStatus = "successful";
                 ride.commissionAmount = commission;
                 ride.driverEarning = driverEarning;
@@ -575,13 +576,13 @@ const confirmStop = async (passengerId, rideId) => {
 };
 
 /**
- * The driver confirms the passenger paid cash. No wallet balance moves: the
- * driver already holds the fare. The platform commission is recorded as a
- * pending "commission" ledger row (owed by the driver) for finance to settle.
+ * The driver confirms the passenger paid cash. The driver already holds the
+ * fare, so MOTA's commission is charged to the driver's wallet (anything the
+ * balance cannot cover stays owed and is collected from the next money in).
  * The conditional update makes retries a no-op.
  */
 const recordCashCollected = async (ride) => {
-    const { commission, driverEarning } = await walletService.calculateCommission(ride.fare);
+    const { commission, driverEarning } = await walletService.rideCommission(ride);
     const session = await mongoose.startSession();
     let updated;
     try {
@@ -592,10 +593,7 @@ const recordCashCollected = async (ride) => {
                 { returnDocument: "after", session }
             );
             if (!updated) return;
-            await Transaction.create([{
-                driverId: ride.driverId, rideId: ride._id, amount: -commission, type: "commission", status: "pending",
-                description: `Commission owed on cash ride ${ride._id} (fare ${ride.fare} RWF collected in cash)`,
-            }], { session });
+            await walletService.chargeCashRideCommission({ driverId: ride.driverId, rideId: ride._id, fare: ride.fare, commission }, session);
         });
     } finally {
         await session.endSession();

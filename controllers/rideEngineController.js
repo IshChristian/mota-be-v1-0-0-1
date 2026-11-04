@@ -274,9 +274,11 @@ const getRideById = async (req, res) => {
         if (!allowed) return res.status(403).json({ status: "error", message: "Not authorized to view this ride." });
         const view = await riderFeatures.rideView(ride, userId);
         if (String(ride.passengerId?._id || ride.passengerId) !== userId) {
-            // Drivers (assigned or offered) see what they would take home from this fare.
-            const earning = await walletService.calculateCommission(ride.fare ?? ride.offeredFare ?? 0);
-            Object.assign(view, { driverEarning: earning.driverEarning, commissionAmount: earning.commission, commissionRate: earning.commissionRate });
+            // Drivers see what they take home: the commission fixed when the ride was
+            // accepted (what settlement charges), or today's rate for an open request.
+            const fare = Number(ride.fare ?? ride.offeredFare ?? 0);
+            const earning = await walletService.rideCommission(ride, fare);
+            Object.assign(view, { driverEarning: earning.driverEarning, commissionAmount: earning.commission, commissionRate: fare > 0 ? earning.commission / fare : 0 });
         }
         res.status(200).json({ status: "success", data: { ride: view } });
     } catch (error) {

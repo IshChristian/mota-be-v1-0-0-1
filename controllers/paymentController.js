@@ -164,114 +164,105 @@ const handleWebhook = async (req, res) => {
                 }
                 return res.status(200).json({ message: "Cash-in webhook processed" });
             }
+
+            // Ride payments (app MoMo rides, logged rides, USSD): fare in,
+            // commission out, credited once even if Paypack retries or the
+            // status poller replays this event.
+            const isRidePayment = tx.type === "ride_payment" || (tx.type === "cash_in" && tx.rideId);
+            if (isRidePayment) {
+                if (Number(amount) !== Math.abs(tx.amount)) {
+                    return res.status(409).json({ message: "Paypack event does not match the pending ride payment." });
+                }
+                const settlement = await walletService.settleRidePaymentTransaction(tx._id, payload);
+                txBus.emit(`tx:${ref}`);
+                if (!settlement.credited) return res.status(200).json({ message: "Ride payment already processed" });
+                const { commission, driverEarning } = settlement;
+                if (tx.rideId) await announceRidePayment(tx.rideId, "successful");
+                const user = await User.findById(tx.driverId);
+
+                const newBalance = settlement.wallet?.balance || 0;
+
+                // 1. Send SMS to rider
+                if (user) {
+                    await sendSMS(
+                        user.phone,
+                        `MOTA Payment\nYou received ${amount} RWF from passenger.\nEarnings: ${driverEarning} RWF\nBalance: ${newBalance} RWF`,
+                        "payment_received"
+                    );
+
+                    // 2. Send Email to rider
+                    if (user.email) {
+                        const riderHtml = `<h3>Payment Received</h3>
+                            <p>Hello ${user.firstName},</p>
+                            <p>You have received a ride payment via MOTA.</p>
+                            <ul>
+                                <li><b>Base Amount:</b> ${amount} RWF</li>
+                                <li><b>Your Earnings (after comm.):</b> ${driverEarning} RWF</li>
+                                <li><b>Updated Wallet Balance:</b> ${newBalance} RWF</li>
+                            </ul>`;
+                        await sendEmail(user.email, "MOTA: Payment Received", "", riderHtml);
+                    }
+                }
+
+                // 3. Send Email to Admin
+                const adminEmail = process.env.ADMIN_EMAIL || "admin@mota.rw";
+                const adminHtml = `<h3>New Ride Payment Confirmation</h3>
+                    <p>A ride payment has been successfully processed.</p>
+                    <ul>
+                        <li><b>Driver:</b> ${user ? `${user.firstName} ${user.lastName} (${user.phone})` : tx.driverId}</li>
+                        <li><b>Amount Paid:</b> ${amount} RWF</li>
+                        <li><b>Commission:</b> ${commission} RWF</li>
+                        <li><b>Paid via:</b> Paypack (Ref: ${ref})</li>
+                    </ul>`;
+                await sendEmail(adminEmail, "MOTA Admin: Ride Payment Alert", "", adminHtml);
+
+                // ── Update streak / tier / algorithm ────────────────────
+                // IMPORTANT: ride.paymentStatus was just set to "successful"
+                // above, so countDocuments({ paymentStatus: "successful" })
+                // in streakService will now include this ride correctly.
+                // Rides that are still "pending" are NOT counted toward the
+                // 20-ride daily target.
+                try {
+                    const { updateStreak } = require("../services/streakService");
+                    const { updateTier }   = require("../services/tierService");
+                    const algorithmService = require("../services/algorithmService");
+
+                    await updateStreak(tx.driverId.toString());
+                    await updateTier(tx.driverId.toString());
+
+                    try {
+                        await algorithmService.processRide(tx.driverId.toString());
+                    } catch (algoErr) {
+                        console.error("Algorithm engine error (non-blocking):", algoErr.message);
+                    }
+                } catch (statErr) {
+                    console.error("Streak/tier update error (non-blocking):", statErr.message);
+                }
+
+                // ── Auto-deduct loan repayment from ride earnings ─────────
+                try {
+                    const loanDeducted = await loanService.autoDeductFromRide(tx.driverId.toString(), driverEarning);
+                    if (loanDeducted > 0 && user) {
+                        const updatedWallet = await Wallet.findOne({ driverId: tx.driverId });
+                        await sendSMS(
+                            user.phone,
+                            `MOTA Loan\nAuto-repayment of ${loanDeducted} RWF deducted from ride earnings.\nWallet Balance: ${updatedWallet?.balance || 0} RWF`,
+                            "fine_loan_repayment"
+                        );
+                    }
+                } catch (loanErr) {
+                    console.error("Loan auto-deduction error:", loanErr.message);
+                }
+
+                return res.status(200).json({ message: "Ride payment webhook processed" });
+            }
+
             tx.status = "successful";
             tx.paypackEvent = payload;
             await tx.save();
 
             // ⚡ Instantly notify any SSE listeners watching this ref
             txBus.emit(`tx:${ref}`);
-
-            // Unified Cash In handler — ride-based, pure wallet deposit or USSD ride payment
-            if (tx.driverId) {
-                const user = await User.findById(tx.driverId);
-                const isRidePayment = tx.type === "ride_payment" || (tx.type === "cash_in" && tx.rideId);
-
-                if (isRidePayment) {
-                    // Ride-related payment (triggered by driver log or USSD passenger pay)
-                    // Calculate commission (logic inside creditRidePayment or manually here)
-                    const { commission, driverEarning } = await walletService.calculateCommission(amount);
-
-                    // Credit the rider's wallet
-                    await walletService.creditWallet(
-                        tx.driverId.toString(),
-                        driverEarning,
-                        "ride_payment",
-                        { paypackRef: ref, description: tx.description || `Ride payment received: ${amount} RWF` }
-                    );
-
-                    // If it was a logged ride, update ride status
-                    if (tx.rideId) {
-                        await Ride.findByIdAndUpdate(tx.rideId, { paymentStatus: "successful" });
-                        await announceRidePayment(tx.rideId, "successful");
-                    }
-
-                    const wallet = await Wallet.findOne({ driverId: tx.driverId });
-                    const newBalance = wallet ? wallet.balance : 0;
-
-                    // 1. Send SMS to rider
-                    if (user) {
-                        await sendSMS(
-                            user.phone,
-                            `MOTA Payment\nYou received ${amount} RWF from passenger.\nEarnings: ${driverEarning} RWF\nBalance: ${newBalance} RWF`,
-                            "payment_received"
-                        );
-
-                        // 2. Send Email to rider
-                        if (user.email) {
-                            const riderHtml = `<h3>Payment Received</h3>
-                                <p>Hello ${user.firstName},</p>
-                                <p>You have received a ride payment via MOTA.</p>
-                                <ul>
-                                    <li><b>Base Amount:</b> ${amount} RWF</li>
-                                    <li><b>Your Earnings (after comm.):</b> ${driverEarning} RWF</li>
-                                    <li><b>Updated Wallet Balance:</b> ${newBalance} RWF</li>
-                                </ul>`;
-                            await sendEmail(user.email, "MOTA: Payment Received", "", riderHtml);
-                        }
-                    }
-
-                    // 3. Send Email to Admin
-                    const adminEmail = process.env.ADMIN_EMAIL || "admin@mota.rw";
-                    const adminHtml = `<h3>New Ride Payment Confirmation</h3>
-                        <p>A ride payment has been successfully processed.</p>
-                        <ul>
-                            <li><b>Driver:</b> ${user ? `${user.firstName} ${user.lastName} (${user.phone})` : tx.driverId}</li>
-                            <li><b>Amount Paid:</b> ${amount} RWF</li>
-                            <li><b>Commission:</b> ${commission} RWF</li>
-                            <li><b>Paid via:</b> Paypack (Ref: ${ref})</li>
-                        </ul>`;
-                    await sendEmail(adminEmail, "MOTA Admin: Ride Payment Alert", "", adminHtml);
-
-                    // ── Update streak / tier / algorithm ────────────────────
-                    // IMPORTANT: ride.paymentStatus was just set to "successful"
-                    // above, so countDocuments({ paymentStatus: "successful" })
-                    // in streakService will now include this ride correctly.
-                    // Rides that are still "pending" are NOT counted toward the
-                    // 20-ride daily target.
-                    try {
-                        const { updateStreak } = require("../services/streakService");
-                        const { updateTier }   = require("../services/tierService");
-                        const algorithmService = require("../services/algorithmService");
-
-                        await updateStreak(tx.driverId.toString());
-                        await updateTier(tx.driverId.toString());
-
-                        try {
-                            await algorithmService.processRide(tx.driverId.toString());
-                        } catch (algoErr) {
-                            console.error("Algorithm engine error (non-blocking):", algoErr.message);
-                        }
-                    } catch (statErr) {
-                        console.error("Streak/tier update error (non-blocking):", statErr.message);
-                    }
-
-                    // ── Auto-deduct loan repayment from ride earnings ─────────
-                    try {
-                        const loanDeducted = await loanService.autoDeductFromRide(tx.driverId.toString(), driverEarning);
-                        if (loanDeducted > 0 && user) {
-                            const updatedWallet = await Wallet.findOne({ driverId: tx.driverId });
-                            await sendSMS(
-                                user.phone,
-                                `MOTA Loan\nAuto-repayment of ${loanDeducted} RWF deducted from ride earnings.\nWallet Balance: ${updatedWallet?.balance || 0} RWF`,
-                                "fine_loan_repayment"
-                            );
-                        }
-                    } catch (loanErr) {
-                        console.error("Loan auto-deduction error:", loanErr.message);
-                    }
-
-                }
-            }
         } else if (normalizedStatus === "failed") {
             tx.status = "failed";
             tx.paypackEvent = payload;

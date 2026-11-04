@@ -217,7 +217,8 @@ const calculateRevenue = async () => {
     // Platform commission from rides
     const commissionAgg = await Transaction.aggregate([
         { $match: { type: "platform_commission", status: "successful" } },
-        { $group: { _id: null, total: { $sum: "$amount" } } },
+        // Rows are driver wallet movements (negative); revenue is their size.
+        { $group: { _id: null, total: { $sum: { $abs: "$amount" } } } },
     ]);
     const totalCommissions = commissionAgg[0]?.total || 0;
 

@@ -237,7 +237,7 @@ test("place search endpoint validates and degrades gracefully", async () => {
     assert.equal((await get("/api/maps/reverse?lat=x&lng=1", passenger)).status, 400);
 });
 
-test("cash ride: driver confirms cash, commission recorded as owed exactly once", async () => {
+test("cash ride: driver confirms cash, commission charged exactly once (owed while the wallet is empty)", async () => {
     const Transaction = load("models/Transaction.js");
     const passenger = await makePassenger();
     const driver = await makeDriver();
@@ -250,11 +250,11 @@ test("cash ride: driver confirms cash, commission recorded as owed exactly once"
     const ride = await Ride.findById(id);
     assert.equal(ride.rideStatus, "completed");
     assert.equal(ride.paymentStatus, "successful");
-    const owed = await Transaction.find({ rideId: id, type: "commission" });
+    const owed = await Transaction.find({ rideId: id, type: "platform_commission" });
     assert.equal(owed.length, 1, "retries don't double-charge");
-    assert.equal(owed[0].status, "pending");
+    assert.equal(owed[0].status, "pending", "empty wallet: commission stays owed");
     assert.equal(owed[0].amount, -ride.commissionAmount);
-    assert.equal(await Wallet.countDocuments({ driverId: driver.user._id, balance: { $gt: 0 } }), 0, "no wallet money moved");
+    assert.equal(await Wallet.countDocuments({ driverId: driver.user._id, balance: { $lt: 0 } }), 0, "balance never goes negative");
 });
 
 test("ride reports become support cases; platform status says which payments are live", async () => {

@@ -3,6 +3,7 @@ const Transaction = require("../models/Transaction");
 const Fine = require("../models/Fine");
 const { sendSMS } = require("./smsService");
 const User = require("../models/User");
+const Ride = require("../models/Ride");
 const configService = require("./configService");
 const mongoose = require("mongoose");
 
@@ -299,6 +300,12 @@ const creditWallet = async (driverId, amount, type, meta = {}) => {
         paypackRef: meta.paypackRef || null,
     });
 
+    // Money in pays off commission still owed from cash rides first.
+    try {
+        if (await collectOwedCommission(driverId) > 0) return getOrCreateWallet(driverId);
+    } catch (error) {
+        console.error("Owed commission collection failed:", error.message);
+    }
     return wallet;
 };
 
@@ -352,6 +359,7 @@ const settleCashInTransaction = async (transactionId, payload) => {
             { $inc: { balance: Math.abs(tx.amount) }, $setOnInsert: { driverId: tx.driverId } },
             { returnDocument: "after", upsert: true, session, setDefaultsOnInsert: true },
         );
+        if (await collectOwedCommission(tx.driverId, session) > 0) wallet = await Wallet.findOne({ driverId: tx.driverId }).session(session);
         credited = true;
     });
     return { credited, wallet };
@@ -366,6 +374,123 @@ const calculateCommission = async (fare) => {
     const commission = Math.round(fare * (commissionPercentage / 100));
     const driverEarning = fare - commission;
     return { commission, driverEarning, commissionRate: commissionPercentage / 100 };
+};
+
+/**
+ * The commission a ride settles with: the amount stored on the ride (what the
+ * driver was shown when they accepted), or today's rate when the ride has none
+ * or the fare being settled differs from the ride's fare.
+ */
+const rideCommission = async (ride, fare = Number(ride?.fare) || 0) => {
+    const shown = Number(ride?.commissionAmount);
+    if (ride && Number(ride.fare) === fare && Number.isFinite(shown) && shown >= 0 && shown <= fare) {
+        return { commission: shown, driverEarning: fare - shown };
+    }
+    const { commission, driverEarning } = await calculateCommission(fare);
+    return { commission, driverEarning };
+};
+
+const inTransaction = (session, work) => (session ? work(session) : mongoose.connection.transaction(work));
+
+/**
+ * Collect commission the driver still owes (cash rides finished while the
+ * wallet could not cover it) from their balance, oldest first. The balance
+ * never goes below zero: whatever is not covered stays pending for the next
+ * money in. Returns the amount collected.
+ */
+const collectOwedCommission = async (driverId, session) => {
+    let collected = 0;
+    await inTransaction(session, async (s) => {
+        collected = 0;
+        const owed = await Transaction.find({ driverId, type: "platform_commission", status: "pending" }).sort({ createdAt: 1, _id: 1 }).session(s);
+        for (const row of owed) {
+            const wallet = await Wallet.findOne({ driverId }).session(s);
+            const due = Math.abs(row.amount);
+            const take = Math.min(due, Math.max(0, Math.floor(wallet?.balance || 0)));
+            if (take <= 0) break;
+            // Claim the row before moving money: a concurrent collector conflicts here and retries.
+            const claimed = await Transaction.findOneAndUpdate(
+                { _id: row._id, status: "pending", amount: row.amount },
+                take === due
+                    ? { $set: { status: "successful", description: `${row.description || "Ride commission"} (collected from wallet)` } }
+                    : { $set: { amount: -(due - take) } },
+                { returnDocument: "after", session: s },
+            );
+            if (!claimed) continue;
+            const debited = await Wallet.findOneAndUpdate({ driverId, balance: { $gte: take } }, { $inc: { balance: -take } }, { returnDocument: "after", session: s });
+            if (!debited) throw new Error("Wallet balance changed while collecting commission.");
+            if (take < due) {
+                await Transaction.create([{
+                    driverId, rideId: row.rideId, amount: -take, type: "platform_commission", status: "successful",
+                    description: `Part of the commission owed on ride ${row.rideId} (collected from wallet)`,
+                }], { session: s });
+            }
+            collected += take;
+        }
+    });
+    return collected;
+};
+
+/**
+ * Cash ride: the driver already holds the whole fare, so MOTA's commission is
+ * charged to their wallet. It is recorded as owed and collected straight away
+ * as far as the balance allows. Must run inside the caller's transaction.
+ */
+const chargeCashRideCommission = async ({ driverId, rideId, fare, commission }, session) => {
+    if (!(commission > 0)) return 0;
+    await Transaction.create([{
+        driverId, rideId, amount: -commission, type: "platform_commission", status: "pending",
+        description: `MOTA commission on cash ride ${rideId} (fare ${fare} RWF collected in cash)`,
+    }], { session });
+    return collectOwedCommission(driverId, session);
+};
+
+/**
+ * Paid ride (wallet or MoMo): the fare goes in, the commission goes out, as
+ * ledger rows that add up to the balance change (fare - commission). Pass
+ * `fareRecorded` when a payment row for the fare already exists (MoMo).
+ * Must run inside the caller's transaction.
+ */
+const creditRideEarning = async ({ driverId, rideId, fare, commission, fareRecorded = false }, session) => {
+    await Wallet.findOneAndUpdate({ driverId }, { $inc: { balance: fare - commission } }, { upsert: true, returnDocument: "after", session, setDefaultsOnInsert: true });
+    const rows = [];
+    if (!fareRecorded) rows.push({ driverId, rideId, amount: fare, feeAmount: commission, type: "ride_payment", status: "successful", description: `Ride fare (${commission} RWF MOTA commission)` });
+    if (commission > 0) rows.push({ driverId, rideId, amount: -commission, type: "platform_commission", status: "successful", description: `MOTA commission on ride ${rideId}` });
+    if (rows.length) await Transaction.create(rows, { session, ordered: true });
+    await collectOwedCommission(driverId, session);
+    return Wallet.findOne({ driverId }).session(session);
+};
+
+/**
+ * Idempotently settle a confirmed Paypack ride payment (app MoMo rides, logged
+ * rides, USSD). The pending payment row becomes the "fare in" row, the
+ * driver is credited fare minus commission, and the commission is recorded,
+ * all in one transaction so webhook retries and status polling are no-ops.
+ */
+const settleRidePaymentTransaction = async (transactionId, payload) => {
+    let result = { credited: false };
+    await mongoose.connection.transaction(async (session) => {
+        result = { credited: false };
+        const tx = await Transaction.findOneAndUpdate(
+            { _id: transactionId, status: "pending", type: { $in: ["cash_in", "ride_payment"] } },
+            { $set: { status: "successful", paypackEvent: payload } },
+            { returnDocument: "after", session },
+        );
+        if (!tx) return;
+        const fare = Math.abs(tx.amount);
+        const ride = tx.rideId ? await Ride.findById(tx.rideId).session(session) : null;
+        const { commission, driverEarning } = await rideCommission(ride, fare);
+        await Transaction.updateOne({ _id: tx._id }, { $set: { feeAmount: commission } }, { session });
+        const wallet = await creditRideEarning({ driverId: tx.driverId, rideId: tx.rideId, fare, commission, fareRecorded: true }, session);
+        if (ride) {
+            ride.paymentStatus = "successful";
+            ride.commissionAmount = commission;
+            ride.driverEarning = driverEarning;
+            await ride.save({ session });
+        }
+        result = { credited: true, tx, wallet, fare, commission, driverEarning };
+    });
+    return result;
 };
 
 /**
@@ -545,6 +670,11 @@ module.exports = {
     debitWallet,
     settleCashInTransaction,
     calculateCommission,
+    rideCommission,
+    collectOwedCommission,
+    chargeCashRideCommission,
+    creditRideEarning,
+    settleRidePaymentTransaction,
     creditRidePayment,
     agentCashIn,
     processCashOut,
