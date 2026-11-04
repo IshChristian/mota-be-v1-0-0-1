@@ -159,3 +159,19 @@ test("post-deploy migration grants withdrawal access and sends old queued withdr
     assert.ok(role.permissions.includes("custom:kept"), "existing role edits are kept");
     assert.equal((await WithdrawalRequest.findById(old._id)).status, "provider_pending");
 });
+
+test("a request left mid-dispatch by a restart goes to staff with an alert", async () => {
+    const driver = await makeDriver();
+    const finance = await makePassenger({ role: "financial" });
+    await fund(driver.user._id, 0);
+    const stuck = await WithdrawalRequest.create({ driverId: driver.user._id, amount: 2000, fee: 40, totalHeld: 2040, phone: driver.user.phone, idempotencyKey: "stuck-1", status: "processing", batchId: "b-stuck" });
+    await WithdrawalRequest.collection.updateOne({ _id: stuck._id }, { $set: { updatedAt: new Date(Date.now() - 15 * 60000) } });
+    const fresh = await WithdrawalRequest.create({ driverId: driver.user._id, amount: 1000, fee: 20, totalHeld: 1020, phone: driver.user.phone, idempotencyKey: "fresh-1", status: "processing", batchId: "b-fresh" });
+    const { recoverStuckDispatches } = load("services/withdrawalService.js");
+    assert.equal(await recoverStuckDispatches(), 1);
+    const moved = await WithdrawalRequest.findById(stuck._id).lean();
+    assert.equal(moved.status, "manual_required");
+    assert.match(moved.failureReason, /check Paypack/i, "staff are told to check before paying");
+    assert.equal((await WithdrawalRequest.findById(fresh._id)).status, "processing", "a request still being sent is left alone");
+    assert.ok(await Notification.findOne({ userId: finance.user._id, title: "Automatic cash-out failed" }));
+});

@@ -136,6 +136,10 @@ const runTransactionSync = async () => {
 };
 
 const initCron = () => {
+    // Withdrawals left mid-dispatch by a restart go to staff (every 5 minutes).
+    setInterval(() => {
+        require("./withdrawalService").recoverStuckDispatches().catch((error) => console.error("Stuck withdrawal check failed:", error.message));
+    }, 5 * 60 * 1000);
     require("./supportAlerts").startSupportAlerts();
     // Basic polling cron - checks every hour if the day has changed since last run
     setInterval(() => {

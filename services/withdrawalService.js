@@ -215,6 +215,28 @@ const settleWebhook = async (paypackRef, status, kind, amount, payload) => {
     return { handled: true };
 };
 
+/**
+ * A request left in "processing" (server restarted while talking to Paypack)
+ * would hold money with nobody told. After `olderThanMs` it goes to staff
+ * like a refusal, with a warning to check Paypack before paying manually.
+ */
+const STUCK_REASON = "Payout status unknown: the server restarted while sending it to Paypack. Check Paypack for this payout before paying manually.";
+const recoverStuckDispatches = async (olderThanMs = 10 * 60 * 1000) => {
+    const stuck = await WithdrawalRequest.find({ status: "processing", updatedAt: { $lt: new Date(Date.now() - olderThanMs) } }).select("_id").lean();
+    let moved = 0;
+    for (const { _id } of stuck) {
+        const request = await WithdrawalRequest.findOneAndUpdate(
+            { _id, status: "processing" },
+            { $set: { status: "manual_required", failureReason: STUCK_REASON }, $push: { attempts: { at: new Date(), kind: "auto", ok: false, reason: STUCK_REASON } } },
+            { returnDocument: "after" },
+        );
+        if (!request) continue;
+        moved += 1;
+        try { await alertManualPayout(request, STUCK_REASON); } catch (error) { console.error("Manual payout alert failed:", error.message); }
+    }
+    return moved;
+};
+
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 
 /**
@@ -279,4 +301,4 @@ const retryPayout = async (id) => {
     return result;
 };
 
-module.exports = { dispatchRequest, alertManualPayout, requestWithdrawal, settleWebhook, markPaidManually, returnToWallet, retryPayout, ALERT_TITLE };
+module.exports = { dispatchRequest, alertManualPayout, recoverStuckDispatches, requestWithdrawal, settleWebhook, markPaidManually, returnToWallet, retryPayout, ALERT_TITLE };
