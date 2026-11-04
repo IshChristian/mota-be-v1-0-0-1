@@ -6,93 +6,80 @@ const WithdrawalRequest = require("../models/WithdrawalRequest");
 const configService = require("./configService");
 const paymentService = require("./paymentService");
 
-const PAYPACK_MINIMUM = Number(process.env.PAYPACK_CASHOUT_MINIMUM || 10000);
+const STAFF_ROLES = ["superadmin", "admin", "financial", "agent", "caller_support", "manager", "moderator"];
+const ALERT_TITLE = "Automatic cash-out failed";
 
-const releaseBatch = async (batchId, reason) => {
-    await mongoose.connection.transaction(async (session) => {
-        const requests = await WithdrawalRequest.find({ batchId, status: "processing" }).session(session);
-        if (!requests.length) return;
-        const totalHeld = requests.reduce((sum, item) => sum + item.totalHeld, 0);
-        const walletUpdate = await Wallet.updateOne(
-            { driverId: requests[0].driverId, heldBalance: { $gte: totalHeld } },
-            { $inc: { balance: totalHeld, heldBalance: -totalHeld } },
-            { session },
-        );
-        if (walletUpdate.modifiedCount !== 1) throw new Error("Held withdrawal balance is inconsistent.");
-        await WithdrawalRequest.updateMany(
-            { batchId, status: "processing" },
-            { $set: { status: "failed", failureReason: reason } },
-            { session },
-        );
-        await Transaction.updateMany(
-            { batchId, type: "cash_out", status: "pending" },
-            { $set: { status: "failed", description: `Withdrawal failed: ${reason}` } },
-            { session },
-        );
-    });
+/** A short, human-readable reason from whatever the provider returned. */
+const providerReason = (result) => {
+    const raw = result?.error?.message || result?.error || result?.message || "Paypack did not return a payout reference";
+    return (typeof raw === "string" ? raw : JSON.stringify(raw)).slice(0, 300);
+};
+/** Provider reply kept for the record, trimmed and without anything resembling credentials. */
+const recordable = (result) => {
+    try {
+        const text = JSON.stringify(result ?? null, (key, value) => (/token|secret|authorization|password/i.test(key) ? "[removed]" : value));
+        return JSON.parse(text.length > 2000 ? JSON.stringify({ truncated: text.slice(0, 2000) }) : text);
+    } catch { return null; }
 };
 
-const dispatchQueued = async (driverId, phone) => {
-    let claimed = [];
-    let batchId = null;
-    let payoutAmount = 0;
+/**
+ * Tell every active staff member who can manage withdrawals that an automatic
+ * payout failed and needs a manual payout or a return to the wallet.
+ */
+const alertManualPayout = async (request, reason) => {
+    const User = require("../models/User");
+    const notificationService = require("./notificationService");
+    const { effectivePermissions } = require("./reportAccess");
+    const [owner, staff] = await Promise.all([
+        User.findById(request.driverId).select("firstName lastName").lean(),
+        User.find({ role: { $in: STAFF_ROLES }, isActive: true }).select("role roleId reportPermissions permissionGrants permissionRevokes").populate("roleId", "permissions").lean(),
+    ]);
+    const recipients = staff.filter((member) => effectivePermissions(member).includes("withdrawal:manage"));
+    const name = owner ? `${owner.firstName || ""} ${owner.lastName || ""}`.trim() : "unknown user";
+    const message = `Automatic cash-out of ${request.amount} RWF for user ${name} (${request.driverId}) failed: ${reason}. Pay it manually or return it to the wallet.`;
+    await Promise.allSettled(recipients.map((member) => notificationService.createNotification(
+        member._id, ALERT_TITLE, message, "in_app", { withdrawalRequestId: String(request._id), userId: String(request.driverId) },
+    )));
+    await WithdrawalRequest.updateOne({ _id: request._id }, { $set: { alertedAt: new Date(), alertedStaff: recipients.map((m) => m._id) } });
+};
 
-    await mongoose.connection.transaction(async (session) => {
-        const queued = await WithdrawalRequest.find({ driverId, status: "queued" })
-            .sort({ createdAt: 1 })
-            .session(session);
-        payoutAmount = queued.reduce((sum, item) => sum + item.amount, 0);
-        if (payoutAmount < PAYPACK_MINIMUM) return;
-
-        batchId = crypto.randomUUID();
-        const ids = queued.map((item) => item._id);
-        const claim = await WithdrawalRequest.updateMany(
-            { _id: { $in: ids }, status: "queued" },
-            { $set: { status: "processing", batchId } },
-            { session },
-        );
-        if (claim.modifiedCount !== ids.length) throw new Error("Withdrawal queue changed; retry the request.");
-        await Transaction.updateMany(
-            { reference: { $in: ids.map(String) }, type: "cash_out", status: "pending" },
-            { $set: { batchId } },
-            { session },
-        );
-        claimed = queued;
-    });
-
-    if (!claimed.length) {
-        const queuedTotal = await WithdrawalRequest.aggregate([
-            { $match: { driverId: new mongoose.Types.ObjectId(driverId), status: "queued" } },
-            { $group: { _id: null, total: { $sum: "$amount" } } },
-        ]);
-        const total = queuedTotal[0]?.total || 0;
-        return { status: "queued", queuedTotal: total, remainingToDispatch: Math.max(0, PAYPACK_MINIMUM - total) };
-    }
-
-    const result = await paymentService.requestCashOut(
-        phone,
-        payoutAmount,
-        process.env.PAYPACK_ENV || "development",
+/**
+ * Send one withdrawal request to Paypack. `auto` takes a newly queued request,
+ * `retry` one waiting for staff. Accepted → provider_pending (the webhook
+ * settles it). Refused or errored → manual_required: the money stays held and
+ * withdrawal managers are alerted. Every attempt is recorded.
+ */
+const dispatchRequest = async (requestId, kind = "auto") => {
+    const from = kind === "retry" ? "manual_required" : "queued";
+    const batchId = crypto.randomUUID();
+    const claimed = await WithdrawalRequest.findOneAndUpdate(
+        { _id: requestId, status: from },
+        { $set: { status: "processing", batchId } },
+        { returnDocument: "after" },
     );
-    if (!result.success || !result.data?.ref) {
-        await releaseBatch(batchId, "Paypack rejected the payout batch");
-        throw new Error("Paypack could not start the withdrawal. Reserved funds were restored.");
+    if (!claimed) {
+        const current = await WithdrawalRequest.findById(requestId).select("status paypackRef").lean();
+        return { status: current?.status || "missing", paypackRef: current?.paypackRef };
     }
+    await Transaction.updateMany({ reference: String(claimed._id), type: "cash_out", status: "pending" }, { $set: { batchId } });
 
-    const paypackRef = result.data.ref;
-    await mongoose.connection.transaction(async (session) => {
-        await WithdrawalRequest.updateMany(
-            { batchId, status: "processing" },
-            { $set: { status: "provider_pending", paypackRef } },
-            { session },
-        );
-        await Transaction.updateMany(
-            { batchId, type: "cash_out", status: "pending" },
-            { $set: { paypackRef } },
-            { session },
-        );
-    });
-    return { status: "provider_pending", batchId, paypackRef, payoutAmount, requestCount: claimed.length };
+    let result;
+    try {
+        result = await paymentService.requestCashOut(claimed.phone, claimed.amount, process.env.PAYPACK_ENV || "development");
+    } catch (error) {
+        result = { success: false, error: error?.message || String(error) };
+    }
+    const paypackRef = result?.success ? result.data?.ref : undefined;
+    const attempt = { at: new Date(), kind, ok: !!paypackRef, paypackRef, reason: paypackRef ? undefined : providerReason(result), response: recordable(result) };
+
+    if (paypackRef) {
+        await WithdrawalRequest.updateOne({ _id: claimed._id, status: "processing" }, { $set: { status: "provider_pending", paypackRef }, $unset: { failureReason: 1 }, $push: { attempts: attempt } });
+        await Transaction.updateMany({ reference: String(claimed._id), type: "cash_out", status: "pending" }, { $set: { paypackRef } });
+        return { status: "provider_pending", paypackRef };
+    }
+    await WithdrawalRequest.updateOne({ _id: claimed._id, status: "processing" }, { $set: { status: "manual_required", failureReason: attempt.reason }, $push: { attempts: attempt } });
+    try { await alertManualPayout(claimed, attempt.reason); } catch (error) { console.error("Manual payout alert failed:", error.message); }
+    return { status: "manual_required", reason: attempt.reason };
 };
 
 const requestWithdrawal = async ({ driverId, amount, phone, idempotencyKey }) => {
@@ -152,7 +139,7 @@ const requestWithdrawal = async ({ driverId, amount, phone, idempotencyKey }) =>
         throw error;
     }
 
-    const dispatch = await dispatchQueued(driverId.toString(), phone);
+    const dispatch = await dispatchRequest(request._id, "auto");
     return { request, dispatch, replayed: false };
 };
 
@@ -228,5 +215,4 @@ const settleWebhook = async (paypackRef, status, kind, amount, payload) => {
     return { handled: true };
 };
 
-module.exports = {
-    dispatchQueued, PAYPACK_MINIMUM, requestWithdrawal, settleWebhook };
+module.exports = { dispatchRequest, alertManualPayout, requestWithdrawal, settleWebhook, ALERT_TITLE };
