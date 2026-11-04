@@ -156,23 +156,19 @@ const requestCashOut = async (req, res) => {
             const reviewers = await User.find({ role: { $in: ["admin", "superadmin"] }, isActive: true }).select("_id").lean();
             const notice = `Withdrawal request ${result.request._id} from ${user.firstName} ${user.lastName} (${user.phone}). Amount: ${result.request.amount} RWF; fee: ${result.request.fee} RWF; payout phone: ${result.request.phone}; status: ${result.dispatch.status}. Open Withdrawal requests to review and download CSV.`;
             await Promise.allSettled([
-                notificationService.createNotification(user._id, "Withdrawal request received", result.dispatch.status === "queued" ? `Your ${result.request.amount} RWF request is queued until your queued payouts reach ${withdrawalService.PAYPACK_MINIMUM} RWF. After payout starts, it usually arrives within 2 hours, depending on the provider. Track its status in your wallet.` : `Your ${result.request.amount} RWF request was received. Payout usually arrives within 2 hours, depending on the provider. Track its status in your wallet.`, "in_app", { requestId: String(result.request._id) }),
+                notificationService.createNotification(user._id, "Withdrawal request received", `Your ${result.request.amount} RWF request was received. Payout usually arrives within 2 hours, depending on the provider. Track its status in your wallet.`, "in_app", { requestId: String(result.request._id) }),
                 ...reviewers.map(reviewer => notificationService.createNotification(reviewer._id, "Driver withdrawal request", notice, "in_app", { requestId: String(result.request._id) })),
             ]);
         }
-        const queued = result.dispatch.status === "queued";
+        // Same message whatever Paypack said: refusals are handled by MOTA staff.
         return res.status(202).json({
-            message: queued
-                ? `${amount} RWF is reserved and queued. Paypack payout starts when this account's queued withdrawals reach ${withdrawalService.PAYPACK_MINIMUM} RWF.`
-                : `Withdrawal reserved. Paypack payout of ${result.dispatch.payoutAmount} RWF is pending.`,
+            message: `Withdrawal of ${result.request.amount} RWF received. Payout usually arrives within 2 hours, depending on the provider.`,
             data: {
                 requestId: result.request._id,
                 requestedAmount: result.request.amount,
                 fee: result.request.fee,
-                status: result.dispatch.status,
-                queuedTotal: result.dispatch.queuedTotal,
-                remainingToDispatch: result.dispatch.remainingToDispatch,
-                paypackRef: result.dispatch.paypackRef,
+                // Users see "processing" while MOTA staff handle a refused payout.
+                status: result.dispatch.status === "manual_required" ? "processing" : result.dispatch.status,
                 replayed: result.replayed,
             },
         });
@@ -185,9 +181,15 @@ const requestCashOut = async (req, res) => {
     }
 };
 
+const publicWithdrawal = (item) => {
+    const { attempts, alertedAt, alertedStaff, manual, failureReason, providerEvent, reviewNote, reviewedBy, ...rest } = item.toObject ? item.toObject() : item;
+    return { ...rest, status: rest.status === "manual_required" ? "processing" : rest.status };
+};
+
 const getWithdrawals = async (req, res) => {
     const items = await WithdrawalRequest.find({ driverId: req.user.id }).sort({ createdAt: -1 }).limit(50);
-    res.status(200).json({ data: items, paypackMinimum: withdrawalService.PAYPACK_MINIMUM });
+    // Staff-only details (attempts, alerts, manual handling) stay out of the user's view.
+    res.status(200).json({ data: items.map(publicWithdrawal) });
 };
 
 /**

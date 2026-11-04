@@ -45,20 +45,52 @@ router.post("/fuel-vouchers/redeem", authorize("fuel_voucher:manage"), async (re
         res.json({ message: "Voucher redeemed", data: result });
     } catch (error) { res.status(error.statusCode || 400).json({ message: error.message }); }
 });
-router.get("/withdrawals", authorize("finance:view"), async (req, res) => {
+router.get("/withdrawals", authorize("withdrawal:view"), async (req, res) => {
     try {
         const WithdrawalRequest = require("../models/WithdrawalRequest");
         const status = String(req.query.status || "");
-        const allowed = ["queued", "processing", "provider_pending", "successful", "failed"];
+        const allowed = ["queued", "processing", "provider_pending", "manual_required", "successful", "failed"];
         if (status && !allowed.includes(status)) return res.status(400).json({ message: "Invalid withdrawal status" });
         const rows = await WithdrawalRequest.find(status ? { status } : {})
-            .select("driverId amount fee totalHeld phone status batchId paypackRef failureReason reviewStatus reviewNote reviewedAt createdAt updatedAt")
+            .select("driverId amount fee totalHeld phone status batchId paypackRef failureReason reviewStatus reviewNote reviewedAt attempts alertedAt manual createdAt updatedAt")
             .populate("driverId", "firstName lastName phone")
+            .populate("manual.by", "firstName lastName")
             .sort({ createdAt: -1 }).limit(250).lean();
         res.json({ data: rows });
     } catch (error) { res.status(500).json({ message: "Unable to load withdrawals" }); }
 });
-router.patch("/withdrawals/:id/review", authorize("transaction:sync"), async (req, res) => {
+// Staff handling of withdrawals Paypack refused (status manual_required).
+const withdrawalAction = (handler) => async (req, res) => {
+    try {
+        if (!require("mongoose").isValidObjectId(req.params.id)) return res.status(400).json({ message: "Invalid withdrawal ID" });
+        const data = await handler(req);
+        res.json({ message: "Withdrawal updated", data });
+    } catch (error) {
+        res.status(error.status || 500).json({ message: error.status ? error.message : "Unable to update this withdrawal" });
+    }
+};
+const withdrawalAudit = (req, action, metadata) => require("../services/auditService").log({ actorId: req.user.id, actorRole: req.user.role, action, targetType: "WithdrawalRequest", targetId: req.params.id, ipAddress: req.ip, metadata });
+router.post("/withdrawals/:id/manual-paid", authorize("withdrawal:manage"), withdrawalAction(async (req) => {
+    const reference = String(req.body.reference || "").trim();
+    const note = String(req.body.note || "").trim();
+    if (reference.length < 3) throw Object.assign(new Error("Enter the MoMo reference of the manual payout"), { status: 400 });
+    const done = await require("../services/withdrawalService").markPaidManually(req.params.id, req.user.id, { reference, note });
+    await withdrawalAudit(req, "withdrawal_manual_paid", { reference, note, amount: done.amount, userId: String(done.driverId) });
+    return { id: done._id, status: done.status };
+}));
+router.post("/withdrawals/:id/return", authorize("withdrawal:manage"), withdrawalAction(async (req) => {
+    const note = String(req.body.note || "").trim();
+    if (note.length < 5) throw Object.assign(new Error("Add a note of at least 5 characters"), { status: 400 });
+    const done = await require("../services/withdrawalService").returnToWallet(req.params.id, req.user.id, { note });
+    await withdrawalAudit(req, "withdrawal_returned", { note, amount: done.amount, userId: String(done.driverId) });
+    return { id: done._id, status: done.status };
+}));
+router.post("/withdrawals/:id/retry", authorize("withdrawal:manage"), withdrawalAction(async (req) => {
+    const result = await require("../services/withdrawalService").retryPayout(req.params.id);
+    await withdrawalAudit(req, "withdrawal_retry", result);
+    return result;
+}));
+router.patch("/withdrawals/:id/review", authorize("withdrawal:manage"), async (req, res) => {
     try {
         const mongoose = require("mongoose");
         const WithdrawalRequest = require("../models/WithdrawalRequest");
@@ -595,7 +627,7 @@ router.put("/registrations/:id/status", authorize("registration:review"), adminC
  *       500:
  *         description: Server error
  */
-router.get("/paypack/transactions", authorize("user:view"), adminController.getPaypackTransactions);
+router.get("/paypack/transactions", authorize("transaction:view"), adminController.getPaypackTransactions);
 
 /**
  * @swagger
@@ -630,7 +662,7 @@ router.get("/paypack/transactions", authorize("user:view"), adminController.getP
  *       500:
  *         description: Server error
  */
-router.get("/paypack/events", authorize("user:view"), adminController.getPaypackEvents);
+router.get("/paypack/events", authorize("transaction:view"), adminController.getPaypackEvents);
 
 /**
  * @swagger
@@ -656,6 +688,6 @@ router.get("/paypack/events", authorize("user:view"), adminController.getPaypack
  *       500:
  *         description: Server error
  */
-router.post("/paypack/sync", authorize("user:update"), adminController.syncTransactionsWithPaypack);
+router.post("/paypack/sync", authorize("transaction:sync"), adminController.syncTransactionsWithPaypack);
 
 module.exports = router;

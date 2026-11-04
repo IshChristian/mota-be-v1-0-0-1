@@ -68,7 +68,7 @@ const protectOnboardingStatus = authenticate(false, true);
  * Usage: authorize("user:delete", "admin:access")
  */
 const authorize = (...permissions) => {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({ message: "Not authenticated" });
     }
@@ -84,7 +84,18 @@ const authorize = (...permissions) => {
 
     // Check if user has ALL required permissions (or at least one? Let's go with ALL required for this route, or we can use ANY. Let's do ANY for flexibility or require exact).
     // Usually, you might want to check if user has at least one of the required permissions, or all. Let's check for ALL permissions passed.
-    const hasPermission = permissions.every(p => userPermissions.includes(p));
+    const missing = permissions.filter(p => !userPermissions.includes(p));
+    const hasPermission = missing.length === 0;
+
+    // One missing permission can be covered by a superadmin-approved, single-use
+    // access request for exactly this permission on exactly this record.
+    if (missing.length === 1) {
+      try {
+        if (await require("../services/accessRequestService").consumeApproval(req.user, missing[0], req.params?.id || null, req.ip)) return next();
+      } catch (error) {
+        console.error("Access request check failed:", error.message);
+      }
+    }
 
     if (!hasPermission) {
       void require('../services/auditService').log({actorId:req.user._id,actorRole:req.user.role,action:'access_denied',targetType:'Route',metadata:{path:req.originalUrl?.split('?')[0],permissions},ipAddress:req.ip});

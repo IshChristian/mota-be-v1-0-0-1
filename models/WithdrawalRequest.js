@@ -12,7 +12,8 @@ const withdrawalRequestSchema = new mongoose.Schema({
     reviewedAt: Date,
     status: {
         type: String,
-        enum: ["queued", "processing", "provider_pending", "successful", "failed"],
+        // manual_required: Paypack refused at send time; the money stays held until staff pay or return it.
+        enum: ["queued", "processing", "provider_pending", "manual_required", "successful", "failed"],
         default: "queued",
         index: true,
     },
@@ -21,6 +22,25 @@ const withdrawalRequestSchema = new mongoose.Schema({
     paypackRef: { type: String, trim: true, index: true },
     failureReason: { type: String, trim: true },
     providerEvent: { type: mongoose.Schema.Types.Mixed },
+    // Every Paypack attempt, kept for staff and audits (never credentials).
+    attempts: [{
+        _id: false,
+        at: { type: Date, default: Date.now },
+        kind: { type: String, enum: ["auto", "retry"], default: "auto" },
+        ok: Boolean,
+        paypackRef: String,
+        reason: String,
+        response: mongoose.Schema.Types.Mixed,
+    }],
+    alertedAt: Date,
+    alertedStaff: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+    manual: {
+        action: { type: String, enum: ["paid", "returned"] },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        at: Date,
+        reference: String,
+        note: String,
+    },
 }, { timestamps: true });
 
 withdrawalRequestSchema.index({ driverId: 1, status: 1, createdAt: 1 });

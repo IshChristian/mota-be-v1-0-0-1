@@ -4,13 +4,16 @@ const { startStack, stopStack, clearDb } = require("./harness");
 const request = require("supertest");
 const { load, makeDriver, makePassenger } = require("./fixtures");
 
-let app, User, RiderAlgorithm, Wallet, WithdrawalRequest, Transaction;
+let app, User, RiderAlgorithm, Wallet, WithdrawalRequest, Transaction, paymentService, realCashOut;
 before(async () => {
     app = await startStack();
+    // Tests never call Paypack: the stub accepts every payout.
+    paymentService = load("services/paymentService.js"); realCashOut = paymentService.requestCashOut;
+    paymentService.requestCashOut = async () => ({ success: true, data: { ref: `fuel-po-${Date.now()}` } });
     User = load("models/User.js"); RiderAlgorithm = load("models/RiderAlgorithm.js"); Wallet = load("models/Wallet.js");
     WithdrawalRequest = load("models/WithdrawalRequest.js"); Transaction = load("models/Transaction.js");
 });
-after(stopStack);
+after(async () => { paymentService.requestCashOut = realCashOut; await stopStack(); });
 beforeEach(clearDb);
 
 let n = 0;
@@ -47,13 +50,13 @@ test("QR voucher: daily limit holds under simultaneous taps; replays return the 
     assert.equal(one.body.data.status, "active");
 });
 
-test("MoMo voucher is MOTA-funded and queued through the withdrawal pipeline", async () => {
+test("MoMo voucher is MOTA-funded and sent to Paypack through the withdrawal pipeline", async () => {
     const driver = await makeDriver();
     await gold(driver);
     const res = await claim(driver, "momo");
     assert.equal(res.status, 200, res.body.message);
-    assert.equal(res.body.data.status, "queued", "below the provider minimum it waits in the queue");
     const request_ = await WithdrawalRequest.findOne({ driverId: driver.user._id });
+    assert.equal(request_.status, "provider_pending", "sent straight to Paypack, no minimum");
     assert.equal(request_.amount, 1000);
     assert.equal(request_.fee, 0);
     const wallet = await Wallet.findOne({ driverId: driver.user._id });

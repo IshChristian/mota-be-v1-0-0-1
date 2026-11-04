@@ -29,6 +29,8 @@ const auditLogSchema = new mongoose.Schema({
             "role_created", "role_updated", "role_deleted",
             "report_access_updated", "report_exported", "fuel_voucher_redeemed", "support_message_added",
             "registration_payment_updated", "ride_payment_updated", "kyc_fields_updated",
+            "withdrawal_manual_paid", "withdrawal_returned", "withdrawal_retry",
+            "access_requested", "access_request_approved", "access_request_declined", "access_request_used", "staff_permissions_updated",
         ],
     },
     targetType: { type: String, trim: true },   // e.g. "Loan", "User", "SavingsAccount"

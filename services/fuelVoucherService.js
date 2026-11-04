@@ -168,8 +168,8 @@ async function claim(userId, type, idempotencyKey) {
     });
 
     if (type === "momo") {
-        // Same dispatch as withdrawals: sends once queued payouts reach the provider minimum.
-        try { await require("./withdrawalService").dispatchQueued(String(userId), phone); }
+        // Same dispatch as withdrawals: straight to Paypack, staff fallback if refused.
+        try { await require("./withdrawalService").dispatchRequest(created.withdrawalRequestId, "auto"); }
         catch (error) { console.error("Fuel payout dispatch deferred:", error.message); }
     }
     const fresh = (await User.findById(userId).select("fuelVouchers")).fuelVouchers.id(created._id);

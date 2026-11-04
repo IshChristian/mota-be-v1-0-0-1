@@ -15,6 +15,9 @@ const userSchema = new mongoose.Schema({
         default: "driver",
     },
     reportPermissions: { type: [String], default: undefined },
+    // Per-person additions/removals on top of the role (Data Access page, superadmin).
+    permissionGrants: { type: [String], default: undefined },
+    permissionRevokes: { type: [String], default: undefined },
     roleId: { type: mongoose.Schema.Types.ObjectId, ref: "Role" },
     password: { type: String },
     tokenVersion: { type: Number, default: 0, select: false },
@@ -135,6 +138,9 @@ const userSchema = new mongoose.Schema({
     deletedAt: { type: Date },
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
+}, {
+    // Account secrets are never serialised into an API response.
+    toJSON: { transform: (_doc, ret) => { for (const key of ["password", "otpToken", "emailOtpToken", "twoFactorSecret", "pushTokens", "tokenVersion"]) delete ret[key]; return ret; } },
 });
 
 // Convert empty strings to undefined for sparse-unique fields.

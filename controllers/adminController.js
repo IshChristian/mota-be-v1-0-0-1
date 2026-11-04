@@ -37,12 +37,22 @@ const pickFields = (source, allowed) => allowed.reduce((result, field) => {
 }, {});
 const auditContext = (req) => ({ actorId: req.user.id, actorRole: req.user.role, ipAddress: req.ip });
 const publicUser = (user) => user.toObject ? user.toObject({ transform: (_doc, ret) => { delete ret.password; delete ret.twoFactorSecret; delete ret.otpToken; delete ret.emailOtpToken; return ret; } }) : user;
+// Account secrets never leave the server; identity and money fields only for staff allowed to see them.
+const USER_SECRETS = ["password", "otpToken", "emailOtpToken", "twoFactorSecret", "pushTokens", "tokenVersion"];
+const staffUserView = (user, viewer) => {
+    const plain = user?.toObject ? user.toObject() : { ...user };
+    for (const key of USER_SECRETS) delete plain[key];
+    const access = effectivePermissions(viewer);
+    if (!access.includes("kyc:view")) delete plain.nationalId;
+    if (!access.includes("wallet:view") && !access.includes("wallet:adjust")) delete plain.fuelVouchers;
+    return plain;
+};
 
 const getUserDetails = async (req, res) => {
     try {
         const user = await userService.getUserById(req.params.id);
         if (!user) return res.status(404).json({ message: "User not found" });
-        res.status(200).json({ data: publicUser(user) });
+        res.status(200).json({ data: staffUserView(user, req.user) });
     } catch (error) { res.status(500).json({ message: "Server error", error: error.message }); }
 };
 
@@ -64,7 +74,7 @@ const getUserOverview = async (req, res) => {
             AuditLog.find({ $or: [{ actorId: id }, { targetId: id }] }).populate("actorId", "firstName lastName role").sort({ timestamp: -1 }).limit(100),
         ]);
         const access=effectivePermissions(req.user),has=(permission)=>access.includes(permission);
-        res.json({data:{user,driverProfile:has('driver:view')?driverProfile:null,passengerKyc:has('kyc:view')?passengerKyc:null,driverKyc:has('kyc:view')?driverKyc:null,uploads:has('kyc:view')?uploads:[],rides:has('ride:view')?rides:[],transactions:has('transaction:view')||has('finance:view')?transactions:[],loans:has('loan:view')?loans:[],fines:has('fines:view')?fines:[],fineRequests:has('fines:view')?fineRequests:[],wallet:has('wallet:view')||has('wallet:adjust')?wallet:null,auditLogs:has('audit:view')?auditLogs.map(row=>require('../services/reportService').safe(row.toObject?row.toObject():row,has('audit:sensitive'))):[]}});
+        res.json({data:{user:staffUserView(user,req.user),driverProfile:has('driver:view')?driverProfile:null,passengerKyc:has('kyc:view')?passengerKyc:null,driverKyc:has('kyc:view')?driverKyc:null,uploads:has('kyc:view')?uploads:[],rides:has('ride:view')?rides:[],transactions:has('transaction:view')||has('finance:view')?transactions:[],loans:has('loan:view')?loans:[],fines:has('fines:view')?fines:[],fineRequests:has('fines:view')?fineRequests:[],wallet:has('wallet:view')||has('wallet:adjust')?wallet:null,auditLogs:has('audit:view')?auditLogs.map(row=>require('../services/reportService').safe(row.toObject?row.toObject():row,has('audit:sensitive'))):[]}});
     } catch (error) { res.status(500).json({ message: "Server error", error: error.message }); }
 };
 
@@ -223,7 +233,7 @@ const getUsersList = async (req, res) => {
         const limit = parseInt(req.query.limit) || 20;
 
         const result = await userService.getUsers({}, page, limit);
-        res.status(200).json(result);
+        res.status(200).json({ ...result, data: result.data.map((user) => staffUserView(user, req.user)) });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
     }

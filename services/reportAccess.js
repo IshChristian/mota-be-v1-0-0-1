@@ -19,13 +19,16 @@ function effectivePermissions(user) {
     return [];
   const base =
     user.roleId?.permissions || STAFF_ROLE_TEMPLATES[user.role] || [];
-  if (!Array.isArray(user.reportPermissions)) return [...base];
-  return [
-    ...new Set([
-      ...base.filter((p) => !scoped.includes(p)),
-      ...user.reportPermissions.filter((p) => scoped.includes(p)),
-    ]),
-  ];
+  const fromRole = !Array.isArray(user.reportPermissions)
+    ? [...base]
+    : [
+        ...base.filter((p) => !scoped.includes(p)),
+        ...user.reportPermissions.filter((p) => scoped.includes(p)),
+      ];
+  // Per-person changes the superadmin made on the Data Access page.
+  const revoked = new Set(Array.isArray(user.permissionRevokes) ? user.permissionRevokes : []);
+  const granted = Array.isArray(user.permissionGrants) ? user.permissionGrants.filter((p) => PERMISSIONS.includes(p)) : [];
+  return [...new Set([...fromRole, ...granted])].filter((p) => !revoked.has(p));
 }
 function validateGrant(actor, requested) {
   if (!Array.isArray(requested) || requested.some((p) => !scoped.includes(p))) {
