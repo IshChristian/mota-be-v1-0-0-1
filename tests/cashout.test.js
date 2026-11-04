@@ -71,3 +71,91 @@ test("a Paypack network error is treated as a refusal", async () => {
     assert.equal(res.status, 202, res.body.message);
     assert.equal((await WithdrawalRequest.findById(res.body.data.requestId)).status, "manual_required");
 });
+
+// ── Staff handling of refused payouts ────────────────────────────────────
+const AuditLog = () => load("models/AuditLog.js");
+const staffPost = (who, path, body = {}) => request(app).post(`/api/admin/withdrawals/${path}`).set(who.auth).send(body);
+async function refusedWithdrawal(amount = 3000) {
+    refuses();
+    const driver = await makeDriver();
+    await fund(driver.user._id, 10000);
+    const res = await withdraw(driver, amount);
+    const saved = await WithdrawalRequest.findById(res.body.data.requestId);
+    assert.equal(saved.status, "manual_required");
+    return { driver, saved };
+}
+
+test("paid manually releases the held money once, even when two staff press it together", async () => {
+    const { driver, saved } = await refusedWithdrawal();
+    const finance = await makePassenger({ role: "financial" });
+    const other = await makePassenger({ role: "admin" });
+    const [a, b] = await Promise.all([
+        staffPost(finance, `${saved._id}/manual-paid`, { reference: "MP2611041234", note: "Paid from MoMo merchant" }),
+        staffPost(other, `${saved._id}/manual-paid`, { reference: "MP2611049999", note: "Paid again" }),
+    ]);
+    assert.deepEqual([a.status, b.status].sort(), [200, 409]);
+    const w = await wallet(driver.user._id);
+    assert.equal(w.heldBalance, 0);
+    assert.equal(w.balance, 10000 - saved.totalHeld, "money left once");
+    const done = await WithdrawalRequest.findById(saved._id).lean();
+    assert.equal(done.status, "successful");
+    assert.equal(done.manual.action, "paid");
+    assert.ok(["MP2611041234", "MP2611049999"].includes(done.manual.reference));
+    assert.equal((await Transaction.findOne({ reference: String(saved._id), type: "cash_out" })).status, "successful");
+    assert.equal(await AuditLog().countDocuments({ action: "withdrawal_manual_paid", targetId: saved._id }), 1);
+});
+
+test("return to wallet gives the held money back", async () => {
+    const { driver, saved } = await refusedWithdrawal();
+    const finance = await makePassenger({ role: "financial" });
+    const res = await staffPost(finance, `${saved._id}/return`, { note: "Number not registered for MoMo" });
+    assert.equal(res.status, 200, res.body.message);
+    const w = await wallet(driver.user._id);
+    assert.equal(w.balance, 10000);
+    assert.equal(w.heldBalance, 0);
+    const done = await WithdrawalRequest.findById(saved._id).lean();
+    assert.equal(done.status, "failed");
+    assert.equal(done.manual.action, "returned");
+    assert.equal((await Transaction.findOne({ reference: String(saved._id), type: "cash_out" })).status, "failed");
+    assert.equal((await staffPost(finance, `${saved._id}/manual-paid`, { reference: "MP123", note: "late" })).status, 409, "a returned request can't be paid");
+});
+
+test("retry sends a waiting request to Paypack again", async () => {
+    const { saved } = await refusedWithdrawal();
+    const finance = await makePassenger({ role: "financial" });
+    accepts();
+    const res = await staffPost(finance, `${saved._id}/retry`);
+    assert.equal(res.status, 200, res.body.message);
+    const done = await WithdrawalRequest.findById(saved._id).lean();
+    assert.equal(done.status, "provider_pending");
+    assert.equal(done.attempts.length, 2);
+    assert.equal(done.attempts[1].kind, "retry");
+});
+
+test("caller support can neither see nor handle withdrawals", async () => {
+    const { saved } = await refusedWithdrawal();
+    const support = await makePassenger({ role: "caller_support" });
+    assert.equal((await request(app).get("/api/admin/withdrawals").set(support.auth)).status, 403);
+    assert.equal((await staffPost(support, `${saved._id}/return`, { note: "trying it" })).status, 403);
+    const finance = await makePassenger({ role: "financial" });
+    const list = await request(app).get("/api/admin/withdrawals?status=manual_required").set(finance.auth);
+    assert.equal(list.status, 200, list.body.message);
+    assert.equal(list.body.data.length, 1);
+    assert.equal(list.body.data[0].attempts.length, 1, "staff see the attempt history");
+});
+
+test("post-deploy migration grants withdrawal access and sends old queued withdrawals", async () => {
+    const Role = load("models/Role.js");
+    await Role.create({ name: "financial", permissions: ["admin:access", "finance:view", "custom:kept"] });
+    const driver = await makeDriver();
+    await fund(driver.user._id, 0);
+    const old = await WithdrawalRequest.create({ driverId: driver.user._id, amount: 2000, fee: 40, totalHeld: 2040, phone: driver.user.phone, idempotencyKey: "old-queued-1" });
+    accepts();
+    const { migrate } = load("scripts/migrateCashoutAccess.js");
+    const result = await migrate({ log: () => {} });
+    assert.equal(result.dispatched, 1);
+    const role = await Role.findOne({ name: "financial" }).lean();
+    assert.ok(role.permissions.includes("withdrawal:manage"));
+    assert.ok(role.permissions.includes("custom:kept"), "existing role edits are kept");
+    assert.equal((await WithdrawalRequest.findById(old._id)).status, "provider_pending");
+});

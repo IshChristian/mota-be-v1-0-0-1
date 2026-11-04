@@ -215,4 +215,68 @@ const settleWebhook = async (paypackRef, status, kind, amount, payload) => {
     return { handled: true };
 };
 
-module.exports = { dispatchRequest, alertManualPayout, requestWithdrawal, settleWebhook, ALERT_TITLE };
+const httpError = (status, message) => Object.assign(new Error(message), { status });
+
+/**
+ * Close a withdrawal that is waiting for staff. "paid": staff paid it outside
+ * the system, so the held money leaves for good. "returned": the held money
+ * goes back to the user's wallet. The conditional status change makes a
+ * second click (or a second staff member) a 409, so money moves once.
+ */
+const closeManually = async (id, staffId, { action, reference, note }) => {
+    let closed = null;
+    await mongoose.connection.transaction(async (session) => {
+        closed = null;
+        const paid = action === "paid";
+        const request = await WithdrawalRequest.findOneAndUpdate(
+            { _id: id, status: "manual_required" },
+            { $set: {
+                status: paid ? "successful" : "failed",
+                manual: { action, by: staffId, at: new Date(), reference, note },
+                ...(paid ? {} : { failureReason: "Returned to the wallet by MOTA staff" }),
+            } },
+            { returnDocument: "after", session },
+        );
+        if (!request) return;
+        const walletUpdate = await Wallet.updateOne(
+            { driverId: request.driverId, heldBalance: { $gte: request.totalHeld } },
+            { $inc: paid ? { heldBalance: -request.totalHeld } : { balance: request.totalHeld, heldBalance: -request.totalHeld } },
+            { session },
+        );
+        if (walletUpdate.modifiedCount !== 1) throw new Error("Held withdrawal balance is inconsistent.");
+        await Transaction.updateMany(
+            { reference: String(request._id), type: "cash_out", status: "pending" },
+            { $set: {
+                status: paid ? "successful" : "failed",
+                description: paid
+                    ? `Withdrawal paid manually by MOTA (MoMo reference ${reference}).`
+                    : "Withdrawal returned to your wallet by MOTA.",
+            } },
+            { session },
+        );
+        if (paid && request.fee > 0) {
+            await Transaction.create([{
+                driverId: request.driverId, amount: -request.fee, feeAmount: request.fee, type: "cash_out_fee", status: "successful",
+                reference: String(request._id), idempotencyKey: `${request.idempotencyKey}:fee`, description: `Cash-out fee: ${request.fee} RWF.`,
+            }], { session });
+        }
+        closed = request;
+    });
+    if (!closed) throw httpError(409, "This withdrawal is no longer waiting for manual handling.");
+    const notificationService = require("./notificationService");
+    const message = action === "paid"
+        ? `Your ${closed.amount} RWF withdrawal has been paid.`
+        : `Your ${closed.amount} RWF withdrawal could not be paid and is back in your wallet.`;
+    await notificationService.createNotification(closed.driverId, action === "paid" ? "Withdrawal paid" : "Withdrawal returned to your wallet", message, "in_app", { requestId: String(closed._id) }).catch(() => {});
+    return closed;
+};
+
+const markPaidManually = (id, staffId, { reference, note }) => closeManually(id, staffId, { action: "paid", reference, note });
+const returnToWallet = (id, staffId, { note }) => closeManually(id, staffId, { action: "returned", note });
+const retryPayout = async (id) => {
+    const result = await dispatchRequest(id, "retry");
+    if (!["provider_pending", "manual_required"].includes(result.status)) throw httpError(409, "Only a withdrawal waiting for manual handling can be retried.");
+    return result;
+};
+
+module.exports = { dispatchRequest, alertManualPayout, requestWithdrawal, settleWebhook, markPaidManually, returnToWallet, retryPayout, ALERT_TITLE };
