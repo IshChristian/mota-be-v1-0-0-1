@@ -72,7 +72,7 @@ router.get(
         { lastName: { $regex: q, $options: "i" } },
       ];
     const users = await User.find(match)
-      .select("firstName lastName role roleId reportPermissions isActive")
+      .select("firstName lastName role roleId reportPermissions permissionGrants permissionRevokes isActive")
       .populate("roleId", "permissions")
       .limit(50)
       .lean();
@@ -80,9 +80,41 @@ router.get(
       data: users.map((u) => ({
         ...u,
         permissions: effectivePermissions(u).filter((p) => scoped.includes(p)),
+        allPermissions: effectivePermissions(u),
+        rolePermissions: effectivePermissions({ ...u, permissionGrants: undefined, permissionRevokes: undefined }),
+        grants: u.permissionGrants || [],
+        revokes: u.permissionRevokes || [],
       })),
       limit: 50,
     });
+  }),
+);
+// Any single permission, for one person, on top of their role.
+const SUPERADMIN_ONLY = ["data:access_manage", "access_request:approve"];
+router.put(
+  "/access/users/:id/permissions",
+  authorize("data:access_manage"),
+  handle(async (req, res) => {
+    if (!mongoose.isValidObjectId(req.params.id)) throw Object.assign(new Error("Invalid user ID."), { status: 400 });
+    const clean = (list) => (Array.isArray(list) ? [...new Set(list.map(String))] : []);
+    const grants = clean(req.body?.grants), revokes = clean(req.body?.revokes);
+    const { PERMISSIONS } = require("../constants/staffRoles");
+    if ([...grants, ...revokes].some((p) => !PERMISSIONS.includes(p))) throw Object.assign(new Error("Unknown permissions. Use the system permission catalog."), { status: 400 });
+    if (grants.some((p) => revokes.includes(p))) throw Object.assign(new Error("A permission can't be granted and removed at once."), { status: 400 });
+    const own = effectivePermissions(req.user);
+    if (req.user.role !== "superadmin" && grants.some((p) => SUPERADMIN_ONLY.includes(p) || !own.includes(p))) {
+      throw Object.assign(new Error("You cannot grant permissions beyond your own access."), { status: 403 });
+    }
+    const user = await User.findById(req.params.id).populate("roleId", "permissions");
+    if (!user || !["admin", "financial", "agent", "caller_support", "manager", "moderator"].includes(user.role)) {
+      throw Object.assign(new Error("Select an existing staff account. Superadmin access cannot be changed here."), { status: 400 });
+    }
+    const before = { grants: user.permissionGrants || [], revokes: user.permissionRevokes || [], effective: effectivePermissions(user) };
+    user.permissionGrants = grants;
+    user.permissionRevokes = revokes;
+    await user.save();
+    await require("../services/auditService").log({ actorId: req.user._id, actorRole: req.user.role, action: "staff_permissions_updated", targetType: "User", targetId: user._id, ipAddress: req.ip, metadata: { before, after: { grants, revokes, effective: effectivePermissions(user) } } });
+    res.json({ message: "Permissions saved. The person's next request uses them.", data: { grants, revokes, allPermissions: effectivePermissions(user) } });
   }),
 );
 router.put(

@@ -15,6 +15,9 @@ const userSchema = new mongoose.Schema({
         default: "driver",
     },
     reportPermissions: { type: [String], default: undefined },
+    // Per-person additions/removals on top of the role (Data Access page, superadmin).
+    permissionGrants: { type: [String], default: undefined },
+    permissionRevokes: { type: [String], default: undefined },
     roleId: { type: mongoose.Schema.Types.ObjectId, ref: "Role" },
     password: { type: String },
     tokenVersion: { type: Number, default: 0, select: false },

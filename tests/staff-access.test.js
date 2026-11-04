@@ -134,3 +134,33 @@ test("requests are refused for permissions you have or that only the superadmin 
     const mine = await request(app).get("/api/access-requests?mine=1").set(hr.auth);
     assert.equal(mine.status, 200);
 });
+
+// ── Per-person permission changes ────────────────────────────────────────
+const setPerms = (who, id, body) => request(app).put(`/api/reports/access/users/${id}/permissions`).set(who.auth).send(body);
+
+test("the superadmin can give or take one permission from one person", async () => {
+    const owner = await makePassenger({ role: "superadmin" });
+    const support = await makePassenger({ role: "caller_support" });
+    const admin = await makePassenger({ role: "admin" });
+    assert.equal((await get(support, "/api/admin/withdrawals")).status, 403);
+    const granted = await setPerms(owner, support.user._id, { grants: ["withdrawal:view"], revokes: [] });
+    assert.equal(granted.status, 200, granted.body.message);
+    assert.equal((await get(support, "/api/admin/withdrawals")).status, 200, "granted to this person only");
+    assert.equal((await get(await makePassenger({ role: "caller_support" }), "/api/admin/withdrawals")).status, 403, "not the whole role");
+
+    assert.equal((await setPerms(owner, admin.user._id, { grants: [], revokes: ["user:view"] })).status, 200);
+    assert.equal((await get(admin, "/api/admin/users")).status, 403, "revoked from this admin");
+    assert.equal(await load("models/AuditLog.js").countDocuments({ action: "staff_permissions_updated" }), 2);
+
+    const list = await get(owner, "/api/reports/access/users");
+    const row = list.body.data.find((u) => u._id === String(support.user._id));
+    assert.ok(row.allPermissions.includes("withdrawal:view"));
+    assert.deepEqual(row.grants, ["withdrawal:view"]);
+});
+
+test("only the superadmin hands out access management or approval rights", async () => {
+    const admin = await makePassenger({ role: "admin" });
+    const support = await makePassenger({ role: "caller_support" });
+    assert.equal((await setPerms(admin, support.user._id, { grants: ["data:access_manage"], revokes: [] })).status, 403);
+    assert.equal((await setPerms(admin, support.user._id, { grants: ["made:up"], revokes: [] })).status, 400);
+});
