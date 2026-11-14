@@ -37,6 +37,15 @@ const discountFor = (promo, amount) => {
     return Math.max(0, Math.min(capped, amount));
 };
 
+// The driver registration fee is never free: a fee code always leaves the MoMo minimum to pay.
+const FEE_MIN_PAY = 100;
+
+/** The discount actually given: fee codes are capped so the driver still pays at least 100 RWF. */
+const effectiveDiscount = (promo, amount) => {
+    const discount = discountFor(promo, amount);
+    return promo.appliesTo === "registration_fee" ? Math.min(discount, Math.max(0, amount - FEE_MIN_PAY)) : discount;
+};
+
 const statusOf = (promo, now = new Date()) => {
     if (promo.archivedAt) return "archived";
     if (!promo.active) return "off";
@@ -87,7 +96,7 @@ const checkCode = async ({ code, appliesTo, userId, amount, session }) => {
 const quote = async ({ code, appliesTo, userId, amount }) => {
     await releaseStale();
     const { promo } = await checkCode({ code, appliesTo, userId, amount });
-    const discount = discountFor(promo, amount);
+    const discount = effectiveDiscount(promo, amount);
     return { promo, discount, payAmount: amount - discount, originalAmount: amount };
 };
 
@@ -108,7 +117,7 @@ const reserve = async ({ code, appliesTo, userId, amount, rideId, method }, { se
     } else {
         await PromoCode.updateOne({ _id: promo._id }, { $inc: { reservedCount: 1 } }, { session });
     }
-    const discount = discountFor(promo, amount);
+    const discount = effectiveDiscount(promo, amount);
     const [redemption] = await PromoRedemption.create([{
         promoId: promo._id, code: promo.code, userId, appliesTo, rideId, method,
         originalAmount: amount, discount, paidAmount: amount - discount, status: "reserved", reservedAt: new Date(),
@@ -161,4 +170,4 @@ const releaseStale = async (now = new Date()) => {
     return count;
 };
 
-module.exports = { PromoError, MESSAGES, normalizeCode, discountFor, statusOf, quote, reserve, attachPaymentRef, redeem, release, releaseByPaymentRef, releaseStale };
+module.exports = { PromoError, MESSAGES, FEE_MIN_PAY, normalizeCode, discountFor, effectiveDiscount, statusOf, quote, reserve, attachPaymentRef, redeem, release, releaseByPaymentRef, releaseStale };

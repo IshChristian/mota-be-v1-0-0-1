@@ -503,15 +503,6 @@ const payRegistration = async (req, res) => {
         }
         const amountDue = redemption ? redemption.paidAmount : regFee;
 
-        if (redemption && amountDue < 100) {
-            // Below the MoMo minimum: MOTA covers the rest; the fee counts as paid now.
-            user.registrationPaid = true;
-            user.registrationStatus = "pending";
-            await user.save();
-            await promoService.redeem(redemption._id, { subsidy: 0 });
-            return res.status(200).json({ message: "Registration fee covered by your promo code. Account is now pending admin approval.", paid: true });
-        }
-
         const result = await paymentService.requestCashIn(paypackPhone, amountDue, process.env.PAYPACK_ENV || "development");
 
         if (result.success) {

@@ -84,7 +84,7 @@ test("preview returns the discounted price", async () => {
     const { rideId } = await awaitingRide(user);
     const res = await preview(user, { code: p.code, appliesTo: "ride", rideId: String(rideId) });
     assert.equal(res.status, 200, JSON.stringify(res.body));
-    assert.deepEqual(res.body.data, { code: p.code, discount: 300, payAmount: 1200, originalAmount: 1500 });
+    assert.deepEqual(res.body.data, { code: p.code, discount: 300, payAmount: 1200, originalAmount: 1500, percent: 20 });
 });
 
 test("preview refuses a cash ride", async () => {
@@ -498,16 +498,25 @@ test("agent gets drivers_only", async () => {
     assert.equal(res.body.reason, "drivers_only");
 });
 
-test("100% fee code makes registration free immediately", async () => {
+test("100% fee code still leaves 100 RWF to pay", async () => {
     stubCollections();
     const p = await feeCode({ value: 100 });
     const driver = await registerDriver();
     const res = await payFee(driver, { promoCode: p.code });
     assert.equal(res.status, 200, JSON.stringify(res.body));
-    assert.equal(charged.length, 0);
-    const after = await User.findById(driver.user._id).lean();
-    assert.equal(after.registrationPaid, true);
-    assert.equal((await PromoRedemption.findOne({ promoId: p._id }).lean()).status, "redeemed");
+    assert.equal(charged.length, 1);
+    assert.equal(charged[0].amount, 100);
+    assert.equal((await User.findById(driver.user._id).lean()).registrationPaid, false, "paid only after the MoMo approval");
+    await paypackHook(res.body.ref, 100);
+    assert.equal((await User.findById(driver.user._id).lean()).registrationPaid, true);
+    assert.equal((await PromoRedemption.findOne({ promoId: p._id }).lean()).discount, 4900);
+});
+
+test("fixed fee code above the fee leaves 100 RWF", async () => {
+    const p = await feeCode({ discountType: "fixed", value: 9000 });
+    const driver = await registerDriver();
+    const q = await promo.quote({ code: p.code, appliesTo: "registration_fee", userId: driver.user._id, amount: 5000 });
+    assert.deepEqual([q.discount, q.payAmount], [4900, 100]);
 });
 
 test("fee code plus another payer number: fee paid, code redeemed, phone not proven", async () => {
@@ -604,4 +613,13 @@ test("paying the fee again after the first prompt failed gives the code back and
     const uses = await PromoRedemption.find({ promoId: p._id }).sort({ reservedAt: 1 }).lean();
     assert.deepEqual(uses.map((u) => u.status), ["released", "reserved"]);
     assert.equal((await PromoCode.findById(p._id).lean()).usersCount, 1);
+});
+
+test("preview returns the discount percentage", async () => {
+    const user = await passenger();
+    const { rideId } = await awaitingRide(user, { fare: 2000 });
+    const pct = await newCode({ value: 20 });
+    assert.equal((await preview(user, { code: pct.code, appliesTo: "ride", rideId: String(rideId) })).body.data.percent, 20);
+    const fixed = await newCode({ discountType: "fixed", value: 500 });
+    assert.equal((await preview(user, { code: fixed.code, appliesTo: "ride", rideId: String(rideId) })).body.data.percent, 25);
 });
