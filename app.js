@@ -44,7 +44,10 @@ app.use(express.json({
 }));
 if (process.env.NODE_ENV !== "test") app.use(morgan("dev"));
 app.use("/api", rateLimit({ windowMs: 60 * 1000, limit: Number(process.env.API_RATE_LIMIT_PER_MINUTE) || 120, standardHeaders: "draft-8", legacyHeaders: false }));
-app.use("/api/auth", rateLimit({ windowMs: 15 * 60 * 1000, limit: Number(process.env.AUTH_RATE_LIMIT_PER_15_MIN) || 30, standardHeaders: "draft-8", legacyHeaders: false }));
+// The WhatsApp status poll has its own limit (routes/authRoutes.js): counting it here would lock
+// the waiting user (and everyone behind the same carrier NAT) out of verify-otp and login.
+const isWhatsappStatusPoll = (req) => req.method === "GET" && req.path === "/whatsapp/status";
+app.use("/api/auth", rateLimit({ windowMs: 15 * 60 * 1000, limit: Number(process.env.AUTH_RATE_LIMIT_PER_15_MIN) || 30, standardHeaders: "draft-8", legacyHeaders: false, skip: isWhatsappStatusPoll }));
 
 // ─── Swagger Documentation ─────────────────────────────
 app.use(

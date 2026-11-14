@@ -122,7 +122,8 @@ router.post("/resend-otp", authController.resendOTP);
 // Free fallback while SMS is down: the user sends "MOTA verify <code>" to MOTA's WhatsApp number.
 const whatsappVerify = require("../controllers/whatsappVerifyController");
 router.post("/whatsapp/start", whatsappVerify.start);
-router.get("/whatsapp/status", whatsappVerify.status);
+// Polled every few seconds while the user is in WhatsApp (15 min code life ≈ 180–300 polls).
+router.get("/whatsapp/status", rateLimit({ windowMs: 15 * 60 * 1000, limit: 600, standardHeaders: "draft-8", legacyHeaders: false }), whatsappVerify.status);
 
 /**
  * @swagger

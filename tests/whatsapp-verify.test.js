@@ -163,6 +163,13 @@ test("code sent from another number does not verify", async () => {
     assert.equal(sent[0].body.text.body, MISMATCH);
 });
 
+test("an already-verified sender with a stale code is told they're verified", async () => {
+    await newUser({ phone: "0788123456", isVerified: true, isActive: true });
+    mockGraph();
+    await hook(messageFrom("250788123456", "MOTA verify 111111"));
+    assert.equal(sent[0].body.text.body, SUCCESS);
+});
+
 test("expired code gets the expired reply", async () => {
     const user = await newUser({ phone: "0788123456" });
     const code = await startCode(user);
@@ -180,7 +187,8 @@ test("redelivered message does not verify twice", async () => {
     const payload = messageFrom("250788123456", `MOTA verify ${code}`);
     assert.equal((await hook(payload)).status, 200);
     assert.equal((await hook(payload)).status, 200);
-    assert.deepEqual(sent.map((s) => s.body.text.body), [SUCCESS, EXPIRED]);
+    // The user already has their "verified" reply; a redelivery must not tell them the code expired.
+    assert.deepEqual(sent.map((s) => s.body.text.body), [SUCCESS, SUCCESS]);
     assert.equal((await User.findById(user._id).lean()).isVerified, true);
 });
 

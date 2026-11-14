@@ -65,11 +65,24 @@ const reply = async (from, outcome) => {
         .catch((error) => console.error("WhatsApp log write failed:", error.message));
 };
 
+/** The ways a phone may be stored for WhatsApp's digits-only `from` (250788123456 → +250…, 0788…). */
+const storedPhoneForms = (from) => {
+    const forms = [from, `+${from}`];
+    if (/^250\d{9}$/.test(from)) forms.push(`0${from.slice(3)}`, from.slice(3));
+    return forms;
+};
+
+/** No live code matched: a sender who is already verified (e.g. Meta redelivered the message) hears "verified". */
+const replyForStaleCode = async (from) => {
+    const verified = await User.exists({ phone: { $in: storedPhoneForms(from) }, isVerified: true });
+    return reply(from, verified ? "verified" : "expired");
+};
+
 /** Decide what one "MOTA verify <code>" message means and act on it. */
 const handleVerifyMessage = async (from, code) => {
     const hash = hashCode(code);
     const user = await User.findOne({ waVerifyCodeHash: hash, waVerifyExpiry: { $gt: new Date() } });
-    if (!user) return reply(from, "expired");
+    if (!user) return replyForStaleCode(from);
     // The sender's WhatsApp number is the proof: it must be the phone the account was registered with.
     if (normalizeRwPhone(user.phone).replace(/^\+/, "") !== from) return reply(from, "mismatch");
 
@@ -77,9 +90,9 @@ const handleVerifyMessage = async (from, code) => {
     const claimed = await User.findOneAndUpdate(
         { _id: user._id, waVerifyCodeHash: hash },
         { $unset: { waVerifyCodeHash: 1, waVerifyExpiry: 1 } },
-        { new: true },
+        { returnDocument: "after" },
     );
-    if (!claimed) return reply(from, "expired");
+    if (!claimed) return replyForStaleCode(from);
     await require("./authController").markPhoneVerified(claimed);
     return reply(from, "verified");
 };
