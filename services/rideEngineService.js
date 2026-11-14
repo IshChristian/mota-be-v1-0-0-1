@@ -128,7 +128,22 @@ const estimateOptions = async (pickup, destination, rideType = "ride") => Promis
 // 2. RIDE REQUEST (Passenger-initiated)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * Passengers confirm their email and submit their ID before booking (staff review the ID
+ * afterwards). Throws 403 VERIFY_TO_RIDE with the steps still missing.
+ */
+const assertPassengerVerified = async (passengerId) => {
+    const user = await User.findById(passengerId).select("role isEmailVerified");
+    if (!user || !["client", "passenger"].includes(user.role)) return;
+    const idSubmitted = await require("../models/PassengerKyc").exists({ userId: passengerId, status: { $in: ["submitted", "approved", "correction"] } });
+    const needs = { email: user.isEmailVerified !== true, identity: !idSubmitted };
+    if (needs.email || needs.identity) {
+        throw Object.assign(new Error("Confirm your email and submit your ID before booking a ride."), { status: 403, code: "VERIFY_TO_RIDE", needs });
+    }
+};
+
 const requestRide = async (passengerId, pickup, destination, offeredFare, backupDrivers = 1, passengers = 1, paymentMethod = "momo", scheduledDate = null, scheduledTime = null, options = {}) => {
+    await assertPassengerVerified(passengerId);
     // Validate coordinates
     if (!validCoordinates(pickup) || !validCoordinates(destination)) {
         throw new Error("Pickup and destination coordinates are required.");
@@ -1078,6 +1093,7 @@ module.exports = {
     confirmStop,
     claimFare,
     requestRidePayment,
+    assertPassengerVerified,
     startRide,
     completeRide,
     cancelRide,

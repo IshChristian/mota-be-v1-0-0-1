@@ -15,7 +15,12 @@ const auth = (user) => ({ Authorization: `Bearer ${generateToken(user)}` });
 
 async function makePassenger(extra = {}) {
     const User = load("models/User.js");
-    const user = await User.create({ firstName: "Aline", lastName: "Uwase", phone: phone(), role: "client", isVerified: true, isActive: true, registrationStatus: "approved", ...extra });
+    const user = await User.create({ firstName: "Aline", lastName: "Uwase", phone: phone(), role: "client", isVerified: true, isActive: true, isEmailVerified: true, registrationStatus: "approved", ...extra });
+    // Passengers confirm their email and submit their ID before booking; fixtures start ready to ride.
+    if (user.role === "client" && extra.withoutKyc !== true) {
+        const doc = "https://res.cloudinary.com/test/doc.jpg";
+        await load("models/PassengerKyc.js").create({ userId: user._id, nationalIdNumber: `1199${String(Date.now()).slice(-8)}${++seq}`, nationalIdFront: doc, nationalIdBack: doc, selfie: doc, status: "submitted" });
+    }
     return { user, auth: auth(user) };
 }
 

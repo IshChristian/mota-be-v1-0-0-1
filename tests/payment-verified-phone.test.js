@@ -22,7 +22,7 @@ after(stopStack);
 
 const register = (extra = {}) => request(app).post("/api/auth/register").send({
     firstName: "Aline", lastName: "Uwase", phone: nextPhone(), nationalId: nextNid(),
-    password: "Passw0rd!x", role: "client", ...extra,
+    password: "Passw0rd!x", role: "client", email: `rider${seq}@mota.test`, ...extra,
 });
 
 // ─── Task 1: sign-up and driver gates ───────────────────────────────────────

@@ -24,6 +24,10 @@ const register = async (req, res) => {
             return res.status(400).json({ message: "Choose passenger or driver." });
         }
         const cleanPhone = phone?.trim() || null;
+        // Passengers confirm an email before their first ride (SMS is unreliable), so they must give one.
+        if ((role || "client") === "client" && !email?.trim()) {
+            return res.status(400).json({ message: "Email is required for passengers." });
+        }
         const cleanNationalId = nationalId?.trim() || null;
         const cleanEmail = email?.trim() || null;
 
