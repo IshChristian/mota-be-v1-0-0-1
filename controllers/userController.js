@@ -168,7 +168,8 @@ const verifyContactChange = async (req, res) => {
         const hash = crypto.createHash('sha256').update(String(req.body.otp || '')).digest('hex');
         const user = await User.findById(req.user.id).select("+pendingPhone +pendingEmail +contactChangeOtpHash +contactChangeExpiresAt");
         if (!user || user.contactChangeOtpHash !== hash || !user.contactChangeExpiresAt || user.contactChangeExpiresAt <= new Date()) return res.status(400).json({ message: "Invalid or expired confirmation code" });
-        if (user.pendingPhone) { user.phone = user.pendingPhone; user.isVerified = true; }
+        // The new number is proven by its first MoMo payment, like any other.
+        if (user.pendingPhone) { user.phone = user.pendingPhone; user.isVerified = false; }
         if (user.pendingEmail) { user.email = user.pendingEmail; user.isEmailVerified = true; }
         user.pendingPhone = undefined; user.pendingEmail = undefined; user.contactChangeOtpHash = undefined; user.contactChangeExpiresAt = undefined; await user.save();
         res.json({ message: "Contact information updated", data: await userService.getUserById(user._id) });

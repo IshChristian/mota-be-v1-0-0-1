@@ -202,3 +202,69 @@ test("redelivered success does not settle referrals twice", async () => {
         assert.equal(calls, 1);
     } finally { referralService.trySettleReferral = real; }
 });
+
+// ─── Task 3: phone changes reset proof; stuck passengers ─────────────────────
+
+const adminPatch = async (target, body) => {
+    const { user: owner } = await makePassenger({ role: "superadmin" });
+    return request(app).patch(`/api/admin/users/${target._id}`).set(bearer(owner)).send(body);
+};
+const verifiedPassenger = async () => (await makePassenger({ phone: `+25078${String(7000000 + ++seq).slice(-7)}`, isVerified: true })).user;
+
+test("admin phone edit resets verification", async () => {
+    const user = await verifiedPassenger();
+    const res = await adminPatch(user, { phone: `+25078${String(7000000 + ++seq).slice(-7)}` });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal((await User.findById(user._id).lean()).isVerified, false);
+});
+
+test("admin phone edit with explicit isVerified true keeps it", async () => {
+    const user = await verifiedPassenger();
+    await adminPatch(user, { phone: `+25078${String(7000000 + ++seq).slice(-7)}`, isVerified: true });
+    assert.equal((await User.findById(user._id).lean()).isVerified, true);
+});
+
+test("admin edit that re-sends the same phone in another format keeps verification", async () => {
+    const user = await verifiedPassenger();
+    await adminPatch(user, { phone: localForm(user.phone), firstName: "Renamed" });
+    assert.equal((await User.findById(user._id).lean()).isVerified, true);
+});
+
+test("contact change to a new phone resets verification", async () => {
+    const user = await verifiedPassenger();
+    const newPhone = `+25078${String(7000000 + ++seq).slice(-7)}`;
+    await User.updateOne({ _id: user._id }, {
+        pendingPhone: newPhone,
+        contactChangeOtpHash: crypto.createHash("sha256").update("654321").digest("hex"),
+        contactChangeExpiresAt: new Date(Date.now() + 60000),
+    });
+    const res = await request(app).post("/api/users/me/contact-change/verify").set(bearer(user)).send({ otp: "654321" });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    const after = await User.findById(user._id).lean();
+    assert.equal(after.phone, newPhone);
+    assert.equal(after.isVerified, false);
+});
+
+test("stuck-passenger script activates only the intended accounts", async () => {
+    const AuditLog = load("models/AuditLog.js");
+    const { activateStuckPassengers } = load("services/stuckPassengerService.js");
+    await User.deleteMany({ role: "client", isActive: false });
+    const make = (extra) => User.create({ firstName: "S", lastName: "P", phone: `+25078${String(7000000 + ++seq).slice(-7)}`, role: "client", isVerified: false, isActive: false, createdAt: new Date("2026-05-01"), ...extra });
+    const stuck = await make({});
+    await make({ createdAt: new Date("2026-03-01") });
+    await make({ isVerified: true });
+    await make({ activationBlocked: true });
+    await make({ deletedAt: new Date() });
+    const disabled = await make({});
+    await AuditLog.create({ action: "user_updated", targetType: "User", targetId: disabled._id, metadata: { changes: { isActive: false } } });
+
+    const dry = await activateStuckPassengers({ dryRun: true });
+    assert.deepEqual(dry, { matched: 1, activated: 0 });
+    assert.equal(await User.countDocuments({ role: "client", isActive: true, _id: stuck._id }), 0, "dry run changes nothing");
+
+    const applied = await activateStuckPassengers({ dryRun: false });
+    assert.deepEqual(applied, { matched: 1, activated: 1 });
+    assert.equal((await User.findById(stuck._id).lean()).isActive, true);
+    assert.equal((await User.findById(stuck._id).lean()).isVerified, false);
+    assert.equal((await User.findById(disabled._id).lean()).isActive, false);
+});

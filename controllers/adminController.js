@@ -141,6 +141,8 @@ const updateUserAccount = async (req, res) => {
         if (!before) return res.status(404).json({ message: "User not found" });
         const updates = pickFields(req.body, editableUserFields);
         if (updates.email) updates.email = updates.email.toLowerCase();
+        // A new number hasn't been paid from: it must prove itself again, unless staff verify it explicitly.
+        if (updates.phone && updates.isVerified === undefined && !require("../services/phoneProofService").samePhone(updates.phone, before.phone)) updates.isVerified = false;
         if (req.params.id === req.user.id && updates.isActive === false) return res.status(400).json({ message: "You cannot deactivate your own account" });
         if (before.role === "superadmin" && updates.isActive === false && await User.countDocuments({ role: "superadmin", isActive: true }) <= 1) return res.status(409).json({ message: "The last active superadmin cannot be deactivated" });
         const user = await userService.updateUser(req.params.id, updates);
