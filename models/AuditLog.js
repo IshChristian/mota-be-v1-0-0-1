@@ -10,6 +10,7 @@ const auditLogSchema = new mongoose.Schema({
         type: String,
         required: true,
         enum: [
+            "promo_created", "promo_updated", "promo_deleted",
             "loan_created", "loan_approved", "loan_rejected", "loan_disbursed",
             "loan_repayment", "loan_overdue", "loan_defaulted", "loan_restructured", "loan_closed",
             "savings_deposit", "savings_withdrawal", "savings_reward",

@@ -100,8 +100,8 @@ const requestStop = async (req, res) => {
 };
 
 const confirmStop = async (req, res) => {
-    try { res.status(200).json({ data: await rideEngineService.confirmStop(req.user.id, req.params.id) }); }
-    catch (error) { res.status(400).json({ message: error.message }); }
+    try { res.status(200).json({ data: await rideEngineService.confirmStop(req.user.id, req.params.id, req.body?.promoCode) }); }
+    catch (error) { if (error.reason) return res.status(400).json({ message: error.message, reason: error.reason }); res.status(400).json({ message: error.message }); }
 };
 
 const claimFare = async (req, res) => {
@@ -110,8 +110,8 @@ const claimFare = async (req, res) => {
 };
 
 const requestRidePayment = async (req, res) => {
-    try { res.status(200).json({ data: await rideEngineService.requestRidePayment(req.user.id, req.params.id) }); }
-    catch (error) { res.status(409).json({ message: error.message }); }
+    try { res.status(200).json({ data: await rideEngineService.requestRidePayment(req.user.id, req.params.id, req.body?.phone, req.body?.promoCode) }); }
+    catch (error) { res.status(error.status || 409).json({ message: error.message, ...(error.reason ? { reason: error.reason } : {}) }); }
 };
 
 // ── DRIVER ENDPOINTS ───────────────────────────────────────────────────

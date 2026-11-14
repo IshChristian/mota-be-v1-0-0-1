@@ -8,6 +8,7 @@ const loanService = require("../services/loanService");
 const { sendSMS } = require("../services/smsService");
 const { sendEmail } = require("../services/notificationService");
 const EventEmitter = require("events");
+const { markPhoneProvenByPayment } = require("../services/phoneProofService");
 const withdrawalService = require("../services/withdrawalService");
 const sseService = require("../services/sseService");
 
@@ -134,11 +135,17 @@ const handleWebhook = async (req, res) => {
                         user.kycLevel = "full";
                     }
                     await user.save();
+                    // Paid from the registered number → the phone is proven.
+                    await markPhoneProvenByPayment(user._id, user.registrationPayerPhone || user.phone);
+                    if (user.registrationPromoRedemptionId) await require("../services/promoService").redeem(user.registrationPromoRedemptionId, { subsidy: 0 });
                     // ⚡ Instantly notify any SSE listeners watching this ref
                     txBus.emit(`tx:${ref}`);
                 }
             }
             
+            // A failed registration payment gives its promo use back.
+            if (normalizedStatus === "failed") await require("../services/promoService").releaseByPaymentRef(ref);
+
             // Still acknowledge
             return res.status(200).json({ message: "Webhook received" });
         }
@@ -151,6 +158,7 @@ const handleWebhook = async (req, res) => {
                     return res.status(409).json({ message: "Paypack event does not match the pending cash-in." });
                 }
                 const settlement = await walletService.settleCashInTransaction(tx._id, payload);
+                if (settlement.credited) await markPhoneProvenByPayment(tx.driverId, tx.senderPhone);
                 txBus.emit(`tx:${ref}`);
                 if (settlement.credited) {
                     const user = await User.findById(tx.driverId);
@@ -179,7 +187,10 @@ const handleWebhook = async (req, res) => {
                 if (isRidePayment) {
                     // Ride-related payment (triggered by driver log or USSD passenger pay)
                     // Calculate commission (logic inside creditRidePayment or manually here)
-                    const { commission, driverEarning } = await walletService.calculateCommission(amount);
+                    // With a promo code the passenger paid less; the driver still earns on the full fare
+                    // (MOTA pays the difference). Driver-logged and USSD payments carry no promo and are unchanged.
+                    const promoRide = tx.promoRedemptionId && tx.rideId ? await Ride.findById(tx.rideId).select("fare") : null;
+                    const { commission, driverEarning } = await walletService.calculateCommission(promoRide ? promoRide.fare : amount);
 
                     // Credit the rider's wallet
                     await walletService.creditWallet(
@@ -188,6 +199,17 @@ const handleWebhook = async (req, res) => {
                         "ride_payment",
                         { paypackRef: ref, description: tx.description || `Ride payment received: ${amount} RWF` }
                     );
+
+                    if (promoRide) {
+                        const redemption = await require("../models/PromoRedemption").findById(tx.promoRedemptionId).select("discount");
+                        await require("../services/promoService").redeem(tx.promoRedemptionId, { subsidy: (redemption?.discount || 0) - commission });
+                    }
+
+                    // A passenger who paid from their own number has proven it.
+                    if (tx.rideId) {
+                        const paidRide = await Ride.findById(tx.rideId).select("passengerId");
+                        if (paidRide?.passengerId) await markPhoneProvenByPayment(paidRide.passengerId, tx.senderPhone);
+                    }
 
                     // If it was a logged ride, update ride status
                     if (tx.rideId) {
@@ -273,6 +295,8 @@ const handleWebhook = async (req, res) => {
                 }
             }
         } else if (normalizedStatus === "failed") {
+            // A failed payment gives its promo use back.
+            await require("../services/promoService").releaseByPaymentRef(ref);
             tx.status = "failed";
             tx.paypackEvent = payload;
             await tx.save();

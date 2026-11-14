@@ -23,6 +23,14 @@ router.patch("/rides/:id/payment", authorize("ride:manage"), async (req, res) =>
     catch (error) { res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : "Unable to update the payment status" }); }
 });
 
+// Promo codes: create, edit, switch off, delete (archive when used) and monitor.
+const adminPromos = require("../controllers/adminPromoController");
+router.get("/promos", authorize("promo:view"), adminPromos.list);
+router.get("/promos/:id", authorize("promo:view"), adminPromos.get);
+router.post("/promos", authorize("promo:manage"), adminPromos.create);
+router.patch("/promos/:id", authorize("promo:manage"), adminPromos.update);
+router.delete("/promos/:id", authorize("promo:manage"), adminPromos.remove);
+
 router.get("/fuel-vouchers", authorize("fuel_voucher:view"), async (req, res) => {
     try {
         const User = require("../models/User");
