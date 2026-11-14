@@ -19,6 +19,10 @@ const register = async (req, res) => {
         const { firstName, lastName, phone, nationalId, email, role, referralCode, password } = req.body;
 
         // Sanitize inputs — trim and convert empty strings to undefined
+        // Self-registration is for passengers and drivers (and legacy agents). Staff accounts are created by admins.
+        if (role && !["client", "driver", "agent"].includes(role)) {
+            return res.status(400).json({ message: "Choose passenger or driver." });
+        }
         const cleanPhone = phone?.trim() || null;
         const cleanNationalId = nationalId?.trim() || null;
         const cleanEmail = email?.trim() || null;
@@ -65,7 +69,9 @@ const register = async (req, res) => {
             referredBy: referral?.referrer._id,
             referralReward: referral?.reward,
             password: hashedPassword,
-            isActive: false, // Phone verification activates passengers; drivers await review.
+            // Passengers can ride straight away; their phone is proven by their first MoMo payment.
+            // Drivers stay inactive until KYC, the registration fee and admin approval.
+            isActive: ["client", "passenger"].includes(role || "client"),
         });
 
         // Registration first: drivers start payment only after phone verification and KYC.
@@ -114,13 +120,8 @@ const register = async (req, res) => {
             catch (error) { console.error("Referral notification delivery failed"); }
         }
 
-        // SMS Verification
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        newUser.otpToken = generateOTPToken(newUser._id, otp);
-        newUser.otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
-        await newUser.save();
-
-        await sendSMS(cleanPhone, `Welcome to MOTA! Your code: ${otp}.`, "registration");
+        // No phone code at sign-up: a successful MoMo payment from this number proves it
+        // (services/phoneProofService.js). verify-otp/resend-otp stay for older app versions.
 
         // Email Verification trigger if email exists
         if (cleanEmail) {
@@ -131,14 +132,27 @@ const register = async (req, res) => {
             await authService.sendVerificationEmail(newUser, emailOtp);
         }
 
+        // Signed in straight away (no phone code). Agents still wait for review, as before.
+        const session = ["client", "driver"].includes(newUser.role) ? await createLoginSession(newUser, req) : {};
         res.status(201).json({
-            message: "Registered successfully. Verify your phone to continue.",
+            message: "Registered successfully.",
             userId: newUser._id,
+            ...session,
             payment: paymentInfo
         });
     } catch (error) {
         res.status(error.status || 500).json({ message: error.status === 400 ? error.message : "Server error", error: error.message });
     }
+};
+
+/** Start a signed-in session (login, and registration now that sign-up needs no phone code). */
+const createLoginSession = async (user, req) => {
+    await require("../services/driverSessionAvailability").beginDriverSession(user);
+    const sessionId = crypto.randomUUID();
+    await Session.create({ userId: user._id, sessionId, userAgent: req.get('user-agent'), ipAddress: req.ip, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) });
+    const token = authService.generateToken(user, sessionId);
+    await require("../services/auditService").log({actorId:user._id,actorRole:user.role,action:"authentication_succeeded",targetType:"Session",metadata:{method:"password"},ipAddress:req.ip});
+    return { token, user: { id: user._id, firstName: user.firstName, lastName: user.lastName, phone: user.phone, email: user.email, role: user.role, isVerified: user.isVerified, isEmailVerified: user.isEmailVerified, isActive: user.isActive, registrationPaid: user.registrationPaid, registrationStatus: user.registrationStatus, kycLevel: user.kycLevel, permissions: user.roleId?.permissions || [] } };
 };
 
 const login = async (req, res) => {
@@ -170,7 +184,14 @@ const login = async (req, res) => {
 
         await require('../services/driverActivation').activateFullKycDriver(user);
         const onboardingDriver = user.role === "driver" && user.registrationStatus !== "approved" && !user.deletedAt;
-        if (!user.isActive && !onboardingDriver) return res.status(403).json({ message: user.isVerified ? "Account disabled" : "Verify your phone to continue", userId: user._id, phone: user.phone, user: { isVerified: user.isVerified } });
+        // Passengers left inactive only because they never got an SMS code (SMS has been down since
+        // 2026-03-18) are let in: their phone is proven later by a MoMo payment. Staff deactivation
+        // always sets activationBlocked (userService.updateUser), so those stay out.
+        if (["client", "passenger"].includes(user.role) && !user.isActive && !user.isVerified && !user.activationBlocked && !user.deletedAt) {
+            user.isActive = true;
+            await user.save();
+        }
+        if (!user.isActive && !onboardingDriver) return res.status(403).json({ message: "Account disabled", userId: user._id });
 
         // Check if 2FA is active
         if (user.twoFactorEnabled) {
@@ -181,12 +202,8 @@ const login = async (req, res) => {
             });
         }
 
-        await require("../services/driverSessionAvailability").beginDriverSession(user);
-        const sessionId = crypto.randomUUID();
-        await Session.create({ userId: user._id, sessionId, userAgent: req.get('user-agent'), ipAddress: req.ip, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) });
-        const token = authService.generateToken(user, sessionId);
-        await require("../services/auditService").log({actorId:user._id,actorRole:user.role,action:"authentication_succeeded",targetType:"Session",metadata:{method:"password"},ipAddress:req.ip});
-        res.status(200).json({ message: "Login success", token, user: { id: user._id, firstName: user.firstName, lastName: user.lastName, phone: user.phone, email: user.email, role: user.role, isVerified: user.isVerified, isEmailVerified: user.isEmailVerified, isActive: user.isActive, registrationPaid: user.registrationPaid, registrationStatus: user.registrationStatus, kycLevel: user.kycLevel, permissions: user.roleId?.permissions || [] } });
+        const session = await createLoginSession(user, req);
+        res.status(200).json({ message: "Login success", ...session });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
     }
@@ -348,7 +365,12 @@ const verifyOTP = async (req, res) => {
         const decoded = jwt.verify(user.otpToken, process.env.JWT_SECRET);
         if (decoded.otp !== otp) return res.status(400).json({ message: "Invalid OTP" });
 
-        await markPhoneVerified(user);
+        user.isVerified = true;
+        if (["client", "passenger"].includes(user.role) && !user.deletedAt && !user.activationBlocked) user.isActive = true;
+        user.otpToken = null;
+        user.otpExpiry = null;
+        await user.save();
+        await referralService.trySettleReferral(user._id);
         res.status(200).json({ message: "Phone verified" });
     } catch (err) {
         res.status(400).json({ message: "Code expired" });
@@ -360,7 +382,7 @@ const verifyOTP = async (req, res) => {
  */
 const checkRegistrationPayment = async (req, res) => {
     try {
-        const { userId } = req.body;
+        const userId = req.user.id; // the signed-in driver (body userId is ignored)
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: "User not found" });
         await require("../services/driverActivation").activateFullKycDriver(user);
@@ -371,7 +393,8 @@ const checkRegistrationPayment = async (req, res) => {
         }
 
         // Check Paypack status
-        const result = await paymentService.checkTransaction(user.registrationPaypackRef);
+        // (paymentService has no checkTransaction; this used to throw and never confirm the fee.)
+        const result = await paymentService.getTransactionStatus(user.registrationPaypackRef);
         if (result.success && result.data.status === "successful") {
             user.registrationPaid = true;
             // Removed: user.isActive = true;
@@ -381,6 +404,9 @@ const checkRegistrationPayment = async (req, res) => {
                 user.kycLevel = "full";
             }
             await user.save();
+            // Same as the webhook: paid from the registered number → the phone is proven.
+            await require("../services/phoneProofService").markPhoneProvenByPayment(user._id, user.registrationPayerPhone || user.phone);
+            if (user.registrationPromoRedemptionId) await require("../services/promoService").redeem(user.registrationPromoRedemptionId, { subsidy: 0 });
 
             await require("../services/driverActivation").activateFullKycDriver(user);
             return res.status(200).json({ message: user.isActive ? "Payment confirmed. Account active." : "Payment confirmed. Complete verification to continue.", paid: true, active: user.isActive, status: user.registrationStatus });
@@ -435,7 +461,7 @@ const payRegistration = async (req, res) => {
         if (user.role === "driver") {
             const DriverKyc = require("../models/DriverKyc");
             const kyc = await DriverKyc.findOne({ userId: user._id });
-            if (!user.isVerified || !kyc || !["submitted", "approved"].includes(kyc.status)) return res.status(409).json({ message: "Verify your phone and submit driver KYC before payment." });
+            if (!kyc || !["submitted", "approved"].includes(kyc.status)) return res.status(409).json({ message: "Submit driver KYC before payment." });
         }
 
         const isAgent = user.role === "agent";
@@ -443,8 +469,16 @@ const payRegistration = async (req, res) => {
         const defaultFee = isAgent ? 10000 : 5000;
         const regFee = await configService.getConfig(configKey, defaultFee);
 
+        // `phone` identifies the account; `payerPhone` is the MoMo number to charge (defaults to the account's).
+        // Prompting another number needs the driver's own session (the route requires sign-in when payerPhone is sent).
+        if ((req.body.payerPhone || req.body.promoCode) && String(req.user?.id) !== String(user._id)) {
+            return res.status(403).json({ message: "You can only pay your own registration fee." });
+        }
+        const { toRwandaPhone } = require("../services/phoneProofService");
+        const payerPhone = req.body.payerPhone ? toRwandaPhone(req.body.payerPhone) : user.phone;
+        if (!payerPhone) return res.status(400).json({ message: "Enter a valid Rwanda phone number." });
         // Format phone for Paypack (e.g., convert +250 or 250 to 07...)
-        const paypackPhone = user.phone.replace(/^\+?250/, '0');
+        const paypackPhone = payerPhone.replace(/^\+?250/, '0');
 
         if (regFee > 0 && regFee < 100) {
             return res.status(400).json({ message: "System configuration error: Registration fee is below the minimum allowed by the gateway (100 RWF)." });
@@ -455,19 +489,52 @@ const payRegistration = async (req, res) => {
             return res.status(200).json({ message: "Registration is currently free. Account is now pending admin approval." });
         }
 
-        const result = await paymentService.requestCashIn(paypackPhone, regFee, process.env.PAYPACK_ENV || "development");
+        // Promo code (drivers only): held now, used when the fee is paid. Paying again gives back
+        // the use held for the previous attempt first.
+        const promoService = require("../services/promoService");
+        if (user.registrationPromoRedemptionId) {
+            await promoService.release(user.registrationPromoRedemptionId);
+            user.registrationPromoRedemptionId = undefined;
+        }
+        let redemption = null;
+        if (req.body.promoCode) {
+            if (user.role !== "driver") throw new promoService.PromoError("drivers_only");
+            redemption = await promoService.reserve({ code: req.body.promoCode, appliesTo: "registration_fee", userId: user._id, amount: Number(regFee), method: "momo" });
+            user.registrationPromoRedemptionId = redemption._id;
+        }
+        const amountDue = redemption ? redemption.paidAmount : regFee;
+
+        if (redemption && amountDue < 100) {
+            // Below the MoMo minimum: MOTA covers the rest; the fee counts as paid now.
+            user.registrationPaid = true;
+            user.registrationStatus = "pending";
+            await user.save();
+            await promoService.redeem(redemption._id, { subsidy: 0 });
+            return res.status(200).json({ message: "Registration fee covered by your promo code. Account is now pending admin approval.", paid: true });
+        }
+
+        const result = await paymentService.requestCashIn(paypackPhone, amountDue, process.env.PAYPACK_ENV || "development");
 
         if (result.success) {
             user.registrationPaypackRef = result.data?.ref;
+            user.registrationPayerPhone = payerPhone;
             await user.save();
+            if (redemption) await promoService.attachPaymentRef(redemption._id, result.data?.ref);
             return res.status(200).json({
-                message: `Payment request of ${regFee} RWF initiated. Please approve MoMo prompt to activate account.`,
-                ref: result.data?.ref
+                message: `Payment request of ${amountDue} RWF initiated. Please approve MoMo prompt to activate account.`,
+                ref: result.data?.ref,
+                amount: amountDue,
             });
         } else {
+            if (redemption) {
+                await promoService.release(redemption._id);
+                user.registrationPromoRedemptionId = undefined;
+                await user.save();
+            }
             return res.status(500).json({ message: "Payment gateway error. Could not initiate payment.", error: result.error });
         }
     } catch (error) {
+        if (error.reason) return res.status(400).json({ reason: error.reason, message: error.message });
         res.status(500).json({ message: "Server error", error: error.message });
     }
 };
@@ -481,9 +548,6 @@ const submitRegistration = async (req, res) => {
         }
         if (!user.registrationPaid) {
             return res.status(409).json({ message: "Complete the registration payment before submitting." });
-        }
-        if (!user.isVerified) {
-            return res.status(409).json({ message: "Verify your phone before submitting." });
         }
         user.registrationStatus = "pending";
         user.registrationSubmittedAt = user.registrationSubmittedAt || new Date();

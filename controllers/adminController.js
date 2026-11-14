@@ -18,7 +18,7 @@ const DriverProfile = require("../models/DriverProfile");
 const Upload = require("../models/Upload");
 const Transaction = require("../models/Transaction");
 const Loan = require("../models/Loan");
-const Fine = require("../models/Fine");
+const Fine = require("../models/Fine"); 
 const FineRequest = require("../models/FineRequest");
 const Wallet = require("../models/Wallet");
 const AuditLog = require("../models/AuditLog");
@@ -141,6 +141,10 @@ const updateUserAccount = async (req, res) => {
         if (!before) return res.status(404).json({ message: "User not found" });
         const updates = pickFields(req.body, editableUserFields);
         if (updates.email) updates.email = updates.email.toLowerCase();
+        // A new number hasn't been paid from: it must prove itself again, unless staff verify it explicitly.
+        // (The admin panel sends the whole form, so an unchanged isVerified is not an explicit choice.)
+        const verifiedByStaff = updates.isVerified === true && before.isVerified !== true;
+        if (updates.phone && !verifiedByStaff && !require("../services/phoneProofService").samePhone(updates.phone, before.phone)) updates.isVerified = false;
         if (req.params.id === req.user.id && updates.isActive === false) return res.status(400).json({ message: "You cannot deactivate your own account" });
         if (before.role === "superadmin" && updates.isActive === false && await User.countDocuments({ role: "superadmin", isActive: true }) <= 1) return res.status(409).json({ message: "The last active superadmin cannot be deactivated" });
         const user = await userService.updateUser(req.params.id, updates);

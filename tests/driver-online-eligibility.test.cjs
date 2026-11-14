@@ -68,12 +68,14 @@ test("valid expiry is accepted and optional DVC does not block availability", ()
       2000,
     ),
   ));
+// Drivers no longer need a proven phone to go online: KYC, the fee and admin approval are the gates.
+test("an unproven phone does not stop an approved driver going online", () =>
+  assert.doesNotThrow(() => assertDriverCanGoOnline({ ...driver, isVerified: false }, null)));
 for (const [change, expected] of [
   [{ role: "passenger" }, /Only drivers/],
   [{ isActive: false }, /disabled/],
   [{ activationBlocked: true }, /disabled/],
   [{ deletedAt: new Date() }, /disabled/],
-  [{ isVerified: false }, /phone/],
   [{ registrationPaid: false }, /registration fee/],
 ])
   test("full KYC preserves guard " + JSON.stringify(change), () =>

@@ -21,8 +21,13 @@ let seq = 0;
 const paypack = (impl) => { paymentService.requestCashOut = impl; };
 const accepts = () => paypack(async () => ({ success: true, data: { ref: `po-${++seq}` } }));
 const refuses = () => paypack(async () => ({ success: false, error: "Insufficient merchant balance" }));
-const withdraw = (who, amount) => request(app).post("/api/wallet/cash-out").set(who.auth)
-    .set("Idempotency-Key", `key-${Date.now()}-${++seq}`).send({ amount });
+// Withdrawals now need a payout number and the account password (re-entered every time).
+const PASSWORD_HASH = require("bcrypt").hashSync("Driver!pass1", 4);
+const withdraw = async (who, amount) => {
+    await load("models/User.js").updateOne({ _id: who.user._id }, { password: PASSWORD_HASH });
+    return request(app).post("/api/wallet/cash-out").set(who.auth)
+        .set("Idempotency-Key", `key-${Date.now()}-${++seq}`).send({ amount, phone: who.user.phone, password: "Driver!pass1" });
+};
 const wallet = async (id) => Wallet.findOne({ driverId: id }).lean();
 
 test("a withdrawal below 10,000 RWF goes straight to Paypack", async () => {

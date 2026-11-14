@@ -1,6 +1,7 @@
 const Wallet = require("../models/Wallet");
 const Transaction = require("../models/Transaction");
 const walletService = require("../services/walletService");
+const bcrypt = require("bcrypt");
 const paymentService = require("../services/paymentService");
 const User = require("../models/User");
 const { sendSMS } = require("../services/smsService");
@@ -133,29 +134,39 @@ const cashIn = async (req, res) => {
 const requestCashOut = async (req, res) => {
     try {
         const driverId = req.user.id;
-        const { amount } = req.body;
+        const { amount, phone, password } = req.body;
         const idempotencyKey = req.get("Idempotency-Key");
 
         if (!idempotencyKey || idempotencyKey.length < 12 || idempotencyKey.length > 32) {
             return res.status(400).json({ message: "A valid Idempotency-Key header is required." });
         }
 
-        const user = await User.findById(driverId);
-        if (!user || !user.phone) {
-            return res.status(400).json({ message: "Driver phone number not found." });
+        const user = await User.findById(driverId).select("+password");
+        if (!user) return res.status(404).json({ message: "User not found." });
+        // Money can go to any number the user types, so every withdrawal re-checks the password.
+        if (!user.password) return res.status(409).json({ message: "Set a password in your account first." });
+        if (typeof password !== "string" || !(await bcrypt.compare(password, user.password))) {
+            // 403, not 401: clients treat 401 as "session expired" and sign the user out.
+            return res.status(403).json({ message: "Incorrect password." });
         }
+        const { toRwandaPhone, samePhone } = require("../services/phoneProofService");
+        const payoutPhone = toRwandaPhone(phone);
+        if (!payoutPhone) return res.status(400).json({ message: "Enter a valid Rwanda phone number." });
 
         const result = await withdrawalService.requestWithdrawal({
             driverId: driverId.toString(),
             amount,
-            phone: user.phone,
+            phone: payoutPhone,
             idempotencyKey,
         });
         if (!result.replayed) {
             const notificationService = require("../services/notificationService");
             const reviewers = await User.find({ role: { $in: ["admin", "superadmin"] }, isActive: true }).select("_id").lean();
             const notice = `Withdrawal request ${result.request._id} from ${user.firstName} ${user.lastName} (${user.phone}). Amount: ${result.request.amount} RWF; fee: ${result.request.fee} RWF; payout phone: ${result.request.phone}; status: ${result.dispatch.status}. Open Withdrawal requests to review and download CSV.`;
+            // A withdrawal to someone else's number is the first sign of a stolen password.
+            const otherNumberAlert = samePhone(payoutPhone, user.phone) ? [] : [notificationService.createNotification(user._id, "Withdrawal to another number", `Withdrawal of ${result.request.amount} RWF to ${payoutPhone} requested.`, "in_app", { requestId: String(result.request._id) })];
             await Promise.allSettled([
+                ...otherNumberAlert,
                 notificationService.createNotification(user._id, "Withdrawal request received", `Your ${result.request.amount} RWF request was received. Payout usually arrives within 2 hours, depending on the provider. Track its status in your wallet.`, "in_app", { requestId: String(result.request._id) }),
                 ...reviewers.map(reviewer => notificationService.createNotification(reviewer._id, "Driver withdrawal request", notice, "in_app", { requestId: String(result.request._id) })),
             ]);

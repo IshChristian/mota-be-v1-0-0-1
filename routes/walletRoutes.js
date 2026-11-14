@@ -243,16 +243,40 @@ router.post("/cash-in", walletController.cashIn);
  *             type: object
  *             required:
  *               - amount
+ *               - phone
+ *               - password
  *             properties:
  *               amount:
  *                 type: number
  *                 example: 10000
+ *               phone:
+ *                 type: string
+ *                 description: MoMo number to pay (any Rwandan number)
+ *                 example: "0788123456"
+ *               password:
+ *                 type: string
+ *                 description: The account password, re-entered for every withdrawal
  *     responses:
- *       200:
+ *       202:
  *         description: Cash-out request submitted
+ *       403:
+ *         description: Incorrect password
+ *       409:
+ *         description: The account has no password yet
+ *       429:
+ *         description: Too many wrong passwords (5 per 15 minutes)
  *       400:
  *         description: Insufficient balance or invalid amount
  */
-router.post("/cash-out", walletController.requestCashOut);
+// 5 wrong passwords per user per 15 min; only "Incorrect password." (403) counts.
+const { rateLimit } = require("express-rate-limit");
+const withdrawalPasswordLimit = rateLimit({
+    windowMs: 15 * 60 * 1000, limit: 5, standardHeaders: "draft-8", legacyHeaders: false,
+    keyGenerator: (req) => String(req.user.id),
+    requestWasSuccessful: (_req, res) => res.statusCode !== 403,
+    skipSuccessfulRequests: true,
+    message: { message: "Too many wrong passwords. Try again in 15 minutes." },
+});
+router.post("/cash-out", withdrawalPasswordLimit, walletController.requestCashOut);
 
 module.exports = router;
