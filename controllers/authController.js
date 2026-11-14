@@ -65,7 +65,9 @@ const register = async (req, res) => {
             referredBy: referral?.referrer._id,
             referralReward: referral?.reward,
             password: hashedPassword,
-            isActive: false, // Phone verification activates passengers; drivers await review.
+            // Passengers can ride straight away; their phone is proven by their first MoMo payment.
+            // Drivers stay inactive until KYC, the registration fee and admin approval.
+            isActive: ["client", "passenger"].includes(role || "client"),
         });
 
         // Registration first: drivers start payment only after phone verification and KYC.
@@ -114,13 +116,8 @@ const register = async (req, res) => {
             catch (error) { console.error("Referral notification delivery failed"); }
         }
 
-        // SMS Verification
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        newUser.otpToken = generateOTPToken(newUser._id, otp);
-        newUser.otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
-        await newUser.save();
-
-        await sendSMS(cleanPhone, `Welcome to MOTA! Your code: ${otp}.`, "registration");
+        // No phone code at sign-up: a successful MoMo payment from this number proves it
+        // (services/phoneProofService.js). verify-otp/resend-otp stay for older app versions.
 
         // Email Verification trigger if email exists
         if (cleanEmail) {
@@ -131,14 +128,26 @@ const register = async (req, res) => {
             await authService.sendVerificationEmail(newUser, emailOtp);
         }
 
+        const session = await createLoginSession(newUser, req);
         res.status(201).json({
-            message: "Registered successfully. Verify your phone to continue.",
+            message: "Registered successfully.",
             userId: newUser._id,
+            ...session,
             payment: paymentInfo
         });
     } catch (error) {
         res.status(error.status || 500).json({ message: error.status === 400 ? error.message : "Server error", error: error.message });
     }
+};
+
+/** Start a signed-in session (login, and registration now that sign-up needs no phone code). */
+const createLoginSession = async (user, req) => {
+    await require("../services/driverSessionAvailability").beginDriverSession(user);
+    const sessionId = crypto.randomUUID();
+    await Session.create({ userId: user._id, sessionId, userAgent: req.get('user-agent'), ipAddress: req.ip, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) });
+    const token = authService.generateToken(user, sessionId);
+    await require("../services/auditService").log({actorId:user._id,actorRole:user.role,action:"authentication_succeeded",targetType:"Session",metadata:{method:"password"},ipAddress:req.ip});
+    return { token, user: { id: user._id, firstName: user.firstName, lastName: user.lastName, phone: user.phone, email: user.email, role: user.role, isVerified: user.isVerified, isEmailVerified: user.isEmailVerified, isActive: user.isActive, registrationPaid: user.registrationPaid, registrationStatus: user.registrationStatus, kycLevel: user.kycLevel, permissions: user.roleId?.permissions || [] } };
 };
 
 const login = async (req, res) => {
@@ -181,12 +190,8 @@ const login = async (req, res) => {
             });
         }
 
-        await require("../services/driverSessionAvailability").beginDriverSession(user);
-        const sessionId = crypto.randomUUID();
-        await Session.create({ userId: user._id, sessionId, userAgent: req.get('user-agent'), ipAddress: req.ip, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) });
-        const token = authService.generateToken(user, sessionId);
-        await require("../services/auditService").log({actorId:user._id,actorRole:user.role,action:"authentication_succeeded",targetType:"Session",metadata:{method:"password"},ipAddress:req.ip});
-        res.status(200).json({ message: "Login success", token, user: { id: user._id, firstName: user.firstName, lastName: user.lastName, phone: user.phone, email: user.email, role: user.role, isVerified: user.isVerified, isEmailVerified: user.isEmailVerified, isActive: user.isActive, registrationPaid: user.registrationPaid, registrationStatus: user.registrationStatus, kycLevel: user.kycLevel, permissions: user.roleId?.permissions || [] } });
+        const session = await createLoginSession(user, req);
+        res.status(200).json({ message: "Login success", ...session });
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
     }
@@ -430,7 +435,7 @@ const payRegistration = async (req, res) => {
         if (user.role === "driver") {
             const DriverKyc = require("../models/DriverKyc");
             const kyc = await DriverKyc.findOne({ userId: user._id });
-            if (!user.isVerified || !kyc || !["submitted", "approved"].includes(kyc.status)) return res.status(409).json({ message: "Verify your phone and submit driver KYC before payment." });
+            if (!kyc || !["submitted", "approved"].includes(kyc.status)) return res.status(409).json({ message: "Submit driver KYC before payment." });
         }
 
         const isAgent = user.role === "agent";
@@ -476,9 +481,6 @@ const submitRegistration = async (req, res) => {
         }
         if (!user.registrationPaid) {
             return res.status(409).json({ message: "Complete the registration payment before submitting." });
-        }
-        if (!user.isVerified) {
-            return res.status(409).json({ message: "Verify your phone before submitting." });
         }
         user.registrationStatus = "pending";
         user.registrationSubmittedAt = user.registrationSubmittedAt || new Date();

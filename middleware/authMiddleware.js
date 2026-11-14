@@ -39,10 +39,10 @@ const authenticate = (allowOnboarding = false, statusOnly = false) => async (req
 
     // Pending drivers may edit only the onboarding routes that explicitly opt in.
     // Approved accounts disabled by an administrator never qualify.
-    if (!allowOnboarding && !statusOnly && user.role === "driver" && (!user.isVerified || !user.registrationPaid || user.kycLevel !== "full")) {
-      return res.status(403).json({message:!user.isVerified ? "Verify your phone to continue." : !user.registrationPaid ? "Complete your registration fee to continue." : "Complete KYC verification to continue."});
+    if (!allowOnboarding && !statusOnly && user.role === "driver" && (!user.registrationPaid || user.kycLevel !== "full")) {
+      return res.status(403).json({message:!user.registrationPaid ? "Complete your registration fee to continue." : "Complete KYC verification to continue."});
     }
-    if (!user.isActive && !((statusOnly && !user.deletedAt) || (allowOnboarding || statusOnly) && user.role === "driver" && (statusOnly || user.isVerified) && user.registrationStatus !== "approved" && !user.deletedAt)) {
+    if (!user.isActive && !((statusOnly && !user.deletedAt) || (allowOnboarding || statusOnly) && user.role === "driver" && user.registrationStatus !== "approved" && !user.deletedAt)) {
       return res.status(403).json({ message: "Account is deactivated. Contact admin." });
     }
 

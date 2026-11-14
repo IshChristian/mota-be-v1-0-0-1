@@ -891,7 +891,7 @@ const setDriverAvailability = async (driverId, isOnline, automatic = false, toke
     if (automatic) {
         if (!isOnline) throw new Error("Automatic availability can only go online.");
         const versionFilter = (tokenVersion || 0) === 0 ? { $or: [{ tokenVersion: 0 }, { tokenVersion: { $exists: false } }] } : { tokenVersion };
-        const updated = await User.findOneAndUpdate({ ...versionFilter, deletedAt: null, activationBlocked: { $ne: true }, _id: driverId, role: "driver", kycLevel: "full", isActive: true, isVerified: true, registrationPaid: true, availabilityManuallyOffline: { $ne: true } }, { $set: { isOnline: true } }, { new: true });
+        const updated = await User.findOneAndUpdate({ ...versionFilter, deletedAt: null, activationBlocked: { $ne: true }, _id: driverId, role: "driver", kycLevel: "full", isActive: true, registrationPaid: true, availabilityManuallyOffline: { $ne: true } }, { $set: { isOnline: true } }, { new: true });
         return { isOnline: updated ? true : false, availabilityManuallyOffline: updated?.availabilityManuallyOffline === true };
     }
     driver.isOnline = isOnline;

@@ -12,8 +12,6 @@ function assertDriverCanGoOnline(driver, kyc, now = Date.now()) {
     throw new Error("Complete KYC verification before going online.");
   if (!driver.isActive || driver.activationBlocked || driver.deletedAt)
     throw new Error("Your driver account is disabled. Contact MOTA support.");
-  if (!driver.isVerified)
-    throw new Error("Verify your phone before going online.");
   if (!driver.registrationPaid)
     throw new Error("Complete your registration fee before going online.");
   // Full KYC is the canonical admin-approved account status. Legacy verified
