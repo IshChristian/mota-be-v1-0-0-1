@@ -169,4 +169,124 @@ test("redeem is idempotent", async () => {
     assert.deepEqual([after.reservedCount, after.redeemedCount, after.totalDiscount, after.subsidyTotal], [0, 1, 300, 150]);
 });
 
-module.exports = { newCode, passenger, awaitingRide, bearer };
+
+// ─── Task 2: admin management ────────────────────────────────────────────────
+
+const staff = async (role) => (await makePassenger({ role, phone: `+25078${String(8000000 + ++seq).slice(-7)}` })).user;
+const admin = (user) => ({
+    list: (q = {}) => request(app).get("/api/admin/promos").query(q).set(bearer(user)),
+    get: (id) => request(app).get(`/api/admin/promos/${id}`).set(bearer(user)),
+    create: (body) => request(app).post("/api/admin/promos").set(bearer(user)).send(body),
+    update: (id, body) => request(app).patch(`/api/admin/promos/${id}`).set(bearer(user)).send(body),
+    remove: (id) => request(app).delete(`/api/admin/promos/${id}`).set(bearer(user)),
+});
+const uniqueCode = () => `ADM${++seq}${Date.now() % 10000}`;
+const validBody = (extra = {}) => ({ code: uniqueCode().toLowerCase(), appliesTo: "ride", discountType: "percent", value: 20, maxUsers: 100, perUserLimit: 1, ...extra });
+
+test("admin creates, lists and edits a code", async () => {
+    const boss = admin(await staff("superadmin"));
+    const body = validBody();
+    const created = await boss.create(body);
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal(created.body.data.code, body.code.toUpperCase());
+    const listed = await boss.list({ q: body.code.toUpperCase() });
+    assert.equal(listed.status, 200);
+    const row = listed.body.data.find((p) => p.code === body.code.toUpperCase());
+    assert.ok(row, "listed");
+    assert.equal(row.status, "active");
+    const edited = await boss.update(created.body.data._id, { value: 30, active: false });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+    assert.equal(edited.body.data.value, 30);
+    assert.equal(edited.body.data.status, "off");
+});
+
+test("duplicate code is 409", async () => {
+    const boss = admin(await staff("superadmin"));
+    const body = validBody();
+    await boss.create(body);
+    const again = await boss.create({ ...body, code: body.code.toUpperCase() });
+    assert.equal(again.status, 409);
+    assert.equal(again.body.message, "That code already exists.");
+});
+
+test("invalid values are 400", async () => {
+    const boss = admin(await staff("superadmin"));
+    for (const bad of [{ code: "a" }, { code: "BAD CODE!" }, { value: 0 }, { discountType: "percent", value: 120 }, { perUserLimit: 0 }, { maxUsers: 0 }, { appliesTo: "deposit" }, { startsAt: "2026-12-10", endsAt: "2026-12-01" }]) {
+        const res = await boss.create(validBody(bad));
+        assert.equal(res.status, 400, JSON.stringify(bad));
+    }
+});
+
+test("code text locked after use", async () => {
+    const boss = admin(await staff("superadmin"));
+    const p = await newCode();
+    await promo.reserve({ code: p.code, appliesTo: "ride", userId: (await passenger())._id, amount: 1500, method: "momo" });
+    const res = await boss.update(p._id, { code: "NEWNAME" });
+    assert.equal(res.status, 409);
+    assert.equal(res.body.message, "Code and type can't change after the code has been used.");
+    assert.equal((await boss.update(p._id, { appliesTo: "registration_fee" })).status, 409);
+    assert.equal((await boss.update(p._id, { note: "fine" })).status, 200);
+});
+
+test("editing value after use keeps past redemptions' discount", async () => {
+    const boss = admin(await staff("superadmin"));
+    const p = await newCode({ perUserLimit: 5 });
+    const user = await passenger();
+    const first = await promo.reserve({ code: p.code, appliesTo: "ride", userId: user._id, amount: 1500, method: "momo" });
+    await promo.redeem(first._id);
+    await boss.update(p._id, { value: 50 });
+    assert.equal((await PromoRedemption.findById(first._id).lean()).discount, 300);
+    const q = await promo.quote({ code: p.code, appliesTo: "ride", userId: user._id, amount: 1500 });
+    assert.equal(q.discount, 750);
+    const detail = await boss.get(p._id);
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.data.redemptions[0].discount, 300);
+    assert.ok(detail.body.data.redemptions[0].userId.firstName, "who used it");
+});
+
+test("deleting an unused code removes it; a used one is archived", async () => {
+    const boss = admin(await staff("superadmin"));
+    const unused = await newCode();
+    assert.deepEqual((await boss.remove(unused._id)).body, { deleted: true });
+    assert.equal(await PromoCode.countDocuments({ _id: unused._id }), 0);
+    const used = await newCode();
+    await promo.reserve({ code: used.code, appliesTo: "ride", userId: (await passenger())._id, amount: 1500, method: "momo" });
+    assert.deepEqual((await boss.remove(used._id)).body, { archived: true });
+    const after = await PromoCode.findById(used._id).lean();
+    assert.ok(after.archivedAt);
+    assert.equal(after.active, false);
+    assert.equal((await boss.list()).body.data.some((p) => String(p._id) === String(used._id)), false, "hidden by default");
+    assert.equal((await boss.list({ status: "archived" })).body.data.some((p) => String(p._id) === String(used._id)), true);
+});
+
+test("financial can view but not create", async () => {
+    const finance = admin(await staff("financial"));
+    assert.equal((await finance.list()).status, 200);
+    assert.equal((await finance.create(validBody())).status, 403);
+});
+
+test("a passenger gets 403", async () => {
+    assert.equal((await admin(await passenger()).list()).status, 403);
+});
+
+test("audit rows are written", async () => {
+    const AuditLog = load("models/AuditLog.js");
+    const boss = admin(await staff("superadmin"));
+    const created = await boss.create(validBody());
+    const id = created.body.data._id;
+    await boss.update(id, { value: 25 });
+    await boss.remove(id);
+    const actions = (await AuditLog.find({ targetId: id }).lean()).map((row) => row.action).sort();
+    assert.deepEqual(actions, ["promo_created", "promo_deleted", "promo_updated"]);
+});
+
+test("permission script adds promo permissions to stored roles", async () => {
+    const Role = load("models/Role.js");
+    await Role.deleteMany({ name: { $in: ["admin", "financial"] } });
+    await Role.create([{ name: "admin", permissions: ["admin:access"] }, { name: "financial", permissions: ["finance:view"] }]).catch(() => null);
+    await load("scripts/migratePromoPermissions.js").migrate({ log: () => {} });
+    const adminRole = await Role.findOne({ name: "admin" }).lean();
+    const financeRole = await Role.findOne({ name: "financial" }).lean();
+    assert.ok(adminRole.permissions.includes("promo:manage") && adminRole.permissions.includes("admin:access"));
+    assert.ok(financeRole.permissions.includes("promo:view") && !financeRole.permissions.includes("promo:manage"));
+});
