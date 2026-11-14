@@ -82,6 +82,20 @@ const dispatchRequest = async (requestId, kind = "auto") => {
     return { status: "manual_required", reason: attempt.reason };
 };
 
+/** Split a requested withdrawal into MOTA's cash-out fee and what MoMo receives. */
+const splitCashOut = async (requested) => {
+    const feePercentage = Number(await configService.getConfig("cash_out_fee_percentage", 2)) || 0;
+    const fee = Math.max(0, Math.round(requested * (feePercentage / 100)));
+    return { fee, payout: requested - fee, feePercentage };
+};
+/** Smallest request that still pays out 100 RWF after the fee. */
+const minimumWithdrawal = async () => {
+    for (let amount = 100; amount < 1000; amount += 1) {
+        if ((await splitCashOut(amount)).payout >= 100) return amount;
+    }
+    return 1000;
+};
+
 const requestWithdrawal = async ({ driverId, amount, phone, idempotencyKey }) => {
     const numericAmount = Number(amount);
     if (!Number.isInteger(numericAmount) || numericAmount < 100) {
@@ -94,9 +108,13 @@ const requestWithdrawal = async ({ driverId, amount, phone, idempotencyKey }) =>
         return { request: existing, dispatch: { status: existing.status }, replayed: true };
     }
 
-    const feePercentage = await configService.getConfig("cash_out_fee_percentage", 2);
-    const fee = Math.round(numericAmount * (feePercentage / 100));
-    const totalHeld = numericAmount + fee;
+    const { fee, payout } = await splitCashOut(numericAmount);
+    // The fee comes out of the amount asked for: the wallet gives exactly that,
+    // MoMo receives the rest (Paypack needs at least 100 RWF).
+    if (payout < 100) {
+        throw new Error(`Withdrawal amount must be at least ${await minimumWithdrawal()} RWF so that 100 RWF or more is paid out after the cash-out fee.`);
+    }
+    const totalHeld = numericAmount;
     let request;
 
     try {
@@ -106,19 +124,19 @@ const requestWithdrawal = async ({ driverId, amount, phone, idempotencyKey }) =>
                 { $inc: { balance: -totalHeld, heldBalance: totalHeld } },
                 { returnDocument: "after", session },
             );
-            if (!wallet) throw new Error(`Insufficient available balance. Required ${totalHeld} RWF including fee.`);
+            if (!wallet) throw new Error(`Insufficient available balance. You can withdraw up to your available balance.`);
 
             [request] = await WithdrawalRequest.create([{
                 driverId,
-                amount: numericAmount,
+                amount: payout, // what Paypack sends to MoMo
                 fee,
-                totalHeld,
+                totalHeld, // what left the wallet: payout + fee
                 phone,
                 idempotencyKey,
             }], { session });
             await Transaction.create([{
                 driverId,
-                amount: -numericAmount,
+                amount: -payout,
                 feeAmount: fee,
                 type: "cash_out",
                 status: "pending",
@@ -126,7 +144,7 @@ const requestWithdrawal = async ({ driverId, amount, phone, idempotencyKey }) =>
                 idempotencyKey,
                 senderPhone: "MOTA",
                 receiverPhone: phone,
-                description: `Withdrawal reserved. Amount: ${numericAmount} RWF. Fee: ${fee} RWF.`,
+                description: `Withdrawal of ${numericAmount} RWF: ${payout} RWF to MoMo, ${fee} RWF cash-out fee.`,
             }], { session });
         });
     } catch (error) {
@@ -301,4 +319,4 @@ const retryPayout = async (id) => {
     return result;
 };
 
-module.exports = { dispatchRequest, alertManualPayout, recoverStuckDispatches, requestWithdrawal, settleWebhook, markPaidManually, returnToWallet, retryPayout, ALERT_TITLE };
+module.exports = { splitCashOut, dispatchRequest, alertManualPayout, recoverStuckDispatches, requestWithdrawal, settleWebhook, markPaidManually, returnToWallet, retryPayout, ALERT_TITLE };

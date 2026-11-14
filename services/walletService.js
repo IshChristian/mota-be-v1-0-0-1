@@ -439,26 +439,28 @@ const agentCashIn = async (agentId, driverId, amount) => {
 const processCashOut = async (driverId, amount) => {
     const feePercentage = await configService.getConfig("cash_out_fee_percentage", 2);
     const fee = Math.round(amount * (feePercentage / 100));
-    const totalDeduction = amount + fee;
+    // The fee comes out of the amount asked for: the wallet gives `amount`, MoMo gets the rest.
+    const payout = amount - fee;
+    const totalDeduction = amount;
+    if (payout < 100) throw new Error("Amount too small: at least 100 RWF must be paid out after the cash-out fee.");
 
     const wallet = await getOrCreateWallet(driverId);
     if (wallet.balance < totalDeduction) {
-        throw new Error(`Insufficient balance. Need ${totalDeduction} RWF (incl. ${feePercentage}% fee). Available: ${wallet.balance} RWF`);
+        throw new Error(`Insufficient balance. Available: ${wallet.balance} RWF`);
     }
 
     wallet.balance -= totalDeduction;
     await wallet.save();
 
-    // Record cash-out transaction
     const tx = await Transaction.create({
         driverId,
-        amount: -amount,
+        amount: -payout,
+        feeAmount: fee,
         type: "cash_out",
         status: "successful",
-        description: `Cash-out withdrawal. Amount: ${amount} RWF.`,
+        description: `Cash-out of ${amount} RWF: ${payout} RWF to MoMo.`,
     });
 
-    // Record fee transaction
     if (fee > 0) {
         await Transaction.create({
             driverId,
@@ -470,7 +472,7 @@ const processCashOut = async (driverId, amount) => {
         });
     }
 
-    return { wallet, fee, totalDeduction, transactionId: tx._id };
+    return { wallet, fee, payout, totalDeduction, transactionId: tx._id };
 };
 
 /**
