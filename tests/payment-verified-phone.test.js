@@ -268,3 +268,93 @@ test("stuck-passenger script activates only the intended accounts", async () => 
     assert.equal((await User.findById(stuck._id).lean()).isVerified, false);
     assert.equal((await User.findById(disabled._id).lean()).isActive, false);
 });
+
+// ─── Task 4: withdraw to a typed number with the account password ────────────
+
+const bcrypt = require("bcrypt");
+const { fund } = require("./fixtures");
+let paidOut;
+const stubPayouts = () => {
+    paidOut = [];
+    load("services/paymentService.js").requestCashOut = async (phone) => { paidOut.push(phone); return { success: true, data: { ref: `po-${++refSeq}-${Date.now()}` } }; };
+};
+const PASSWORD = "Driver!pass1";
+const fundedDriver = async ({ password = PASSWORD } = {}) => {
+    const { user } = await makeDriver({ online: false });
+    await User.updateOne({ _id: user._id }, password ? { password: await bcrypt.hash(password, 4) } : { $unset: { password: 1 } });
+    await fund(user._id, 20000);
+    return user;
+};
+const withdraw = (user, body, idem = key()) => request(app).post("/api/wallet/cash-out").set(bearer(user)).set("Idempotency-Key", idem).send({ amount: 1000, ...body });
+const WithdrawalRequest = () => load("models/WithdrawalRequest.js");
+const Notification = () => load("models/Notification.js");
+const ALERT = (amount, phone) => `Withdrawal of ${amount} RWF to ${phone} requested.`;
+
+test("withdrawal with wrong password is 401 and creates nothing", async () => {
+    stubPayouts();
+    const driver = await fundedDriver();
+    const res = await withdraw(driver, { phone: driver.phone, password: "wrong-one" });
+    assert.equal(res.status, 401);
+    assert.equal(res.body.message, "Incorrect password.");
+    assert.equal(await WithdrawalRequest().countDocuments({ driverId: driver._id }), 0);
+    assert.equal(paidOut.length, 0);
+});
+
+test("withdrawal to a typed number pays that number", async () => {
+    stubPayouts();
+    const driver = await fundedDriver();
+    const res = await withdraw(driver, { phone: "0788999444", password: PASSWORD });
+    assert.equal(res.status, 202, JSON.stringify(res.body));
+    const saved = await WithdrawalRequest().findOne({ driverId: driver._id }).lean();
+    assert.equal(load("services/smsService.js").normalizeRwPhone(saved.phone), "+250788999444");
+    assert.equal(load("services/smsService.js").normalizeRwPhone(paidOut[0]), "+250788999444");
+});
+
+test("withdrawal to another number alerts the owner", async () => {
+    stubPayouts();
+    const driver = await fundedDriver();
+    await withdraw(driver, { phone: "0788999555", password: PASSWORD });
+    assert.ok(await Notification().findOne({ userId: driver._id, message: ALERT(1000, "+250788999555") }), "owner alerted");
+});
+
+test("withdrawal to own number sends no alert", async () => {
+    stubPayouts();
+    const driver = await fundedDriver();
+    const res = await withdraw(driver, { phone: localForm(driver.phone), password: PASSWORD });
+    assert.equal(res.status, 202, JSON.stringify(res.body));
+    assert.equal(await Notification().countDocuments({ userId: driver._id, message: /^Withdrawal of .* requested\.$/ }), 0);
+});
+
+test("withdrawal to an invalid number is refused", async () => {
+    stubPayouts();
+    const driver = await fundedDriver();
+    const res = await withdraw(driver, { phone: "12345", password: PASSWORD });
+    assert.equal(res.status, 400);
+    assert.equal(paidOut.length, 0);
+});
+
+test("passwordless account gets 409", async () => {
+    stubPayouts();
+    const driver = await fundedDriver({ password: null });
+    const res = await withdraw(driver, { phone: driver.phone, password: "anything" });
+    assert.equal(res.status, 409);
+    assert.equal(res.body.message, "Set a password in your account first.");
+});
+
+test("sixth wrong password within 15 min is 429", async () => {
+    stubPayouts();
+    const driver = await fundedDriver();
+    for (let i = 0; i < 5; i++) assert.equal((await withdraw(driver, { phone: driver.phone, password: "nope" })).status, 401);
+    assert.equal((await withdraw(driver, { phone: driver.phone, password: "nope" })).status, 429);
+});
+
+test("same idempotency key: wrong password then correct creates exactly one withdrawal", async () => {
+    stubPayouts();
+    const driver = await fundedDriver();
+    const idem = key();
+    assert.equal((await withdraw(driver, { phone: driver.phone, password: "nope" }, idem)).status, 401);
+    assert.equal((await withdraw(driver, { phone: driver.phone, password: PASSWORD }, idem)).status, 202);
+    assert.equal((await withdraw(driver, { phone: driver.phone, password: PASSWORD }, idem)).status, 202);
+    assert.equal(await WithdrawalRequest().countDocuments({ driverId: driver._id }), 1);
+    assert.equal(paidOut.length, 1);
+});
