@@ -417,3 +417,17 @@ test("login tells an admin-blocked passenger the account is disabled", async () 
     assert.equal(login.status, 403);
     assert.equal(login.body.message, "Account disabled");
 });
+
+test("a passenger stuck without a phone code is let in at login", async () => {
+    const phone = nextPhone();
+    const res = await register({ phone });
+    // As if they registered before this change: inactive and never verified, not blocked by staff.
+    await User.updateOne({ _id: res.body.userId }, { isActive: false, isVerified: false });
+    const login = await request(app).post("/api/auth/login").send({ identifier: res.body.user.phone, password: "Passw0rd!x" });
+    assert.equal(login.status, 200, JSON.stringify(login.body));
+    assert.ok(login.body.token);
+    assert.doesNotMatch(JSON.stringify(login.body), /verify your phone/i);
+    const after = await User.findById(res.body.userId).lean();
+    assert.equal(after.isActive, true);
+    assert.equal(after.isVerified, false, "still proven only by a payment");
+});

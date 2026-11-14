@@ -184,7 +184,14 @@ const login = async (req, res) => {
 
         await require('../services/driverActivation').activateFullKycDriver(user);
         const onboardingDriver = user.role === "driver" && user.registrationStatus !== "approved" && !user.deletedAt;
-        if (!user.isActive && !onboardingDriver) return res.status(403).json({ message: user.isVerified || user.activationBlocked ? "Account disabled" : "Verify your phone to continue", userId: user._id, phone: user.phone, user: { isVerified: user.isVerified } });
+        // Passengers left inactive only because they never got an SMS code (SMS has been down since
+        // 2026-03-18) are let in: their phone is proven later by a MoMo payment. Staff deactivation
+        // always sets activationBlocked (userService.updateUser), so those stay out.
+        if (["client", "passenger"].includes(user.role) && !user.isActive && !user.isVerified && !user.activationBlocked && !user.deletedAt) {
+            user.isActive = true;
+            await user.save();
+        }
+        if (!user.isActive && !onboardingDriver) return res.status(403).json({ message: "Account disabled", userId: user._id });
 
         // Check if 2FA is active
         if (user.twoFactorEnabled) {
