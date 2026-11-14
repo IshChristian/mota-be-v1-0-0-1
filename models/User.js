@@ -35,6 +35,9 @@ const userSchema = new mongoose.Schema({
     otpExpiry: { type: Date },
     emailOtpToken: { type: String },
     emailOtpExpiry: { type: Date },
+    // WhatsApp verification: sha256 of the code the user sends to MOTA's WhatsApp number.
+    waVerifyCodeHash: { type: String, index: { sparse: true } },
+    waVerifyExpiry: { type: Date },
     isVerified: { type: Boolean, default: false }, // Phone verified
     isEmailVerified: { type: Boolean, default: false },
     isActive: { type: Boolean, default: false }, // Default to false until admin approves
@@ -144,7 +147,7 @@ const userSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: Date.now },
 }, {
     // Account secrets are never serialised into an API response.
-    toJSON: { transform: (_doc, ret) => { for (const key of ["password", "otpToken", "emailOtpToken", "twoFactorSecret", "pushTokens", "tokenVersion"]) delete ret[key]; return ret; } },
+    toJSON: { transform: (_doc, ret) => { for (const key of ["password", "otpToken", "emailOtpToken", "waVerifyCodeHash", "twoFactorSecret", "pushTokens", "tokenVersion"]) delete ret[key]; return ret; } },
 });
 
 // Convert empty strings to undefined for sparse-unique fields.

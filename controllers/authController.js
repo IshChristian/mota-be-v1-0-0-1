@@ -345,6 +345,16 @@ const verify2FA = async (req, res) => {
 };
 
 // Expose legacy OTP
+/** The phone is proven (SMS code or WhatsApp): activate passengers and settle referrals. */
+const markPhoneVerified = async (user) => {
+    user.isVerified = true;
+    if (["client", "passenger"].includes(user.role) && !user.deletedAt) user.isActive = true;
+    user.otpToken = null;
+    user.otpExpiry = null;
+    await user.save();
+    await referralService.trySettleReferral(user._id);
+};
+
 const verifyOTP = async (req, res) => {
     // ... Copy legacy logic easily or import existing 
     const { userId, otp } = req.body;
@@ -577,6 +587,7 @@ module.exports = {
     setup2FA,
     verify2FA,
     verifyOTP,
+    markPhoneVerified,
     checkRegistrationPayment,
     resendOTP,
     payRegistration,
