@@ -146,7 +146,8 @@ const requestCashOut = async (req, res) => {
         // Money can go to any number the user types, so every withdrawal re-checks the password.
         if (!user.password) return res.status(409).json({ message: "Set a password in your account first." });
         if (typeof password !== "string" || !(await bcrypt.compare(password, user.password))) {
-            return res.status(401).json({ message: "Incorrect password." });
+            // 403, not 401: clients treat 401 as "session expired" and sign the user out.
+            return res.status(403).json({ message: "Incorrect password." });
         }
         const { toRwandaPhone, samePhone } = require("../services/phoneProofService");
         const payoutPhone = toRwandaPhone(phone);

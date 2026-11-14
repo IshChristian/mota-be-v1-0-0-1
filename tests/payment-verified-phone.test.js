@@ -290,11 +290,11 @@ const WithdrawalRequest = () => load("models/WithdrawalRequest.js");
 const Notification = () => load("models/Notification.js");
 const ALERT = (amount, phone) => `Withdrawal of ${amount} RWF to ${phone} requested.`;
 
-test("withdrawal with wrong password is 401 and creates nothing", async () => {
+test("withdrawal with wrong password is 403 (not 401: the app signs out on 401) and creates nothing", async () => {
     stubPayouts();
     const driver = await fundedDriver();
     const res = await withdraw(driver, { phone: driver.phone, password: "wrong-one" });
-    assert.equal(res.status, 401);
+    assert.equal(res.status, 403);
     assert.equal(res.body.message, "Incorrect password.");
     assert.equal(await WithdrawalRequest().countDocuments({ driverId: driver._id }), 0);
     assert.equal(paidOut.length, 0);
@@ -344,7 +344,7 @@ test("passwordless account gets 409", async () => {
 test("sixth wrong password within 15 min is 429", async () => {
     stubPayouts();
     const driver = await fundedDriver();
-    for (let i = 0; i < 5; i++) assert.equal((await withdraw(driver, { phone: driver.phone, password: "nope" })).status, 401);
+    for (let i = 0; i < 5; i++) assert.equal((await withdraw(driver, { phone: driver.phone, password: "nope" })).status, 403);
     assert.equal((await withdraw(driver, { phone: driver.phone, password: "nope" })).status, 429);
 });
 
@@ -352,7 +352,7 @@ test("same idempotency key: wrong password then correct creates exactly one with
     stubPayouts();
     const driver = await fundedDriver();
     const idem = key();
-    assert.equal((await withdraw(driver, { phone: driver.phone, password: "nope" }, idem)).status, 401);
+    assert.equal((await withdraw(driver, { phone: driver.phone, password: "nope" }, idem)).status, 403);
     assert.equal((await withdraw(driver, { phone: driver.phone, password: PASSWORD }, idem)).status, 202);
     assert.equal((await withdraw(driver, { phone: driver.phone, password: PASSWORD }, idem)).status, 202);
     assert.equal(await WithdrawalRequest().countDocuments({ driverId: driver._id }), 1);
