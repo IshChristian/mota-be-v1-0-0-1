@@ -39,7 +39,7 @@ app.use(express.json({
   verify(req, _res, buffer) {
     // Paypack signs the exact bytes it sends. Keep them only for the webhook
     // verifier; JSON parsing alone cannot reproduce the signed byte stream.
-    if (req.originalUrl?.startsWith("/api/payment/webhook")) req.rawBody = Buffer.from(buffer);
+    if (req.originalUrl?.startsWith("/api/payment/webhook") || req.originalUrl?.startsWith("/api/webhooks/whatsapp")) req.rawBody = Buffer.from(buffer);
   },
 }));
 if (process.env.NODE_ENV !== "test") app.use(morgan("dev"));
@@ -123,6 +123,7 @@ app.use("/api/ussd", ussdRoutes);
 // and webhook settlement. Other financial modules remain behind the release gate.
 app.use("/api/wallet", walletRoutes);
 app.use("/api/payment", paymentRoutes);
+app.use("/api/webhooks/whatsapp", require("./routes/whatsappRoutes"));
 app.use("/api/system-settings", systemSettingRoutes);
 app.use("/api/loans", financialWriteGuard, loanRoutes);
 app.use("/api/lookup", lookupRoutes);

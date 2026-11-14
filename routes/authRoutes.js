@@ -119,6 +119,11 @@ router.post("/verify-otp", authController.verifyOTP);
  */
 router.post("/resend-otp", authController.resendOTP);
 
+// Free fallback while SMS is down: the user sends "MOTA verify <code>" to MOTA's WhatsApp number.
+const whatsappVerify = require("../controllers/whatsappVerifyController");
+router.post("/whatsapp/start", whatsappVerify.start);
+router.get("/whatsapp/status", whatsappVerify.status);
+
 /**
  * @swagger
  * /api/auth/pay-registration:
