@@ -11,7 +11,7 @@ let lastCall = 0;
 let queue = Promise.resolve();
 
 const nominatimUrl = () => (process.env.NOMINATIM_URL || "https://nominatim.openstreetmap.org").replace(/\/+$/, "");
-const userAgent = () => process.env.NOMINATIM_USER_AGENT || "MOTA-Backend/1.0 (support@mota.africa)";
+const userAgent = () => process.env.NOMINATIM_USER_AGENT || "MOTA-Backend/1.0 (tiangroupinnovation@gmail.com)";
 
 function cached(key) {
     const hit = cache.get(key);
