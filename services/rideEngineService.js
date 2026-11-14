@@ -674,7 +674,9 @@ const requestRidePayment = async (passengerId, rideId, payerPhone, promoCode) =>
     if (!chargePhone) throw Object.assign(new Error("Enter a valid Rwanda phone number."), { status: 400 });
 
     // A promo code is checked and held now; it is used only when the payment succeeds.
+    // Codes are for MoMo and wallet rides only: never discount a cash ride through this endpoint.
     const promoService = require("./promoService");
+    if (promoCode && ride.paymentMethod !== "momo") throw new promoService.PromoError("wrong_type");
     const redemption = promoCode
         ? await promoService.reserve({ code: promoCode, appliesTo: "ride", userId: passengerId, amount: ride.fare, rideId: ride._id, method: "momo" })
         : null;

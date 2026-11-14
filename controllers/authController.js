@@ -483,6 +483,15 @@ const payRegistration = async (req, res) => {
         // the use held for the previous attempt first.
         const promoService = require("../services/promoService");
         if (user.registrationPromoRedemptionId) {
+            // A promo use is held for an earlier attempt. Only the driver themself can replace it,
+            // and only once that earlier MoMo prompt is no longer waiting for approval.
+            if (String(req.user?.id) !== String(user._id)) {
+                return res.status(409).json({ message: "Sign in to the MOTA app to pay your registration fee." });
+            }
+            const previous = user.registrationPaypackRef ? await paymentService.getTransactionStatus(user.registrationPaypackRef) : null;
+            if (previous?.success && String(previous.data?.status || "").toLowerCase() === "pending") {
+                return res.status(409).json({ message: "Your previous fee payment is still waiting for approval on your phone. Approve it, or try again in a few minutes." });
+            }
             await promoService.release(user.registrationPromoRedemptionId);
             user.registrationPromoRedemptionId = undefined;
         }

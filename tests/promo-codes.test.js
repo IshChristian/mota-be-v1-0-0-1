@@ -553,3 +553,55 @@ test("cron releases stale reservations", async () => {
     await cron.releaseStalePromos();
     assert.equal((await PromoRedemption.findById(held._id).lean()).status, "released");
 });
+
+// ─── Final review fixes ──────────────────────────────────────────────────────
+
+test("code on a cash ride is refused at pay, with no prompt", async () => {
+    stubCollections();
+    const p = await newCode();
+    const user = await passenger();
+    const { rideId } = await awaitingRide(user, { paymentMethod: "cash" });
+    const res = await payRide(user, rideId, { promoCode: p.code });
+    assert.equal(res.status, 400, JSON.stringify(res.body));
+    assert.equal(res.body.reason, "wrong_type");
+    assert.equal(charged.length, 0);
+    assert.equal(await PromoRedemption.countDocuments({ promoId: p._id }), 0);
+});
+
+test("a call without the driver's session can't release their held fee code", async () => {
+    stubCollections();
+    const p = await feeCode({ maxUsers: 1 });
+    const driver = await registerDriver();
+    await payFee(driver, { promoCode: p.code });
+    const anonymous = await request(app).post("/api/auth/pay-registration").send({ phone: driver.user.phone });
+    assert.equal(anonymous.status, 409, JSON.stringify(anonymous.body));
+    assert.equal(charged.length, 1, "no second prompt");
+    assert.equal((await PromoRedemption.findOne({ promoId: p._id }).lean()).status, "reserved");
+    assert.equal((await PromoCode.findById(p._id).lean()).usersCount, 1);
+});
+
+test("paying the fee again while the first prompt is still pending is refused and keeps the code", async () => {
+    stubCollections();
+    const p = await feeCode();
+    const driver = await registerDriver();
+    await payFee(driver, { promoCode: p.code });
+    load("services/paymentService.js").getTransactionStatus = async () => ({ success: true, data: { status: "pending" } });
+    const again = await payFee(driver, { promoCode: p.code });
+    assert.equal(again.status, 409, JSON.stringify(again.body));
+    assert.equal(charged.length, 1);
+    assert.equal((await PromoRedemption.findOne({ promoId: p._id }).lean()).status, "reserved");
+});
+
+test("paying the fee again after the first prompt failed gives the code back and uses it again", async () => {
+    stubCollections();
+    const p = await feeCode({ maxUsers: 1 });
+    const driver = await registerDriver();
+    await payFee(driver, { promoCode: p.code });
+    load("services/paymentService.js").getTransactionStatus = async () => ({ success: true, data: { status: "failed" } });
+    const again = await payFee(driver, { promoCode: p.code });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.equal(charged.at(-1).amount, 4000);
+    const uses = await PromoRedemption.find({ promoId: p._id }).sort({ reservedAt: 1 }).lean();
+    assert.deepEqual(uses.map((u) => u.status), ["released", "reserved"]);
+    assert.equal((await PromoCode.findById(p._id).lean()).usersCount, 1);
+});
