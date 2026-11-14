@@ -80,6 +80,9 @@ const transactionSchema = new mongoose.Schema({
         trim: true,
         index: true,
     },
+    // Promo codes: the full price before the discount, and the use that paid for the difference.
+    originalAmount: { type: Number },
+    promoRedemptionId: { type: mongoose.Schema.Types.ObjectId, ref: "PromoRedemption" },
     senderPhone: {
         type: String,
         trim: true,

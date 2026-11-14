@@ -183,7 +183,10 @@ const handleWebhook = async (req, res) => {
                 if (isRidePayment) {
                     // Ride-related payment (triggered by driver log or USSD passenger pay)
                     // Calculate commission (logic inside creditRidePayment or manually here)
-                    const { commission, driverEarning } = await walletService.calculateCommission(amount);
+                    // With a promo code the passenger paid less; the driver still earns on the full fare
+                    // (MOTA pays the difference). Driver-logged and USSD payments carry no promo and are unchanged.
+                    const promoRide = tx.promoRedemptionId && tx.rideId ? await Ride.findById(tx.rideId).select("fare") : null;
+                    const { commission, driverEarning } = await walletService.calculateCommission(promoRide ? promoRide.fare : amount);
 
                     // Credit the rider's wallet
                     await walletService.creditWallet(
@@ -192,6 +195,11 @@ const handleWebhook = async (req, res) => {
                         "ride_payment",
                         { paypackRef: ref, description: tx.description || `Ride payment received: ${amount} RWF` }
                     );
+
+                    if (promoRide) {
+                        const redemption = await require("../models/PromoRedemption").findById(tx.promoRedemptionId).select("discount");
+                        await require("../services/promoService").redeem(tx.promoRedemptionId, { subsidy: (redemption?.discount || 0) - commission });
+                    }
 
                     // A passenger who paid from their own number has proven it.
                     if (tx.rideId) {
@@ -283,6 +291,8 @@ const handleWebhook = async (req, res) => {
                 }
             }
         } else if (normalizedStatus === "failed") {
+            // A failed payment gives its promo use back.
+            await require("../services/promoService").releaseByPaymentRef(ref);
             tx.status = "failed";
             tx.paypackEvent = payload;
             await tx.save();

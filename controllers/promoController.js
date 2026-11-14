@@ -8,7 +8,10 @@ const promoService = require("../services/promoService");
 const amountFor = async ({ appliesTo, rideId, userId }) => {
     if (appliesTo === "ride") {
         const ride = mongoose.isValidObjectId(rideId) ? await Ride.findOne({ _id: rideId, passengerId: userId }).select("fare rideStatus paymentMethod") : null;
-        if (!ride || ride.rideStatus !== "awaiting_payment" || !["momo", "wallet"].includes(ride.paymentMethod)) throw new promoService.PromoError("wrong_type");
+        // MoMo rides are paid while awaiting payment; wallet rides are charged at "Confirm arrival".
+        const payable = ride && ((ride.paymentMethod === "momo" && ride.rideStatus === "awaiting_payment")
+            || (ride.paymentMethod === "wallet" && ["stop_requested", "awaiting_payment"].includes(ride.rideStatus)));
+        if (!payable) throw new promoService.PromoError("wrong_type");
         return ride.fare;
     }
     if (appliesTo === "registration_fee") {

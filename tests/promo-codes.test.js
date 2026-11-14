@@ -290,3 +290,159 @@ test("permission script adds promo permissions to stored roles", async () => {
     assert.ok(adminRole.permissions.includes("promo:manage") && adminRole.permissions.includes("admin:access"));
     assert.ok(financeRole.permissions.includes("promo:view") && !financeRole.permissions.includes("promo:manage"));
 });
+
+// ─── Task 3: codes on ride payments ──────────────────────────────────────────
+
+let charged;
+let refSeq = 0;
+const stubCollections = () => {
+    charged = [];
+    load("services/paymentService.js").requestCashIn = async (phone, amount) => { charged.push({ phone, amount }); return { success: true, data: { ref: `pr-${++refSeq}-${Date.now()}` } }; };
+};
+const paypackHook = (ref, amount, status = "successful") => {
+    process.env.PAYPACK_WEBHOOK_SECRET = "pp-secret";
+    const raw = JSON.stringify({ data: { ref, status, amount, kind: "CASHIN" } });
+    const sig = crypto.createHmac("sha256", "pp-secret").update(raw).digest("base64");
+    return request(app).post("/api/payment/webhook").set("Content-Type", "application/json").set("x-paypack-signature", sig).send(raw);
+};
+const payRide = (user, rideId, body = {}) => request(app).post(`/api/rides/${rideId}/pay`).set(bearer(user)).send(body);
+const driverEarningOn = async (fare) => (await load("services/walletService.js").calculateCommission(fare)).driverEarning;
+const balanceOf = async (id) => (await Wallet.findOne({ driverId: id }).lean())?.balance || 0;
+
+test("MoMo ride with a code charges the discounted amount and pays the driver on the full fare", async () => {
+    stubCollections();
+    const p = await newCode();
+    const user = await passenger();
+    const { rideId, driver } = await awaitingRide(user);
+    const before = await balanceOf(driver._id);
+    const res = await payRide(user, rideId, { promoCode: p.code });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(charged[0].amount, 1200);
+    assert.equal((await paypackHook(res.body.data.ref, 1200)).status, 200);
+    assert.equal(await balanceOf(driver._id) - before, await driverEarningOn(1500));
+    const used = await PromoRedemption.findOne({ promoId: p._id }).lean();
+    assert.equal(used.status, "redeemed");
+    assert.equal(used.discount, 300);
+    assert.equal(used.subsidy, 300 - (1500 - await driverEarningOn(1500)));
+    assert.equal((await Ride.findById(rideId).lean()).paymentStatus, "successful");
+});
+
+test("failed MoMo payment releases the code", async () => {
+    stubCollections();
+    const p = await newCode({ maxUsers: 1 });
+    const user = await passenger();
+    const { rideId } = await awaitingRide(user);
+    const res = await payRide(user, rideId, { promoCode: p.code });
+    await paypackHook(res.body.data.ref, 1200, "failed");
+    assert.equal((await PromoRedemption.findOne({ promoId: p._id }).lean()).status, "released");
+    assert.equal((await PromoCode.findById(p._id).lean()).usersCount, 0);
+});
+
+test("failed payment can be retried, with or without a code", async () => {
+    stubCollections();
+    const p = await newCode();
+    const user = await passenger();
+    const { rideId } = await awaitingRide(user);
+    const first = await payRide(user, rideId, { promoCode: p.code });
+    await paypackHook(first.body.data.ref, 1200, "failed");
+    const second = await payRide(user, rideId, {});
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    assert.notEqual(second.body.data.ref, first.body.data.ref);
+    assert.equal(charged.at(-1).amount, 1500);
+});
+
+test("same success delivered twice redeems once", async () => {
+    stubCollections();
+    const p = await newCode();
+    const user = await passenger();
+    const { rideId, driver } = await awaitingRide(user);
+    const before = await balanceOf(driver._id);
+    const res = await payRide(user, rideId, { promoCode: p.code });
+    await paypackHook(res.body.data.ref, 1200);
+    await paypackHook(res.body.data.ref, 1200);
+    const after = await PromoCode.findById(p._id).lean();
+    assert.equal(after.redeemedCount, 1);
+    assert.equal(after.totalDiscount, 300);
+    assert.equal(await balanceOf(driver._id) - before, await driverEarningOn(1500));
+});
+
+test("code used up between preview and pay: 400 used_up, no prompt", async () => {
+    stubCollections();
+    const p = await newCode({ maxUsers: 1 });
+    const user = await passenger();
+    const { rideId } = await awaitingRide(user);
+    assert.equal((await preview(user, { code: p.code, appliesTo: "ride", rideId: String(rideId) })).status, 200);
+    await promo.reserve({ code: p.code, appliesTo: "ride", userId: (await passenger())._id, amount: 1500, method: "momo" });
+    const res = await payRide(user, rideId, { promoCode: p.code });
+    assert.equal(res.status, 400);
+    assert.equal(res.body.reason, "used_up");
+    assert.equal(charged.length, 0);
+});
+
+test("payment under 100 RWF settles without a prompt", async () => {
+    stubCollections();
+    const p = await newCode({ discountType: "fixed", value: 1450 });
+    const user = await passenger();
+    const { rideId, driver } = await awaitingRide(user);
+    const before = await balanceOf(driver._id);
+    const res = await payRide(user, rideId, { promoCode: p.code });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.data.status, "successful");
+    assert.equal(charged.length, 0);
+    assert.equal((await Ride.findById(rideId).lean()).paymentStatus, "successful");
+    assert.equal(await balanceOf(driver._id) - before, await driverEarningOn(1500));
+    assert.equal((await PromoRedemption.findOne({ promoId: p._id }).lean()).status, "redeemed");
+});
+
+const stopRequestedWalletRide = async (user, fare = 1500) => {
+    const { user: driver } = await makeDriver({ online: false });
+    const { insertedId } = await Ride.collection.insertOne({
+        passengerId: user._id, driverId: driver._id, rideStatus: "stop_requested", paymentMethod: "wallet",
+        fare, paymentStatus: "pending", startedAt: new Date(Date.now() - 600000), createdAt: new Date(), updatedAt: new Date(),
+    });
+    return { rideId: insertedId, driver };
+};
+const confirmStop = (user, rideId, body = {}) => request(app).post(`/api/rides/${rideId}/confirm-stop`).set(bearer(user)).send(body);
+
+test("wallet ride: preview works at Confirm arrival", async () => {
+    const p = await newCode();
+    const user = await passenger();
+    const { rideId } = await stopRequestedWalletRide(user);
+    const res = await preview(user, { code: p.code, appliesTo: "ride", rideId: String(rideId) });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.data.payAmount, 1200);
+});
+
+test("wallet ride with a code debits the discounted amount", async () => {
+    const p = await newCode();
+    const user = await passenger();
+    await fund(user._id, 5000);
+    const { rideId, driver } = await stopRequestedWalletRide(user);
+    const before = await balanceOf(driver._id);
+    const res = await confirmStop(user, rideId, { promoCode: p.code });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(await balanceOf(user._id), 3800);
+    assert.equal(await balanceOf(driver._id) - before, await driverEarningOn(1500));
+    assert.equal((await PromoRedemption.findOne({ promoId: p._id }).lean()).status, "redeemed");
+});
+
+test("wallet with too little balance: error and code not used", async () => {
+    const p = await newCode();
+    const user = await passenger();
+    await fund(user._id, 500);
+    const { rideId } = await stopRequestedWalletRide(user);
+    const res = await confirmStop(user, rideId, { promoCode: p.code });
+    assert.notEqual(res.status, 200);
+    assert.equal(await PromoRedemption.countDocuments({ promoId: p._id }), 0);
+    const after = await PromoCode.findById(p._id).lean();
+    assert.deepEqual([after.usersCount, after.reservedCount, after.redeemedCount], [0, 0, 0]);
+});
+
+test("ride without a code is unchanged", async () => {
+    stubCollections();
+    const user = await passenger();
+    const { rideId } = await awaitingRide(user);
+    const res = await payRide(user, rideId);
+    assert.equal(res.status, 200);
+    assert.equal(charged[0].amount, 1500);
+});
