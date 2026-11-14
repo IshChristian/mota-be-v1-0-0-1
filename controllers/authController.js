@@ -19,6 +19,10 @@ const register = async (req, res) => {
         const { firstName, lastName, phone, nationalId, email, role, referralCode, password } = req.body;
 
         // Sanitize inputs — trim and convert empty strings to undefined
+        // Self-registration is for passengers and drivers (and legacy agents). Staff accounts are created by admins.
+        if (role && !["client", "driver", "agent"].includes(role)) {
+            return res.status(400).json({ message: "Choose passenger or driver." });
+        }
         const cleanPhone = phone?.trim() || null;
         const cleanNationalId = nationalId?.trim() || null;
         const cleanEmail = email?.trim() || null;
@@ -128,7 +132,8 @@ const register = async (req, res) => {
             await authService.sendVerificationEmail(newUser, emailOtp);
         }
 
-        const session = await createLoginSession(newUser, req);
+        // Signed in straight away (no phone code). Agents still wait for review, as before.
+        const session = ["client", "driver"].includes(newUser.role) ? await createLoginSession(newUser, req) : {};
         res.status(201).json({
             message: "Registered successfully.",
             userId: newUser._id,
@@ -179,7 +184,7 @@ const login = async (req, res) => {
 
         await require('../services/driverActivation').activateFullKycDriver(user);
         const onboardingDriver = user.role === "driver" && user.registrationStatus !== "approved" && !user.deletedAt;
-        if (!user.isActive && !onboardingDriver) return res.status(403).json({ message: user.isVerified ? "Account disabled" : "Verify your phone to continue", userId: user._id, phone: user.phone, user: { isVerified: user.isVerified } });
+        if (!user.isActive && !onboardingDriver) return res.status(403).json({ message: user.isVerified || user.activationBlocked ? "Account disabled" : "Verify your phone to continue", userId: user._id, phone: user.phone, user: { isVerified: user.isVerified } });
 
         // Check if 2FA is active
         if (user.twoFactorEnabled) {
@@ -344,7 +349,7 @@ const verifyOTP = async (req, res) => {
         if (decoded.otp !== otp) return res.status(400).json({ message: "Invalid OTP" });
 
         user.isVerified = true;
-        if (["client", "passenger"].includes(user.role) && !user.deletedAt) user.isActive = true;
+        if (["client", "passenger"].includes(user.role) && !user.deletedAt && !user.activationBlocked) user.isActive = true;
         user.otpToken = null;
         user.otpExpiry = null;
         await user.save();
@@ -360,7 +365,7 @@ const verifyOTP = async (req, res) => {
  */
 const checkRegistrationPayment = async (req, res) => {
     try {
-        const { userId } = req.body;
+        const userId = req.user.id; // the signed-in driver (body userId is ignored)
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: "User not found" });
         await require("../services/driverActivation").activateFullKycDriver(user);
@@ -371,7 +376,8 @@ const checkRegistrationPayment = async (req, res) => {
         }
 
         // Check Paypack status
-        const result = await paymentService.checkTransaction(user.registrationPaypackRef);
+        // (paymentService has no checkTransaction; this used to throw and never confirm the fee.)
+        const result = await paymentService.getTransactionStatus(user.registrationPaypackRef);
         if (result.success && result.data.status === "successful") {
             user.registrationPaid = true;
             // Removed: user.isActive = true;
@@ -381,6 +387,8 @@ const checkRegistrationPayment = async (req, res) => {
                 user.kycLevel = "full";
             }
             await user.save();
+            // Same as the webhook: paid from the registered number → the phone is proven.
+            await require("../services/phoneProofService").markPhoneProvenByPayment(user._id, user.registrationPayerPhone || user.phone);
 
             await require("../services/driverActivation").activateFullKycDriver(user);
             return res.status(200).json({ message: user.isActive ? "Payment confirmed. Account active." : "Payment confirmed. Complete verification to continue.", paid: true, active: user.isActive, status: user.registrationStatus });
@@ -444,6 +452,10 @@ const payRegistration = async (req, res) => {
         const regFee = await configService.getConfig(configKey, defaultFee);
 
         // `phone` identifies the account; `payerPhone` is the MoMo number to charge (defaults to the account's).
+        // Prompting another number needs the driver's own session (the route requires sign-in when payerPhone is sent).
+        if (req.body.payerPhone && String(req.user?.id) !== String(user._id)) {
+            return res.status(403).json({ message: "You can only pay your own registration fee." });
+        }
         const { toRwandaPhone } = require("../services/phoneProofService");
         const payerPhone = req.body.payerPhone ? toRwandaPhone(req.body.payerPhone) : user.phone;
         if (!payerPhone) return res.status(400).json({ message: "Enter a valid Rwanda phone number." });

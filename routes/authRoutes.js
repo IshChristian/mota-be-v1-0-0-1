@@ -141,7 +141,9 @@ router.post("/resend-otp", authController.resendOTP);
  *       404:
  *         description: User not found
  */
-router.post("/pay-registration", authController.payRegistration);
+// Paying from another MoMo number needs the driver's own session; the plain form stays open for older apps.
+const signedInForOtherPayer = (req, res, next) => (req.body?.payerPhone ? protectOnboarding(req, res, next) : next());
+router.post("/pay-registration", signedInForOtherPayer, authController.payRegistration);
 
 router.post("/forgot-password", authController.forgotPassword);
 router.post("/reset-password", authController.resetPassword);
@@ -213,6 +215,9 @@ router.post("/2fa/verify", authController.verify2FA);
 // Protected routes
 router.post("/submit-registration", protectOnboarding, authController.submitRegistration);
 router.get("/registration-approval", protectOnboarding, authController.getRegistrationApproval);
+// Drivers check their fee *before* it is paid, so this needs the onboarding session, not the full one
+// (under `protect` it answered every unpaid driver "Complete your registration fee to continue").
+router.post("/registration-status", protectOnboarding, authController.checkRegistrationPayment);
 router.use(protect);
 
 /**
@@ -262,6 +267,6 @@ router.post("/2fa/setup", protect, authController.setup2FA);
  *       200:
  *         description: Returns account status (active/inactive)
  */
-router.post("/registration-status", authController.checkRegistrationPayment);
+
 
 module.exports = router;

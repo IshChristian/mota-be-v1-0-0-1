@@ -166,7 +166,9 @@ const driverAwaitingFee = async () => {
     const res = await register({ role: "driver" });
     const id = res.body.userId;
     await DriverKyc.updateOne({ userId: id }, { status: "submitted" }, { upsert: true, strict: false });
-    return User.findById(id);
+    const user = await User.findById(id);
+    user.sessionToken = res.body.token;
+    return user;
 };
 
 test("registration fee from the registered number verifies; from another number it does not", async () => {
@@ -174,7 +176,7 @@ test("registration fee from the registered number verifies; from another number 
     const own = await driverAwaitingFee();
     const other = await driverAwaitingFee();
     const a = await request(app).post("/api/auth/pay-registration").send({ phone: own.phone });
-    const b = await request(app).post("/api/auth/pay-registration").send({ phone: other.phone, payerPhone: "0788999333" });
+    const b = await request(app).post("/api/auth/pay-registration").set("Authorization", `Bearer ${other.sessionToken}`).send({ phone: other.phone, payerPhone: "0788999333" });
     assert.equal(a.status, 200, JSON.stringify(a.body));
     assert.equal(b.status, 200, JSON.stringify(b.body));
     assert.equal(load("services/smsService.js").normalizeRwPhone(charged[1]), "+250788999333");
@@ -218,10 +220,16 @@ test("admin phone edit resets verification", async () => {
     assert.equal((await User.findById(user._id).lean()).isVerified, false);
 });
 
-test("admin phone edit with explicit isVerified true keeps it", async () => {
-    const user = await verifiedPassenger();
+test("admin phone edit that switches isVerified on keeps it (staff verify by hand)", async () => {
+    const user = await unverifiedPassenger();
     await adminPatch(user, { phone: `+25078${String(7000000 + ++seq).slice(-7)}`, isVerified: true });
     assert.equal((await User.findById(user._id).lean()).isVerified, true);
+});
+
+test("admin panel save (whole form, isVerified unchanged) with a new phone still resets", async () => {
+    const user = await verifiedPassenger();
+    await adminPatch(user, { phone: `+25078${String(7000000 + ++seq).slice(-7)}`, isVerified: true, isActive: true, firstName: user.firstName });
+    assert.equal((await User.findById(user._id).lean()).isVerified, false);
 });
 
 test("admin edit that re-sends the same phone in another format keeps verification", async () => {
@@ -357,4 +365,55 @@ test("same idempotency key: wrong password then correct creates exactly one with
     assert.equal((await withdraw(driver, { phone: driver.phone, password: PASSWORD }, idem)).status, 202);
     assert.equal(await WithdrawalRequest().countDocuments({ driverId: driver._id }), 1);
     assert.equal(paidOut.length, 1);
+});
+
+// ─── Final review fixes ──────────────────────────────────────────────────────
+
+test("registration-status settling the fee also proves the phone", async () => {
+    stubCollections();
+    const driver = await driverAwaitingFee();
+    const pay = await request(app).post("/api/auth/pay-registration").send({ phone: driver.phone });
+    assert.equal(pay.status, 200, JSON.stringify(pay.body));
+    load("services/paymentService.js").getTransactionStatus = async () => ({ success: true, data: { status: "successful" } });
+    const status = await request(app).post("/api/auth/registration-status").set("Authorization", `Bearer ${driver.sessionToken}`).send({ userId: String(driver._id) });
+    assert.equal(status.body.paid, true, JSON.stringify(status.body));
+    assert.equal((await User.findById(driver._id).lean()).isVerified, true);
+});
+
+test("pay-registration to another number needs the driver's own session", async () => {
+    stubCollections();
+    const driver = await driverAwaitingFee();
+    const anonymous = await request(app).post("/api/auth/pay-registration").send({ phone: driver.phone, payerPhone: "0788999666" });
+    assert.equal(anonymous.status, 401);
+    assert.equal(charged.length, 0, "no MoMo prompt sent");
+    const someoneElse = await driverAwaitingFee();
+    const wrongSession = await request(app).post("/api/auth/pay-registration").set("Authorization", `Bearer ${someoneElse.sessionToken}`).send({ phone: driver.phone, payerPhone: "0788999666" });
+    assert.equal(wrongSession.status, 403);
+    assert.equal(charged.length, 0, "no MoMo prompt sent");
+});
+
+test("register refuses staff roles", async () => {
+    for (const role of ["admin", "superadmin", "financial", "manager"]) {
+        const res = await register({ role });
+        assert.equal(res.status, 400, `${role}: ${JSON.stringify(res.body)}`);
+        assert.equal(res.body.token, undefined);
+    }
+});
+
+test("an admin-blocked passenger can't switch themselves on with verify-otp", async () => {
+    const { generateOTPToken } = load("utils/jwt.js");
+    const res = await register();
+    const id = res.body.userId;
+    await User.updateOne({ _id: id }, { isActive: false, activationBlocked: true, otpToken: generateOTPToken(id, "123456") });
+    await request(app).post("/api/auth/verify-otp").send({ userId: id, otp: "123456" });
+    assert.equal((await User.findById(id).lean()).isActive, false);
+});
+
+test("login tells an admin-blocked passenger the account is disabled", async () => {
+    const phone = nextPhone();
+    const res = await register({ phone });
+    await User.updateOne({ _id: res.body.userId }, { isActive: false, activationBlocked: true });
+    const login = await request(app).post("/api/auth/login").send({ identifier: res.body.user.phone, password: "Passw0rd!x" });
+    assert.equal(login.status, 403);
+    assert.equal(login.body.message, "Account disabled");
 });
