@@ -55,6 +55,7 @@ const requestRide = async (req, res) => {
             }
         });
     } catch (error) {
+        if (error.code === "VERIFY_TO_RIDE") return res.status(403).json({ code: error.code, message: error.message, needs: error.needs });
         if (/already have an active ride/.test(error.message)) {
             const active = await Ride.findOne({ passengerId: req.user.id, rideStatus: { $in: ["requested", "searching", ...rideEngineService.DRIVER_ACTIVE] } }).select("_id rideStatus");
             return res.status(409).json({ status: "error", message: error.message, rideId: active?._id, rideStatus: active?.rideStatus });

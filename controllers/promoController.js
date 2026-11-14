@@ -28,7 +28,8 @@ const preview = async (req, res) => {
         const { code, appliesTo, rideId } = req.body || {};
         const amount = await amountFor({ appliesTo, rideId, userId: req.user.id });
         const q = await promoService.quote({ code, appliesTo, userId: req.user.id, amount });
-        res.status(200).json({ data: { code: q.promo.code, discount: q.discount, payAmount: q.payAmount, originalAmount: q.originalAmount } });
+        const percent = q.originalAmount > 0 ? Math.round((q.discount / q.originalAmount) * 100) : 0;
+        res.status(200).json({ data: { code: q.promo.code, discount: q.discount, payAmount: q.payAmount, originalAmount: q.originalAmount, percent } });
     } catch (error) {
         if (error instanceof promoService.PromoError) return res.status(400).json({ reason: error.reason, message: error.message });
         res.status(500).json({ message: "Server error", error: error.message });

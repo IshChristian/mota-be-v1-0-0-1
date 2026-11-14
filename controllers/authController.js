@@ -24,6 +24,10 @@ const register = async (req, res) => {
             return res.status(400).json({ message: "Choose passenger or driver." });
         }
         const cleanPhone = phone?.trim() || null;
+        // Passengers confirm an email before their first ride (SMS is unreliable), so they must give one.
+        if ((role || "client") === "client" && !email?.trim()) {
+            return res.status(400).json({ message: "Email is required for passengers." });
+        }
         const cleanNationalId = nationalId?.trim() || null;
         const cleanEmail = email?.trim() || null;
 
@@ -493,6 +497,15 @@ const payRegistration = async (req, res) => {
         // the use held for the previous attempt first.
         const promoService = require("../services/promoService");
         if (user.registrationPromoRedemptionId) {
+            // A promo use is held for an earlier attempt. Only the driver themself can replace it,
+            // and only once that earlier MoMo prompt is no longer waiting for approval.
+            if (String(req.user?.id) !== String(user._id)) {
+                return res.status(409).json({ message: "Sign in to the MOTA app to pay your registration fee." });
+            }
+            const previous = user.registrationPaypackRef ? await paymentService.getTransactionStatus(user.registrationPaypackRef) : null;
+            if (previous?.success && String(previous.data?.status || "").toLowerCase() === "pending") {
+                return res.status(409).json({ message: "Your previous fee payment is still waiting for approval on your phone. Approve it, or try again in a few minutes." });
+            }
             await promoService.release(user.registrationPromoRedemptionId);
             user.registrationPromoRedemptionId = undefined;
         }
@@ -503,15 +516,6 @@ const payRegistration = async (req, res) => {
             user.registrationPromoRedemptionId = redemption._id;
         }
         const amountDue = redemption ? redemption.paidAmount : regFee;
-
-        if (redemption && amountDue < 100) {
-            // Below the MoMo minimum: MOTA covers the rest; the fee counts as paid now.
-            user.registrationPaid = true;
-            user.registrationStatus = "pending";
-            await user.save();
-            await promoService.redeem(redemption._id, { subsidy: 0 });
-            return res.status(200).json({ message: "Registration fee covered by your promo code. Account is now pending admin approval.", paid: true });
-        }
 
         const result = await paymentService.requestCashIn(paypackPhone, amountDue, process.env.PAYPACK_ENV || "development");
 
