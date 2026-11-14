@@ -621,16 +621,19 @@ const claimFare = async (driverId, rideId) => {
     return { ride, balance: wallet?.balance || 0 };
 };
 
-const requestRidePayment = async (passengerId, rideId) => {
+const requestRidePayment = async (passengerId, rideId, payerPhone) => {
     const ride = await Ride.findOne({ _id: rideId, passengerId, rideStatus: "awaiting_payment" });
     if (!ride) throw new Error("Ride is not ready for passenger payment.");
     if (ride.paymentStatus === "successful") return { ref: ride.paypackRef, status: "successful" };
     if (ride.paypackRef) return { ref: ride.paypackRef, status: "pending" };
     const passenger = await User.findById(passengerId).select("phone");
-    const result = await paymentService.requestCashIn(passenger.phone, ride.fare, process.env.PAYPACK_ENV || "development");
+    // The passenger may pay from another MoMo number; only their own number proves their phone.
+    const chargePhone = payerPhone ? require("./phoneProofService").toRwandaPhone(payerPhone) : passenger.phone;
+    if (!chargePhone) throw Object.assign(new Error("Enter a valid Rwanda phone number."), { status: 400 });
+    const result = await paymentService.requestCashIn(chargePhone, ride.fare, process.env.PAYPACK_ENV || "development");
     if (!result.success) throw new Error("Payment provider could not start the request.");
     const ref = result.data?.ref;
-    await Transaction.create({ driverId: ride.driverId, rideId: ride._id, amount: ride.fare, type: "cash_in", status: "pending", paypackRef: ref, description: `Passenger payment for ride ${ride._id}` });
+    await Transaction.create({ driverId: ride.driverId, rideId: ride._id, amount: ride.fare, type: "cash_in", status: "pending", paypackRef: ref, senderPhone: chargePhone, description: `Passenger payment for ride ${ride._id}` });
     ride.paypackRef = ref;
     ride.paymentStatus = "pending";
     await ride.save();

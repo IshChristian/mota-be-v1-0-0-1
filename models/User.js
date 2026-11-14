@@ -27,6 +27,8 @@ const userSchema = new mongoose.Schema({
     pendingEmail: { type: String, trim: true, lowercase: true, select: false },
     contactChangeOtpHash: { type: String, select: false },
     contactChangeExpiresAt: { type: Date, select: false },
+    // The number the driver registration fee was collected from (may differ from `phone`).
+    registrationPayerPhone: { type: String, trim: true },
     otpToken: { type: String },
     otpExpiry: { type: Date },
     emailOtpToken: { type: String },

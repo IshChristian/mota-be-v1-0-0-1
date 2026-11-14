@@ -8,6 +8,7 @@ const loanService = require("../services/loanService");
 const { sendSMS } = require("../services/smsService");
 const { sendEmail } = require("../services/notificationService");
 const EventEmitter = require("events");
+const { markPhoneProvenByPayment } = require("../services/phoneProofService");
 const withdrawalService = require("../services/withdrawalService");
 const sseService = require("../services/sseService");
 
@@ -134,6 +135,8 @@ const handleWebhook = async (req, res) => {
                         user.kycLevel = "full";
                     }
                     await user.save();
+                    // Paid from the registered number → the phone is proven.
+                    await markPhoneProvenByPayment(user._id, user.registrationPayerPhone || user.phone);
                     // ⚡ Instantly notify any SSE listeners watching this ref
                     txBus.emit(`tx:${ref}`);
                 }
@@ -151,6 +154,7 @@ const handleWebhook = async (req, res) => {
                     return res.status(409).json({ message: "Paypack event does not match the pending cash-in." });
                 }
                 const settlement = await walletService.settleCashInTransaction(tx._id, payload);
+                if (settlement.credited) await markPhoneProvenByPayment(tx.driverId, tx.senderPhone);
                 txBus.emit(`tx:${ref}`);
                 if (settlement.credited) {
                     const user = await User.findById(tx.driverId);
@@ -188,6 +192,12 @@ const handleWebhook = async (req, res) => {
                         "ride_payment",
                         { paypackRef: ref, description: tx.description || `Ride payment received: ${amount} RWF` }
                     );
+
+                    // A passenger who paid from their own number has proven it.
+                    if (tx.rideId) {
+                        const paidRide = await Ride.findById(tx.rideId).select("passengerId");
+                        if (paidRide?.passengerId) await markPhoneProvenByPayment(paidRide.passengerId, tx.senderPhone);
+                    }
 
                     // If it was a logged ride, update ride status
                     if (tx.rideId) {

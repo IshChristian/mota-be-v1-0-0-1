@@ -443,8 +443,12 @@ const payRegistration = async (req, res) => {
         const defaultFee = isAgent ? 10000 : 5000;
         const regFee = await configService.getConfig(configKey, defaultFee);
 
+        // `phone` identifies the account; `payerPhone` is the MoMo number to charge (defaults to the account's).
+        const { toRwandaPhone } = require("../services/phoneProofService");
+        const payerPhone = req.body.payerPhone ? toRwandaPhone(req.body.payerPhone) : user.phone;
+        if (!payerPhone) return res.status(400).json({ message: "Enter a valid Rwanda phone number." });
         // Format phone for Paypack (e.g., convert +250 or 250 to 07...)
-        const paypackPhone = user.phone.replace(/^\+?250/, '0');
+        const paypackPhone = payerPhone.replace(/^\+?250/, '0');
 
         if (regFee > 0 && regFee < 100) {
             return res.status(400).json({ message: "System configuration error: Registration fee is below the minimum allowed by the gateway (100 RWF)." });
@@ -459,6 +463,7 @@ const payRegistration = async (req, res) => {
 
         if (result.success) {
             user.registrationPaypackRef = result.data?.ref;
+            user.registrationPayerPhone = payerPhone;
             await user.save();
             return res.status(200).json({
                 message: `Payment request of ${regFee} RWF initiated. Please approve MoMo prompt to activate account.`,
