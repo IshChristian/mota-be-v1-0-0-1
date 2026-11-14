@@ -76,6 +76,12 @@ const runLoanChecks = async () => {
 
 let isSyncing = false;
 
+/** Promo uses held for a payment that never started are given back after 30 minutes. */
+const releaseStalePromos = async () => {
+    try { return await require("./promoService").releaseStale(); }
+    catch (error) { console.error("Promo release failed:", error.message); return 0; }
+};
+
 const runTransactionSync = async () => {
     if (isSyncing) return; // Prevent overlapping API calls if Paypack is slow
     isSyncing = true;
@@ -150,6 +156,8 @@ const initCron = () => {
         }
     }, 60 * 60 * 1000); // Check every 1 hour
 
+    setInterval(releaseStalePromos, 5 * 60 * 1000);
+
     // Loans: missed installments → overdue (one SMS on the change); past the final due date → defaulted.
     setInterval(runLoanChecks, 60 * 60 * 1000);
 
@@ -174,4 +182,4 @@ const initCron = () => {
     console.log("⏱️  Daily Cron & Realtime Sync Service initialized.");
 };
 
-module.exports = { initCron, runDailyTasks, runTransactionSync };
+module.exports = { initCron, runDailyTasks, runTransactionSync, releaseStalePromos };

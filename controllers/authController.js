@@ -396,6 +396,7 @@ const checkRegistrationPayment = async (req, res) => {
             await user.save();
             // Same as the webhook: paid from the registered number → the phone is proven.
             await require("../services/phoneProofService").markPhoneProvenByPayment(user._id, user.registrationPayerPhone || user.phone);
+            if (user.registrationPromoRedemptionId) await require("../services/promoService").redeem(user.registrationPromoRedemptionId, { subsidy: 0 });
 
             await require("../services/driverActivation").activateFullKycDriver(user);
             return res.status(200).json({ message: user.isActive ? "Payment confirmed. Account active." : "Payment confirmed. Complete verification to continue.", paid: true, active: user.isActive, status: user.registrationStatus });
@@ -460,7 +461,7 @@ const payRegistration = async (req, res) => {
 
         // `phone` identifies the account; `payerPhone` is the MoMo number to charge (defaults to the account's).
         // Prompting another number needs the driver's own session (the route requires sign-in when payerPhone is sent).
-        if (req.body.payerPhone && String(req.user?.id) !== String(user._id)) {
+        if ((req.body.payerPhone || req.body.promoCode) && String(req.user?.id) !== String(user._id)) {
             return res.status(403).json({ message: "You can only pay your own registration fee." });
         }
         const { toRwandaPhone } = require("../services/phoneProofService");
@@ -478,20 +479,52 @@ const payRegistration = async (req, res) => {
             return res.status(200).json({ message: "Registration is currently free. Account is now pending admin approval." });
         }
 
-        const result = await paymentService.requestCashIn(paypackPhone, regFee, process.env.PAYPACK_ENV || "development");
+        // Promo code (drivers only): held now, used when the fee is paid. Paying again gives back
+        // the use held for the previous attempt first.
+        const promoService = require("../services/promoService");
+        if (user.registrationPromoRedemptionId) {
+            await promoService.release(user.registrationPromoRedemptionId);
+            user.registrationPromoRedemptionId = undefined;
+        }
+        let redemption = null;
+        if (req.body.promoCode) {
+            if (user.role !== "driver") throw new promoService.PromoError("drivers_only");
+            redemption = await promoService.reserve({ code: req.body.promoCode, appliesTo: "registration_fee", userId: user._id, amount: Number(regFee), method: "momo" });
+            user.registrationPromoRedemptionId = redemption._id;
+        }
+        const amountDue = redemption ? redemption.paidAmount : regFee;
+
+        if (redemption && amountDue < 100) {
+            // Below the MoMo minimum: MOTA covers the rest; the fee counts as paid now.
+            user.registrationPaid = true;
+            user.registrationStatus = "pending";
+            await user.save();
+            await promoService.redeem(redemption._id, { subsidy: 0 });
+            return res.status(200).json({ message: "Registration fee covered by your promo code. Account is now pending admin approval.", paid: true });
+        }
+
+        const result = await paymentService.requestCashIn(paypackPhone, amountDue, process.env.PAYPACK_ENV || "development");
 
         if (result.success) {
             user.registrationPaypackRef = result.data?.ref;
             user.registrationPayerPhone = payerPhone;
             await user.save();
+            if (redemption) await promoService.attachPaymentRef(redemption._id, result.data?.ref);
             return res.status(200).json({
-                message: `Payment request of ${regFee} RWF initiated. Please approve MoMo prompt to activate account.`,
-                ref: result.data?.ref
+                message: `Payment request of ${amountDue} RWF initiated. Please approve MoMo prompt to activate account.`,
+                ref: result.data?.ref,
+                amount: amountDue,
             });
         } else {
+            if (redemption) {
+                await promoService.release(redemption._id);
+                user.registrationPromoRedemptionId = undefined;
+                await user.save();
+            }
             return res.status(500).json({ message: "Payment gateway error. Could not initiate payment.", error: result.error });
         }
     } catch (error) {
+        if (error.reason) return res.status(400).json({ reason: error.reason, message: error.message });
         res.status(500).json({ message: "Server error", error: error.message });
     }
 };

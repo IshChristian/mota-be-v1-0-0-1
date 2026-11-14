@@ -542,7 +542,7 @@ const requestStop = async (driverId, rideId, deliveryPin) => {
     return ride;
 };
 
-const confirmStop = async (passengerId, rideId) => {
+const confirmStop = async (passengerId, rideId, promoCode) => {
     const ride = await Ride.findOne({ _id: rideId, passengerId });
     if (!ride) throw new Error("Ride not found or you are not its passenger.");
     // A retry can arrive after the first request has already completed. Return
@@ -557,10 +557,18 @@ const confirmStop = async (passengerId, rideId) => {
         try {
             await session.withTransaction(async () => {
                 const { commission, driverEarning } = await walletService.calculateCommission(ride.fare);
-                const passengerWallet = await Wallet.findOneAndUpdate({ driverId: passengerId, balance: { $gte: ride.fare } }, { $inc: { balance: -ride.fare } }, { returnDocument: "after", session });
+                // A promo code lowers what the passenger pays; the driver still earns on the full fare (MOTA pays).
+                const promoService = require("./promoService");
+                const redemption = promoCode
+                    ? await promoService.reserve({ code: promoCode, appliesTo: "ride", userId: passengerId, amount: ride.fare, rideId: ride._id, method: "wallet" }, { session })
+                    : null;
+                const payAmount = redemption ? redemption.paidAmount : ride.fare;
+                const passengerWallet = await Wallet.findOneAndUpdate({ driverId: passengerId, balance: { $gte: payAmount } }, { $inc: { balance: -payAmount } }, { returnDocument: "after", session });
                 if (!passengerWallet) throw new Error("Insufficient wallet balance. Top up before completing payment.");
                 await Wallet.findOneAndUpdate({ driverId: ride.driverId }, { $inc: { balance: driverEarning }, $setOnInsert: { driverId: ride.driverId } }, { upsert: true, returnDocument: "after", session });
-                await Transaction.create([{ driverId: passengerId, rideId: ride._id, amount: -ride.fare, type: "ride_payment", status: "successful", description: `Wallet payment for ride ${ride._id}` }, { driverId: ride.driverId, rideId: ride._id, amount: driverEarning, feeAmount: commission, type: "ride_payment", status: "successful", description: `Ride earning after ${commission} RWF commission` }], { session, ordered: true });
+                const promoFields = redemption ? { originalAmount: ride.fare, promoRedemptionId: redemption._id } : {};
+                await Transaction.create([{ driverId: passengerId, rideId: ride._id, amount: -payAmount, type: "ride_payment", status: "successful", ...promoFields, description: redemption ? `Wallet payment for ride ${ride._id} (promo ${redemption.code}: −${redemption.discount} RWF)` : `Wallet payment for ride ${ride._id}` }, { driverId: ride.driverId, rideId: ride._id, amount: driverEarning, feeAmount: commission, type: "ride_payment", status: "successful", ...promoFields, description: `Ride earning after ${commission} RWF commission` }], { session, ordered: true });
+                if (redemption) await promoService.redeem(redemption._id, { subsidy: redemption.discount - commission, session });
                 ride.paymentStatus = "successful";
                 ride.commissionAmount = commission;
                 ride.driverEarning = driverEarning;
@@ -621,23 +629,77 @@ const claimFare = async (driverId, rideId) => {
     return { ride, balance: wallet?.balance || 0 };
 };
 
-const requestRidePayment = async (passengerId, rideId, payerPhone) => {
+/**
+ * MOTA settles a promo ride whose discounted price is below the MoMo minimum (100 RWF):
+ * no prompt is sent; the driver is credited on the full fare and the code is redeemed.
+ */
+const settlePromoRideWithoutPrompt = async (ride, redemption) => {
+    const promoService = require("./promoService");
+    const { commission, driverEarning } = await walletService.calculateCommission(ride.fare);
+    const session = await mongoose.startSession();
+    try {
+        await session.withTransaction(async () => {
+            const claimed = await Ride.findOneAndUpdate(
+                { _id: ride._id, paymentStatus: { $ne: "successful" } },
+                { $set: { paymentStatus: "successful", commissionAmount: commission, driverEarning } },
+                { returnDocument: "after", session },
+            );
+            if (!claimed) return;
+            await Wallet.findOneAndUpdate({ driverId: ride.driverId }, { $inc: { balance: driverEarning }, $setOnInsert: { driverId: ride.driverId } }, { upsert: true, returnDocument: "after", session });
+            await Transaction.create([{
+                driverId: ride.driverId, rideId: ride._id, amount: driverEarning, feeAmount: commission, type: "ride_payment", status: "successful",
+                originalAmount: ride.fare, promoRedemptionId: redemption._id,
+                description: `Ride earning after ${commission} RWF commission (promo ${redemption.code} covered by MOTA)`,
+            }], { session });
+            await promoService.redeem(redemption._id, { subsidy: redemption.discount - commission, session });
+        });
+    } finally { await session.endSession(); }
+    emitToUser(ride.driverId, "paymentUpdate", { rideId: ride._id, paymentStatus: "successful" });
+};
+
+const requestRidePayment = async (passengerId, rideId, payerPhone, promoCode) => {
     const ride = await Ride.findOne({ _id: rideId, passengerId, rideStatus: "awaiting_payment" });
     if (!ride) throw new Error("Ride is not ready for passenger payment.");
     if (ride.paymentStatus === "successful") return { ref: ride.paypackRef, status: "successful" };
-    if (ride.paypackRef) return { ref: ride.paypackRef, status: "pending" };
+    if (ride.paypackRef) {
+        // Paying again is allowed once the previous MoMo payment has failed.
+        const previous = await Transaction.findOne({ paypackRef: ride.paypackRef }).select("status");
+        if (previous?.status !== "failed" && ride.paymentStatus !== "failed") return { ref: ride.paypackRef, status: "pending" };
+        ride.paypackRef = undefined;
+        ride.paymentStatus = "pending";
+    }
     const passenger = await User.findById(passengerId).select("phone");
     // The passenger may pay from another MoMo number; only their own number proves their phone.
     const chargePhone = payerPhone ? require("./phoneProofService").toRwandaPhone(payerPhone) : passenger.phone;
     if (!chargePhone) throw Object.assign(new Error("Enter a valid Rwanda phone number."), { status: 400 });
-    const result = await paymentService.requestCashIn(chargePhone, ride.fare, process.env.PAYPACK_ENV || "development");
-    if (!result.success) throw new Error("Payment provider could not start the request.");
+
+    // A promo code is checked and held now; it is used only when the payment succeeds.
+    const promoService = require("./promoService");
+    const redemption = promoCode
+        ? await promoService.reserve({ code: promoCode, appliesTo: "ride", userId: passengerId, amount: ride.fare, rideId: ride._id, method: "momo" })
+        : null;
+    const amount = redemption ? redemption.paidAmount : ride.fare;
+    if (redemption && amount < 100) {
+        await settlePromoRideWithoutPrompt(ride, redemption);
+        return { ref: null, status: "successful", amount };
+    }
+
+    const result = await paymentService.requestCashIn(chargePhone, amount, process.env.PAYPACK_ENV || "development");
+    if (!result.success) {
+        if (redemption) await promoService.release(redemption._id);
+        throw new Error("Payment provider could not start the request.");
+    }
     const ref = result.data?.ref;
-    await Transaction.create({ driverId: ride.driverId, rideId: ride._id, amount: ride.fare, type: "cash_in", status: "pending", paypackRef: ref, senderPhone: chargePhone, description: `Passenger payment for ride ${ride._id}` });
+    if (redemption) await promoService.attachPaymentRef(redemption._id, ref);
+    await Transaction.create({
+        driverId: ride.driverId, rideId: ride._id, amount, type: "cash_in", status: "pending", paypackRef: ref, senderPhone: chargePhone,
+        ...(redemption ? { originalAmount: ride.fare, promoRedemptionId: redemption._id } : {}),
+        description: redemption ? `Passenger payment for ride ${ride._id} (promo ${redemption.code}: −${redemption.discount} RWF)` : `Passenger payment for ride ${ride._id}`,
+    });
     ride.paypackRef = ref;
     ride.paymentStatus = "pending";
     await ride.save();
-    return { ref, status: "pending", amount: ride.fare };
+    return { ref, status: "pending", amount };
 };
 
 // ═══════════════════════════════════════════════════════════════════════════

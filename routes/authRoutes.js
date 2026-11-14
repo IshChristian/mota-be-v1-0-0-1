@@ -142,7 +142,7 @@ router.post("/resend-otp", authController.resendOTP);
  *         description: User not found
  */
 // Paying from another MoMo number needs the driver's own session; the plain form stays open for older apps.
-const signedInForOtherPayer = (req, res, next) => (req.body?.payerPhone ? protectOnboarding(req, res, next) : next());
+const signedInForOtherPayer = (req, res, next) => (req.body?.payerPhone || req.body?.promoCode ? protectOnboarding(req, res, next) : next());
 router.post("/pay-registration", signedInForOtherPayer, authController.payRegistration);
 
 router.post("/forgot-password", authController.forgotPassword);
