@@ -446,3 +446,110 @@ test("ride without a code is unchanged", async () => {
     assert.equal(res.status, 200);
     assert.equal(charged[0].amount, 1500);
 });
+
+// ─── Task 4: codes on the driver registration fee ────────────────────────────
+
+const DriverKyc = () => load("models/DriverKyc.js");
+const registerDriver = async (role = "driver") => {
+    const res = await request(app).post("/api/auth/register").send({
+        firstName: "Fee", lastName: "Driver", phone: `078${String(3000000 + ++seq).slice(-7)}`, nationalId: `1199880${String(100000000 + seq).slice(-9)}`,
+        password: "Passw0rd!x", role,
+    });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    await DriverKyc().updateOne({ userId: res.body.userId }, { status: "submitted" }, { upsert: true, strict: false });
+    const user = await User.findById(res.body.userId);
+    return { user, token: res.body.token };
+};
+const payFee = (driver, body, token = driver.token) => {
+    const req = request(app).post("/api/auth/pay-registration");
+    if (token) req.set("Authorization", `Bearer ${token}`);
+    return req.send({ phone: driver.user.phone, ...body });
+};
+const feeCode = (extra = {}) => newCode({ appliesTo: "registration_fee", ...extra });
+
+test("fee with a code charges the discounted fee", async () => {
+    stubCollections();
+    const p = await feeCode();
+    const driver = await registerDriver();
+    const res = await payFee(driver, { promoCode: p.code });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(charged[0].amount, 4000);
+    await paypackHook(res.body.ref, 4000);
+    assert.equal((await User.findById(driver.user._id).lean()).registrationPaid, true);
+    const used = await PromoRedemption.findOne({ promoId: p._id }).lean();
+    assert.equal(used.status, "redeemed");
+    assert.equal(used.subsidy, 0);
+    assert.equal(used.discount, 1000);
+});
+
+test("fee code needs the driver's session", async () => {
+    stubCollections();
+    const p = await feeCode();
+    const driver = await registerDriver();
+    assert.equal((await payFee(driver, { promoCode: p.code }, null)).status, 401);
+    assert.equal(charged.length, 0);
+});
+
+test("agent gets drivers_only", async () => {
+    const p = await feeCode();
+    const agent = await User.create({ firstName: "A", lastName: "G", phone: `+25078${String(9000000 + ++seq).slice(-7)}`, role: "agent", isActive: true });
+    const res = await request(app).post("/api/auth/pay-registration").set(bearer(agent)).send({ phone: agent.phone, promoCode: p.code });
+    assert.equal(res.status, 400, JSON.stringify(res.body));
+    assert.equal(res.body.reason, "drivers_only");
+});
+
+test("100% fee code makes registration free immediately", async () => {
+    stubCollections();
+    const p = await feeCode({ value: 100 });
+    const driver = await registerDriver();
+    const res = await payFee(driver, { promoCode: p.code });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(charged.length, 0);
+    const after = await User.findById(driver.user._id).lean();
+    assert.equal(after.registrationPaid, true);
+    assert.equal((await PromoRedemption.findOne({ promoId: p._id }).lean()).status, "redeemed");
+});
+
+test("fee code plus another payer number: fee paid, code redeemed, phone not proven", async () => {
+    stubCollections();
+    const p = await feeCode();
+    const driver = await registerDriver();
+    const res = await payFee(driver, { promoCode: p.code, payerPhone: "0788999888" });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    await paypackHook(res.body.ref, 4000);
+    const after = await User.findById(driver.user._id).lean();
+    assert.equal(after.registrationPaid, true);
+    assert.equal(after.isVerified, false);
+    assert.equal((await PromoRedemption.findOne({ promoId: p._id }).lean()).status, "redeemed");
+});
+
+test("failed fee payment releases the code", async () => {
+    stubCollections();
+    const p = await feeCode({ maxUsers: 1 });
+    const driver = await registerDriver();
+    const res = await payFee(driver, { promoCode: p.code });
+    await paypackHook(res.body.ref, 4000, "failed");
+    assert.equal((await PromoRedemption.findOne({ promoId: p._id }).lean()).status, "released");
+});
+
+test("registration-status confirming the fee redeems the code", async () => {
+    stubCollections();
+    const p = await feeCode();
+    const driver = await registerDriver();
+    const res = await payFee(driver, { promoCode: p.code });
+    load("services/paymentService.js").getTransactionStatus = async () => ({ success: true, data: { status: "successful" } });
+    const status = await request(app).post("/api/auth/registration-status").set("Authorization", `Bearer ${driver.token}`).send({});
+    assert.equal(status.body.paid, true, JSON.stringify(status.body));
+    assert.equal((await PromoRedemption.findOne({ promoId: p._id }).lean()).status, "redeemed");
+    assert.ok(res.body.ref);
+});
+
+test("cron releases stale reservations", async () => {
+    const p = await newCode();
+    const held = await promo.reserve({ code: p.code, appliesTo: "ride", userId: (await passenger())._id, amount: 1500, method: "momo" });
+    await PromoRedemption.updateOne({ _id: held._id }, { reservedAt: new Date(Date.now() - 31 * 60 * 1000) });
+    const cron = load("services/cronService.js");
+    assert.equal(typeof cron.releaseStalePromos, "function");
+    await cron.releaseStalePromos();
+    assert.equal((await PromoRedemption.findById(held._id).lean()).status, "released");
+});

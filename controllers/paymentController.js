@@ -137,11 +137,15 @@ const handleWebhook = async (req, res) => {
                     await user.save();
                     // Paid from the registered number → the phone is proven.
                     await markPhoneProvenByPayment(user._id, user.registrationPayerPhone || user.phone);
+                    if (user.registrationPromoRedemptionId) await require("../services/promoService").redeem(user.registrationPromoRedemptionId, { subsidy: 0 });
                     // ⚡ Instantly notify any SSE listeners watching this ref
                     txBus.emit(`tx:${ref}`);
                 }
             }
             
+            // A failed registration payment gives its promo use back.
+            if (normalizedStatus === "failed") await require("../services/promoService").releaseByPaymentRef(ref);
+
             // Still acknowledge
             return res.status(200).json({ message: "Webhook received" });
         }
