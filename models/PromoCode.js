@@ -4,7 +4,7 @@ const mongoose = require("mongoose");
 const promoCodeSchema = new mongoose.Schema({
     code: { type: String, required: true, unique: true, uppercase: true, trim: true, match: /^[A-Z0-9-]{3,20}$/ },
     appliesTo: { type: String, enum: ["ride", "registration_fee"], required: true },
-    discountType: { type: String, enum: ["percent", "fixed"], required: true },
+    discountType: { type: String, enum: ["percent", "fixed", "free"], required: true },
     value: { type: Number, required: true, min: 1 },
     maxDiscount: { type: Number, min: 1, default: null },   // cap for percent codes (RWF)
     minAmount: { type: Number, min: 0, default: null },     // the fare/fee must be at least this

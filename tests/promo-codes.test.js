@@ -623,3 +623,79 @@ test("preview returns the discount percentage", async () => {
     const fixed = await newCode({ discountType: "fixed", value: 500 });
     assert.equal((await preview(user, { code: fixed.code, appliesTo: "ride", rideId: String(rideId) })).body.data.percent, 25);
 });
+
+// ─── "Free" codes: nothing to pay ────────────────────────────────────────────
+
+const freeCode = (extra = {}) => newCode({ discountType: "free", value: 100, ...extra });
+
+test("admin creates a free code without a value", async () => {
+    const admin = (await makePassenger({ role: "superadmin", phone: `+25078${String(7000000 + ++seq).slice(-7)}` })).user;
+    const res = await request(app).post("/api/admin/promos").set(bearer(admin)).send({ code: `FREE${++seq}`, appliesTo: "registration_fee", discountType: "free" });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    assert.equal(res.body.data.discountType, "free");
+    assert.equal(res.body.data.maxDiscount, null);
+});
+
+test("free fee code: paid at once, no prompt, code redeemed, phone and KYC untouched", async () => {
+    stubCollections();
+    const p = await freeCode({ appliesTo: "registration_fee" });
+    const driver = await registerDriver();
+    const prev = await preview(driver.user, { code: p.code, appliesTo: "registration_fee" });
+    assert.deepEqual([prev.body.data.payAmount, prev.body.data.percent], [0, 100]);
+    const res = await payFee(driver, { promoCode: p.code });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.deepEqual([res.body.paid, res.body.amount, res.body.ref], [true, 0, null]);
+    assert.equal(charged.length, 0);
+    const u = await User.findById(driver.user._id).lean();
+    assert.equal(u.registrationPaid, true);
+    assert.equal(u.isVerified, false);
+    assert.notEqual(u.kycLevel, "full");
+    assert.notEqual(u.registrationStatus, "approved");
+    const used = await PromoRedemption.findOne({ promoId: p._id }).lean();
+    assert.deepEqual([used.status, used.discount, used.paidAmount, used.method], ["redeemed", 5000, 0, "none"]);
+});
+
+test("free fee code double tap uses one place and pays once", async () => {
+    stubCollections();
+    const p = await freeCode({ appliesTo: "registration_fee", perUserLimit: 5 });
+    const driver = await registerDriver();
+    await Promise.all([payFee(driver, { promoCode: p.code }), payFee(driver, { promoCode: p.code })]);
+    assert.equal(charged.length, 0);
+    assert.equal(await PromoRedemption.countDocuments({ promoId: p._id, status: "redeemed" }), 1);
+    assert.equal(await PromoRedemption.countDocuments({ promoId: p._id, status: "reserved" }), 0);
+});
+
+test("free fee code waits while an earlier prompt is still pending", async () => {
+    stubCollections();
+    const p = await freeCode({ appliesTo: "registration_fee" });
+    const driver = await registerDriver();
+    await payFee(driver, {});
+    load("services/paymentService.js").getTransactionStatus = async () => ({ success: true, data: { status: "pending" } });
+    const res = await payFee(driver, { promoCode: p.code });
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+    assert.equal((await User.findById(driver.user._id).lean()).registrationPaid, false);
+    assert.equal(await PromoRedemption.countDocuments({ promoId: p._id, status: "reserved" }), 0);
+});
+
+test("free MoMo ride settles without a prompt and the driver earns on the full fare", async () => {
+    stubCollections();
+    const p = await freeCode();
+    const user = await passenger();
+    const { rideId, driver } = await awaitingRide(user);
+    const before = await balanceOf(driver._id);
+    const res = await payRide(user, rideId, { promoCode: p.code });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(charged.length, 0);
+    assert.equal(await balanceOf(driver._id) - before, await driverEarningOn(1500));
+});
+
+test("free wallet ride works for a passenger who has no wallet yet", async () => {
+    const p = await freeCode();
+    const user = await passenger();
+    const { rideId, driver } = await stopRequestedWalletRide(user);
+    const before = await balanceOf(driver._id);
+    const res = await confirmStop(user, rideId, { promoCode: p.code });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(await balanceOf(driver._id) - before, await driverEarningOn(1500));
+    assert.equal((await PromoRedemption.findOne({ promoId: p._id }).lean()).paidAmount, 0);
+});

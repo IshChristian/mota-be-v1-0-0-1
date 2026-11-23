@@ -81,7 +81,7 @@ async function adminDetail(req,res) {
   if(!['driver','passenger'].includes(req.params.type))return res.status(400).json({message:'Invalid KYC type.'});
   if(!mongoose.isValidObjectId(req.params.id))return res.status(400).json({message:'Invalid KYC ID.'});
   const Model=req.params.type==='driver'?DriverKyc:PassengerKyc;
-  const record=await Model.findById(req.params.id).populate('userId','firstName lastName phone email role');
+  const record=await Model.findById(req.params.id).populate('userId','firstName lastName phone email role').populate('reviewedBy','firstName lastName role');
   if(!record)return res.status(404).json({message:'KYC not found.'});
   res.json({data:record,kycType:req.params.type,requirements:req.params.type==='driver'?driverFields:passengerFields});
 }

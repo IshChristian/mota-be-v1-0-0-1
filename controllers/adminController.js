@@ -135,11 +135,20 @@ const createUserAccount = async (req, res) => {
     } catch (error) { res.status(error.status || (error.code === 11000 ? 409 : 500)).json({ message: error.status ? error.message : error.code === 11000 ? "Phone, email or national ID already exists" : "Server error", error: error.message }); }
 };
 
+/** "full" comes from approving the submitted KYC, never from editing the account around that review. */
+const assertKycReviewed = async (user, kycLevel) => {
+    if (kycLevel !== "full" || user.kycLevel === "full") return;
+    const Kyc = user.role === "driver" ? DriverKyc : ["client", "passenger"].includes(user.role) ? PassengerKyc : null;
+    const kyc = Kyc && await Kyc.findOne({ userId: user._id }).select("status").lean();
+    if (kyc && kyc.status !== "approved") throw Object.assign(new Error("This person's KYC hasn't been approved. Review it on the KYC page."), { status: 409 });
+};
+
 const updateUserAccount = async (req, res) => {
     try {
         const before = await User.findById(req.params.id);
         if (!before) return res.status(404).json({ message: "User not found" });
         const updates = pickFields(req.body, editableUserFields);
+        await assertKycReviewed(before, updates.kycLevel);
         if (updates.email) updates.email = updates.email.toLowerCase();
         // A new number hasn't been paid from: it must prove itself again, unless staff verify it explicitly.
         // (The admin panel sends the whole form, so an unchanged isVerified is not an explicit choice.)
@@ -205,6 +214,19 @@ const deleteSupportCase = async (req, res) => { try { const item = await Support
 const getSupportOperations = async (req, res) => { try { const activeStatuses = ["requested", "searching", "accepted", "approaching", "arrived", "start_requested", "in_progress", "stop_requested", "awaiting_payment"]; const [cases, rides, drivers] = await Promise.all([SupportCase.find({ status: { $in: ["open", "in_progress"] } }).populate("customerId driverId assignedTo", "firstName lastName phone email role").populate("rideId").sort({ priority: -1, createdAt: -1 }).limit(100), Ride.find({ rideStatus: { $in: activeStatuses } }).populate("passengerId driverId", "firstName lastName phone email isOnline lastLocation lastLocationAt").sort({ requestedAt: -1 }).limit(100), User.find({ role: "driver", isActive: true, isOnline: true, lastLocationAt: { $gte: new Date(Date.now() - 5 * 60 * 1000) } }).select("firstName lastName phone isOnline lastLocation lastLocationAt")]); res.json({ data: { cases, rides, drivers } }); } catch (error) { res.status(500).json({ message: "Server error", error: error.message }); } };
 const logSupportContact = async (req, res) => { try { const { channel, direction = "outbound", outcome, note } = req.body; const allowedChannels = ["call", "sms", "email", "push", "in_app"]; const allowedOutcomes = ["answered", "no_answer", "sent", "failed", "callback_requested", "resolved"]; if (!allowedChannels.includes(channel) || !allowedOutcomes.includes(outcome) || !note) return res.status(400).json({ message: "Valid channel, outcome and note are required" }); const item = await SupportCase.findByIdAndUpdate(req.params.id, { $push: { contactHistory: { channel, direction, outcome, note, createdBy: req.user.id } }, $set: { status: outcome === "resolved" ? "resolved" : "in_progress" } }, { returnDocument: "after", runValidators: true }); if (!item) return res.status(404).json({ message: "Support case not found" }); await auditService.log({ ...auditContext(req), action: "support_contact_logged", targetType: "SupportCase", targetId: item._id, metadata: { channel, direction, outcome } }); res.json({ message: "Contact logged", data: item }); } catch (error) { res.status(400).json({ message: error.message }); } };
 const notifySupportPassenger = async (req, res) => { try { const item = await SupportCase.findById(req.params.id); if (!item?.rideId) return res.status(404).json({ message: "Support case or linked ride not found" }); const ride = await Ride.findById(item.rideId).populate("driverId", "firstName lastName phone"); const passenger = await User.findById(ride?.passengerId).select("firstName phone email +pushTokens"); if (!ride || !passenger) return res.status(404).json({ message: "Ride passenger not found" }); const driverName = ride.driverId ? `${ride.driverId.firstName} ${ride.driverId.lastName}` : "your MOTA driver"; const message = `MOTA: ${driverName} accepted your ride. Current status: ${ride.rideStatus}. Fare: ${ride.fare || ride.offeredFare} RWF.`; await notificationService.createNotification(passenger._id, "Ride update", message, "in_app", { rideId: ride._id, rideStatus: ride.rideStatus }); const results = await Promise.allSettled([sendSMS(passenger.phone, message, "support_ride_update"), passenger.email ? notificationService.sendEmail(passenger.email, "MOTA ride update", message) : Promise.resolve(false), notificationService.sendPushNotification(passenger._id, "Ride update", message, { rideId: String(ride._id), rideStatus: ride.rideStatus })]); item.lastPassengerNotificationAt = new Date(); item.contactHistory.push({ channel: "in_app", direction: "outbound", outcome: "sent", note: `Ride notification resent for ${ride.rideStatus}`, createdBy: req.user.id }); await item.save(); await auditService.log({ ...auditContext(req), action: "passenger_renotified", targetType: "Ride", targetId: ride._id, metadata: { supportCaseId: item._id, results: results.map(result => result.status) } }); res.json({ message: "Passenger notification attempted on all configured channels", data: { statuses: results.map(result => result.status), notifiedAt: item.lastPassengerNotificationAt } }); } catch (error) { res.status(500).json({ message: error.message }); } };
+/** Live map: text a driver from MOTA's SMS sender. The audit log records the attempt either way. */
+const smsDriver = async (req, res) => {
+    try {
+        const message = String(req.body?.message || "").trim();
+        if (!message || message.length > 320) return res.status(400).json({ message: "Write a message of up to 320 characters." });
+        const driver = mongoose.isValidObjectId(req.params.id) ? await User.findOne({ _id: req.params.id, role: "driver" }).select("phone") : null;
+        if (!driver) return res.status(404).json({ message: "Driver not found" });
+        const sent = await sendSMS(driver.phone, message, "system_alert");
+        await auditService.log({ ...auditContext(req), action: "driver_sms_sent", targetType: "User", targetId: driver._id, metadata: { message, sent } });
+        if (!sent) return res.status(502).json({ message: "The SMS provider did not accept the message. Call the driver or text from your phone." });
+        res.json({ message: "SMS sent" });
+    } catch (error) { res.status(500).json({ message: "Unable to send the SMS" }); }
+};
 const assignRideBySupport = async (req, res) => { try { const { driverId, supportCaseId } = req.body; if (!mongoose.isValidObjectId(driverId)) return res.status(400).json({ message: "Valid driverId is required" }); const driver = await User.findOne({ _id: driverId, role: "driver", isActive: true, isOnline: true, lastLocationAt: { $gte: new Date(Date.now() - 5 * 60 * 1000) } }); if (!driver) return res.status(409).json({ message: "Driver is unavailable or location is stale" }); const busy = await Ride.exists({ driverId, rideStatus: { $in: ["accepted", "approaching", "arrived", "start_requested", "in_progress", "stop_requested", "awaiting_payment"] } }); if (busy) return res.status(409).json({ message: "Driver already has an active ride" }); const ride = await Ride.findOneAndUpdate({ _id: req.params.id, rideStatus: { $in: ["requested", "searching"] }, driverId: null }, { $set: { driverId, rideStatus: "approaching", acceptedAt: new Date() }, $addToSet: { notifiedDrivers: driverId } }, { returnDocument: "after" }); if (!ride) return res.status(409).json({ message: "Ride is no longer assignable" }); const passenger = await User.findById(ride.passengerId); if (!passenger) return res.status(409).json({ message: "Ride passenger account is unavailable; assignment was saved but no notification was sent", data: ride }); const message = `MOTA support assigned driver ${driver.firstName} ${driver.lastName} to your ride. Fare: ${ride.fare || ride.offeredFare} RWF.`; await Promise.allSettled([notificationService.createNotification(passenger._id, "Driver assigned", message, "in_app", { rideId: ride._id, driverId }), sendSMS(passenger.phone, message, "support_driver_assigned"), notificationService.sendPushNotification(passenger._id, "Driver assigned", message, { rideId: String(ride._id), driverId: String(driverId) })]); if (supportCaseId) await SupportCase.findByIdAndUpdate(supportCaseId, { rideId: ride._id, customerId: ride.passengerId, driverId, assignedTo: req.user.id, status: "in_progress", $push: { contactHistory: { channel: "in_app", outcome: "sent", note: "Driver manually assigned by support", createdBy: req.user.id } } }); await auditService.log({ ...auditContext(req), action: "support_ride_assigned", targetType: "Ride", targetId: ride._id, metadata: { driverId, supportCaseId } }); res.json({ message: "Driver assigned and passenger notified", data: ride }); } catch (error) { res.status(500).json({ message: error.message }); } };
 
 const createRideBySupport = async (req, res) => { try {
@@ -377,10 +399,15 @@ const verifyUser = async (req, res) => {
 const updateKYC = async (req, res) => {
     try {
         const { kycLevel } = req.body;
+        if (!["basic", "full"].includes(kycLevel)) return res.status(400).json({ message: "KYC level must be basic or full" });
+        const before = await User.findById(req.params.id);
+        if (!before) return res.status(404).json({ message: "User not found" });
+        await assertKycReviewed(before, kycLevel);
         const user = await User.findByIdAndUpdate(req.params.id, { kycLevel }, { returnDocument: "after" });
+        await auditService.log({ ...auditContext(req), action: "user_updated", targetType: "User", targetId: user._id, metadata: { before: { kycLevel: before.kycLevel }, changes: { kycLevel } } });
         res.status(200).json({ message: "KYC level updated", data: user });
     } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+        res.status(error.status || 500).json({ message: error.status ? error.message : "Server error", error: error.message });
     }
 };
 
@@ -712,6 +739,7 @@ module.exports = {
     getSupportOperations,
     logSupportContact,
     notifySupportPassenger,
+    smsDriver,
     assignRideBySupport,
     createRideBySupport,
     updateRideBySupport,
