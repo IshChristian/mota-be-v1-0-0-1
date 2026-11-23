@@ -32,18 +32,19 @@ const normalizeCode = (code) => String(code || "").trim().toUpperCase();
 
 /** Whole RWF discount, never more than the amount. */
 const discountFor = (promo, amount) => {
+    if (promo.discountType === "free") return Math.max(0, amount);
     const raw = promo.discountType === "percent" ? Math.round((amount * promo.value) / 100) : promo.value;
     const capped = promo.discountType === "percent" && promo.maxDiscount ? Math.min(raw, promo.maxDiscount) : raw;
     return Math.max(0, Math.min(capped, amount));
 };
 
-// The driver registration fee is never free: a fee code always leaves the MoMo minimum to pay.
+// Percentage and fixed fee codes always leave the MoMo minimum to pay. Only a "free" code makes the fee free.
 const FEE_MIN_PAY = 100;
 
-/** The discount actually given: fee codes are capped so the driver still pays at least 100 RWF. */
+/** The discount actually given: fee codes (except free ones) leave at least 100 RWF to pay. */
 const effectiveDiscount = (promo, amount) => {
     const discount = discountFor(promo, amount);
-    return promo.appliesTo === "registration_fee" ? Math.min(discount, Math.max(0, amount - FEE_MIN_PAY)) : discount;
+    return promo.appliesTo === "registration_fee" && promo.discountType !== "free" ? Math.min(discount, Math.max(0, amount - FEE_MIN_PAY)) : discount;
 };
 
 const statusOf = (promo, now = new Date()) => {

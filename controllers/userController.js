@@ -158,7 +158,9 @@ const requestContactChange = async (req, res) => {
         const otp = String(crypto.randomInt(100000, 1000000)); const user = await User.findById(req.user.id).select("+pendingPhone +pendingEmail +contactChangeOtpHash +contactChangeExpiresAt");
         user.pendingPhone = type === 'phone' ? value : undefined; user.pendingEmail = type === 'email' ? value : undefined;
         user.contactChangeOtpHash = crypto.createHash('sha256').update(otp).digest('hex'); user.contactChangeExpiresAt = new Date(Date.now() + 10 * 60 * 1000); await user.save();
-        if (type === 'phone') await sendSMS(value, `MOTA contact change code: ${otp}`, 'contact_change'); else await sendEmail(value, 'Confirm your MOTA email', `Your MOTA confirmation code is ${otp}`, `<p>Your MOTA confirmation code is <strong>${otp}</strong>. It expires in 10 minutes.</p>`);
+        if (type === 'phone') await sendSMS(value, `MOTA contact change code: ${otp}`, 'contact_change'); else { const sent = await sendEmail(value, 'Confirm your MOTA email', `Your MOTA confirmation code is ${otp}`, `<p>Your MOTA confirmation code is <strong>${otp}</strong>. It expires in 10 minutes.</p>`);
+            if (!sent) return res.status(503).json({ message: "We could not send the email right now. Please try again in a few minutes." });
+        }
         res.json({ message: `Confirmation code sent to the new ${type}` });
     } catch (error) { res.status(500).json({ message: "Unable to request contact change" }); }
 };

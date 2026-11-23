@@ -17,6 +17,7 @@ const readInput = (body, current = {}) => {
     const input = {};
     for (const key of FIELDS) if (body[key] !== undefined) input[key] = body[key];
     if (input.code !== undefined) input.code = normalizeCode(input.code);
+    if ((input.discountType ?? current.discountType) === "free") { input.value = 100; input.maxDiscount = null; }
     for (const key of ["maxDiscount", "minAmount", "maxUsers"]) if (key in input) input[key] = optionalNumber(input[key]);
     for (const key of ["value", "perUserLimit"]) if (key in input) input[key] = Number(input[key]);
     for (const key of ["startsAt", "endsAt"]) if (key in input) input[key] = optionalDate(input[key]);
@@ -25,7 +26,7 @@ const readInput = (body, current = {}) => {
     const merged = { ...current, ...input };
     if (!/^[A-Z0-9-]{3,20}$/.test(merged.code || "")) throw bad("Code must be 3–20 letters, numbers or dashes.");
     if (!["ride", "registration_fee"].includes(merged.appliesTo)) throw bad("Choose ride or registration fee.");
-    if (!["percent", "fixed"].includes(merged.discountType)) throw bad("Choose a percentage or a fixed amount.");
+    if (!["percent", "fixed", "free"].includes(merged.discountType)) throw bad("Choose a percentage, a fixed amount or free.");
     if (!Number.isFinite(merged.value) || merged.value < 1 || (merged.discountType === "percent" && merged.value > 100)) throw bad("Enter a discount between 1 and 100% or at least 1 RWF.");
     if (!Number.isInteger(merged.perUserLimit ?? 1) || (merged.perUserLimit ?? 1) < 1) throw bad("Uses per person must be at least 1.");
     if (merged.maxUsers !== null && merged.maxUsers !== undefined && (!Number.isInteger(merged.maxUsers) || merged.maxUsers < 1)) throw bad("Number of people must be at least 1, or empty for no limit.");

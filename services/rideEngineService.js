@@ -578,11 +578,12 @@ const confirmStop = async (passengerId, rideId, promoCode) => {
                     ? await promoService.reserve({ code: promoCode, appliesTo: "ride", userId: passengerId, amount: ride.fare, rideId: ride._id, method: "wallet" }, { session })
                     : null;
                 const payAmount = redemption ? redemption.paidAmount : ride.fare;
-                const passengerWallet = await Wallet.findOneAndUpdate({ driverId: passengerId, balance: { $gte: payAmount } }, { $inc: { balance: -payAmount } }, { returnDocument: "after", session });
+                // A free ride takes nothing, so the passenger needs no wallet.
+                const passengerWallet = payAmount === 0 || await Wallet.findOneAndUpdate({ driverId: passengerId, balance: { $gte: payAmount } }, { $inc: { balance: -payAmount } }, { returnDocument: "after", session });
                 if (!passengerWallet) throw new Error("Insufficient wallet balance. Top up before completing payment.");
                 await Wallet.findOneAndUpdate({ driverId: ride.driverId }, { $inc: { balance: driverEarning }, $setOnInsert: { driverId: ride.driverId } }, { upsert: true, returnDocument: "after", session });
                 const promoFields = redemption ? { originalAmount: ride.fare, promoRedemptionId: redemption._id } : {};
-                await Transaction.create([{ driverId: passengerId, rideId: ride._id, amount: -payAmount, type: "ride_payment", status: "successful", ...promoFields, description: redemption ? `Wallet payment for ride ${ride._id} (promo ${redemption.code}: −${redemption.discount} RWF)` : `Wallet payment for ride ${ride._id}` }, { driverId: ride.driverId, rideId: ride._id, amount: driverEarning, feeAmount: commission, type: "ride_payment", status: "successful", ...promoFields, description: `Ride earning after ${commission} RWF commission` }], { session, ordered: true });
+                await Transaction.create([{ driverId: passengerId, rideId: ride._id, amount: 0 - payAmount, type: "ride_payment", status: "successful", ...promoFields, description: redemption ? `Wallet payment for ride ${ride._id} (promo ${redemption.code}: −${redemption.discount} RWF)` : `Wallet payment for ride ${ride._id}` }, { driverId: ride.driverId, rideId: ride._id, amount: driverEarning, feeAmount: commission, type: "ride_payment", status: "successful", ...promoFields, description: `Ride earning after ${commission} RWF commission` }], { session, ordered: true });
                 if (redemption) await promoService.redeem(redemption._id, { subsidy: redemption.discount - commission, session });
                 ride.paymentStatus = "successful";
                 ride.commissionAmount = commission;

@@ -133,7 +133,8 @@ const register = async (req, res) => {
             newUser.emailOtpToken = generateOTPToken(newUser._id, emailOtp);
             newUser.emailOtpExpiry = new Date(Date.now() + 5 * 60 * 1000); // 5 min
             await newUser.save();
-            await authService.sendVerificationEmail(newUser, emailOtp);
+            // Not awaited: a slow mail server must not hold up (or time out) the registration.
+            void authService.sendVerificationEmail(newUser, emailOtp);
         }
 
         // Signed in straight away (no phone code). Agents still wait for review, as before.
@@ -259,7 +260,7 @@ const verifyEmail = async (req, res) => {
 
 const resendEmailOTP = async (req, res) => {
     try {
-        const { email } = req.body;
+        const email = String(req.body.email || "").trim();
         if (!email) return res.status(400).json({ message: "Email is required." });
 
         const user = await User.findOne({ email });
@@ -271,7 +272,8 @@ const resendEmailOTP = async (req, res) => {
         user.emailOtpExpiry = new Date(Date.now() + 5 * 60 * 1000);
         await user.save();
 
-        await authService.sendVerificationEmail(user, emailOtp);
+        const sent = await authService.sendVerificationEmail(user, emailOtp);
+        if (!sent) return res.status(503).json({ message: "We could not send the email right now. Please try again in a few minutes." });
 
         res.status(200).json({ message: "New email OTP sent successfully." });
     } catch (error) {
@@ -281,9 +283,10 @@ const resendEmailOTP = async (req, res) => {
 
 const forgotPassword = async (req, res) => {
     try {
-        const email = String(req.body.email || "").trim().toLowerCase();
+        const email = String(req.body.email || "").trim();
         if (!email) return res.status(400).json({ message: "Email is required" });
-        const user = await User.findOne({ email }).select("+passwordResetTokenHash +passwordResetExpiresAt");
+        // Emails are stored as typed at sign-up, so try that spelling as well as lowercase.
+        const user = await User.findOne({ email: { $in: [email, email.toLowerCase()] } }).select("+passwordResetTokenHash +passwordResetExpiresAt");
         if (user) await authService.sendPasswordResetEmail(user);
         res.status(200).json({ message: "If an account exists for that email, a password reset link has been sent." });
     } catch (error) {
@@ -512,7 +515,29 @@ const payRegistration = async (req, res) => {
         let redemption = null;
         if (req.body.promoCode) {
             if (user.role !== "driver") throw new promoService.PromoError("drivers_only");
-            redemption = await promoService.reserve({ code: req.body.promoCode, appliesTo: "registration_fee", userId: user._id, amount: Number(regFee), method: "momo" });
+            // A free code must not settle the fee while an earlier MoMo prompt could still charge the driver.
+            const isFree = (await promoService.quote({ code: req.body.promoCode, appliesTo: "registration_fee", userId: user._id, amount: Number(regFee) })).payAmount === 0;
+            if (isFree && user.registrationPaypackRef) {
+                const earlier = await paymentService.getTransactionStatus(user.registrationPaypackRef);
+                if (earlier?.success && String(earlier.data?.status || "").toLowerCase() === "pending") {
+                    return res.status(409).json({ message: "Your previous fee payment is still waiting for approval on your phone. Approve it, or try again in a few minutes." });
+                }
+            }
+            redemption = await promoService.reserve({ code: req.body.promoCode, appliesTo: "registration_fee", userId: user._id, amount: Number(regFee), method: isFree ? "none" : "momo" });
+            if (redemption.paidAmount === 0) {
+                // Nothing to charge: the fee is settled now. KYC approval is still required, and no payment means the phone isn't proven.
+                const paid = await User.findOneAndUpdate(
+                    { _id: user._id, registrationPaid: { $ne: true } },
+                    { $set: { registrationPaid: true, registrationPromoRedemptionId: redemption._id } },
+                    { returnDocument: "after" },
+                );
+                if (!paid) {
+                    await promoService.release(redemption._id);
+                    return res.status(400).json({ message: "Account is already active." });
+                }
+                await promoService.redeem(redemption._id, { subsidy: 0 });
+                return res.status(200).json({ message: "Registration fee covered by your promo code.", paid: true, ref: null, amount: 0 });
+            }
             user.registrationPromoRedemptionId = redemption._id;
         }
         const amountDue = redemption ? redemption.paidAmount : regFee;
