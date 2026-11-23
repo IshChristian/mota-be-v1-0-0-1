@@ -247,15 +247,15 @@ const handleUssd = async (req, res) => {
 
                     const result = await paymentService.requestCashOut(
                         user.phone,
-                        amount,
+                        cashOutResult.payout,
                         process.env.PAYPACK_ENV || "development"
                     );
 
                     if (result.success) {
-                        return res.status(200).send(`END Success! ${amount} RWF sent to MoMo account (${user.phone}). Fee: ${cashOutResult.fee} RWF.`);
+                        return res.status(200).send(`END Success! ${cashOutResult.payout} RWF sent to MoMo account (${user.phone}). Fee: ${cashOutResult.fee} RWF.`);
                     } else {
                         // Refund wrapper requires amount (the exact amount deducted base)
-                        await walletService.creditWallet(driverId.toString(), cashOutResult.totalDeduction, "cash_out_refund", { description: "Refund for failed cash-out (includes fee)" });
+                        await walletService.creditWallet(driverId.toString(), cashOutResult.totalDeduction, "cash_out_refund", { description: "Refund for failed cash-out" });
                         return res.status(200).send("END Gateway error. Your balance is restored.");
                     }
                 }

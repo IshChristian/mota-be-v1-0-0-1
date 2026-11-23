@@ -162,22 +162,23 @@ const requestCashOut = async (req, res) => {
         if (!result.replayed) {
             const notificationService = require("../services/notificationService");
             const reviewers = await User.find({ role: { $in: ["admin", "superadmin"] }, isActive: true }).select("_id").lean();
-            const notice = `Withdrawal request ${result.request._id} from ${user.firstName} ${user.lastName} (${user.phone}). Amount: ${result.request.amount} RWF; fee: ${result.request.fee} RWF; payout phone: ${result.request.phone}; status: ${result.dispatch.status}. Open Withdrawal requests to review and download CSV.`;
+            const notice = `Withdrawal request ${result.request._id} from ${user.firstName} ${user.lastName} (${user.phone}). Requested: ${result.request.totalHeld} RWF; fee: ${result.request.fee} RWF; paid to MoMo: ${result.request.amount} RWF; payout phone: ${result.request.phone}; status: ${result.dispatch.status}. Open Withdrawal requests to review and download CSV.`;
             // A withdrawal to someone else's number is the first sign of a stolen password.
-            const otherNumberAlert = samePhone(payoutPhone, user.phone) ? [] : [notificationService.createNotification(user._id, "Withdrawal to another number", `Withdrawal of ${result.request.amount} RWF to ${payoutPhone} requested.`, "in_app", { requestId: String(result.request._id) })];
+            const otherNumberAlert = samePhone(payoutPhone, user.phone) ? [] : [notificationService.createNotification(user._id, "Withdrawal to another number", `Withdrawal of ${result.request.totalHeld} RWF to ${payoutPhone} requested.`, "in_app", { requestId: String(result.request._id) })];
             await Promise.allSettled([
                 ...otherNumberAlert,
-                notificationService.createNotification(user._id, "Withdrawal request received", `Your ${result.request.amount} RWF request was received. Payout usually arrives within 2 hours, depending on the provider. Track its status in your wallet.`, "in_app", { requestId: String(result.request._id) }),
+                notificationService.createNotification(user._id, "Withdrawal request received", `Your ${result.request.totalHeld} RWF request was received. You will get ${result.request.amount} RWF on MoMo after the ${result.request.fee} RWF cash-out fee. Payout usually arrives within 2 hours, depending on the provider. Track its status in your wallet.`, "in_app", { requestId: String(result.request._id) }),
                 ...reviewers.map(reviewer => notificationService.createNotification(reviewer._id, "Driver withdrawal request", notice, "in_app", { requestId: String(result.request._id) })),
             ]);
         }
         // Same message whatever Paypack said: refusals are handled by MOTA staff.
         return res.status(202).json({
-            message: `Withdrawal of ${result.request.amount} RWF received. Payout usually arrives within 2 hours, depending on the provider.`,
+            message: `Withdrawal of ${result.request.totalHeld} RWF received. You will get ${result.request.amount} RWF on MoMo after the ${result.request.fee} RWF cash-out fee. Payout usually arrives within 2 hours, depending on the provider.`,
             data: {
                 requestId: result.request._id,
-                requestedAmount: result.request.amount,
+                requestedAmount: result.request.totalHeld,
                 fee: result.request.fee,
+                payoutAmount: result.request.amount,
                 // Users see "processing" while MOTA staff handle a refused payout.
                 status: result.dispatch.status === "manual_required" ? "processing" : result.dispatch.status,
                 replayed: result.replayed,
