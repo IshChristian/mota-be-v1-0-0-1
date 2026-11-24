@@ -12,6 +12,7 @@ const walletService = require("./walletService");
 const paymentService = require("./paymentService");
 const auditService = require("./auditService");
 const { sendSMS } = require("./smsService");
+const { withRideLock } = require("./rideLock");
 const systemSettingService = require("./systemSettingService");
 const sseService = require("./sseService");
 const notificationService = require("./notificationService");
@@ -40,16 +41,34 @@ function emitToUser(userId, event, payload) {
     } catch (error) { console.error("Ride event delivery failed:", error.message); }
 }
 
+// SMS, push and email are slow and can hang: they run after the ride action has answered, a few at
+// a time. Each kind has its own lane so a dead mail server cannot delay the push that rings a phone.
+const lanes = { push: [], sms: [], email: [], ride: [] };
+const running = { push: 0, sms: 0, email: 0, ride: 0 };
+const LANE_SIZE = { push: 20, sms: 10, email: 5, ride: 10 };
+const MAX_WAITING_EMAILS = 200;
+function runLane(lane) {
+    while (running[lane] < LANE_SIZE[lane] && lanes[lane].length) {
+        const task = lanes[lane].shift();
+        running[lane] += 1;
+        Promise.resolve().then(task).catch((error) => console.error(`Ride ${lane} task failed:`, error.message)).finally(() => { running[lane] -= 1; runLane(lane); });
+    }
+}
+function sendLater(task, lane = "ride") {
+    if (lane === "email" && lanes.email.length >= MAX_WAITING_EMAILS) return; // the in-app notice and push still went out
+    lanes[lane].push(task);
+    runLane(lane);
+}
+
 async function notifyUser(user, title, message, event, payload) {
     if (!user) return;
     await notificationService.createNotification(user._id, title, message, "in_app", payload);
     emitToUser(user._id, event, payload);
-    const tasks = [
-        sendSMS(user.phone, message, event),
-        notificationService.sendPushNotification(user._id, title, message, { ...payload, event }),
-    ];
-    if (user.email) tasks.push(notificationService.sendEmail(user.email, title, message));
-    await Promise.allSettled(tasks);
+    // Push first: it is what rings the phone.
+    sendLater(() => notificationService.sendPushNotification(user._id, title, message, { ...payload, event }), "push");
+    sendLater(() => sendSMS(user.phone, message, event), "sms");
+    // An offer lasts a minute; emailing it would only use up the daily quota verification codes need.
+    if (user.email && event !== "rideRequest") sendLater(() => notificationService.sendEmail(user.email, title, message), "email");
 }
 
 // ── Haversine distance (km) ────────────────────────────────────────────────
@@ -187,15 +206,6 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
         }
     }
 
-    // Check passenger doesn't have an active ride
-    const activeRide = await Ride.findOne({
-        passengerId,
-        rideStatus: { $in: ["requested", "searching", ...DRIVER_ACTIVE] },
-    });
-    if (activeRide) {
-        throw new Error("You already have an active ride. Complete or cancel it first.");
-    }
-
     // Scheduled times are entered in Kigali local time (UTC+02:00).
     let scheduledAt = null;
     if (scheduledDate && scheduledTime) {
@@ -205,8 +215,11 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
         if (scheduledAt.getTime() <= Date.now() + 20 * 60 * 1000) throw new Error("Schedule a ride at least 20 minutes ahead.");
     }
 
-    // Create ride
-    const ride = await Ride.create({
+    // Check and create together, so a double tap cannot create two rides.
+    const ride = await withRideLock(passengerId, async () => {
+        const activeRide = await Ride.exists({ passengerId, rideStatus: { $in: ["requested", "searching", ...DRIVER_ACTIVE] } });
+        if (activeRide) throw new Error("You already have an active ride. Complete or cancel it first.");
+        return Ride.create({
         passengerId,
         pickup,
         destination,
@@ -229,6 +242,7 @@ const requestRide = async (passengerId, pickup, destination, offeredFare, backup
         rideStatus: scheduledAt ? "scheduled" : "requested",
         ridePin: generatePin(),
         requestedAt: new Date(),
+        });
     });
 
     if (parcel) {
@@ -298,9 +312,8 @@ const dispatchRide = async (ride) => {
     );
     if (!active) return { ride, nearbyDrivers: [], cancelled: true };
     ride.rideStatus = active.rideStatus;
-    for (const driver of nearbyDrivers) {
-        try { await sendOffer(active, driver); } catch (error) { console.error("Ride offer delivery failed:", error.message); }
-    }
+    const sent = await Promise.allSettled(nearbyDrivers.map((driver) => sendOffer(active, driver)));
+    for (const result of sent) if (result.status === "rejected") console.error("Ride offer delivery failed:", result.reason?.message);
     return {
         ride: {
             _id: ride._id,
@@ -383,18 +396,54 @@ const findNearbyDrivers = async (lat, lng, radiusKm = 5, limit = 3, filters = {}
         .sort((a, b) => a.distanceKm - b.distanceKm);
     // Drivers already on a trip are not offered new ones.
     const busy = new Set((await Ride.distinct("driverId", { driverId: { $in: driversWithDistance.map(d => d._id) }, rideStatus: { $in: DRIVER_ACTIVE } })).map(String));
-    return driversWithDistance.filter(d => !busy.has(String(d._id))).slice(0, limit);
+    const free = driversWithDistance.filter(d => !busy.has(String(d._id)));
+    if (free.length <= limit) return free;
+    // With many requests at once, each open offer counts as 1 km so they spread over nearby drivers.
+    const open = await Ride.find({ rideStatus: "searching", notifiedDrivers: { $in: free.map(d => d._id) } }).select("notifiedDrivers declinedDrivers").lean();
+    const load = new Map();
+    for (const ride of open) {
+        const declined = new Set((ride.declinedDrivers || []).map(String));
+        for (const id of ride.notifiedDrivers) if (!declined.has(String(id))) load.set(String(id), (load.get(String(id)) || 0) + 1);
+    }
+    const cost = (d) => d.distanceKm + (load.get(String(d._id)) || 0);
+    return free.sort((a, b) => cost(a) - cost(b)).slice(0, limit);
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 4. DRIVER ACCEPT RIDE (Atomic lock)
 // ═══════════════════════════════════════════════════════════════════════════
 
-const acceptRide = async (driverId, rideId) => {
+/** Claim a ride for a driver: one at a time per driver, so nobody ends up with two. */
+const claimForDriver = (driverId, rideId, claim) => withRideLock(driverId, async () => {
     const busy = await Ride.exists({ driverId, rideStatus: { $in: DRIVER_ACTIVE }, _id: { $ne: rideId } });
-    if (busy) throw new Error("Finish your current ride before accepting another.");
+    if (busy) throw Object.assign(new Error("Finish your current ride before accepting another."), { status: 409, code: "DRIVER_BUSY" });
+    return claim();
+});
+
+/**
+ * A driver who just took a ride cannot serve the other requests they were offered: take them off
+ * those requests, and if nobody else is left to answer look for other drivers now.
+ */
+const releaseOtherOffers = async (driverId, acceptedRideId) => {
+    const others = await Ride.find({ _id: { $ne: acceptedRideId }, rideStatus: "searching", notifiedDrivers: driverId }).select("_id").limit(100);
+    for (const { _id } of others) {
+        try {
+            const ride = await Ride.findOneAndUpdate({ _id, rideStatus: "searching", notifiedDrivers: driverId }, { $pull: { notifiedDrivers: driverId, counterOffers: { driverId, status: "pending" } } }, { returnDocument: "after" });
+            if (!ride) continue;
+            sseService.sendEventToUser(driverId, "ride_request_closed", { rideId: _id });
+            emitToUser(ride.passengerId, "rideUpdate", { rideId: _id, rideStatus: ride.rideStatus });
+            if (everyoneDeclined(ride)) await dispatchRide(ride);
+        } catch (error) { console.error("Passing on a ride offer failed:", error.message); }
+    }
+};
+const everyoneDeclined = (ride) => {
+    const declined = new Set((ride.declinedDrivers || []).map(String));
+    return ride.notifiedDrivers.every((id) => declined.has(String(id)));
+};
+
+const acceptRide = async (driverId, rideId) => {
     // Atomic: only the FIRST driver to match gets the ride
-    const ride = await Ride.findOneAndUpdate(
+    const ride = await claimForDriver(driverId, rideId, () => Ride.findOneAndUpdate(
         {
             _id: rideId,
             rideStatus: "searching",
@@ -408,7 +457,7 @@ const acceptRide = async (driverId, rideId) => {
             },
         },
         { returnDocument: "after" }
-    );
+    ));
 
     if (!ride) {
         // Repeated accepts from the already assigned driver are idempotent. This
@@ -430,6 +479,7 @@ const acceptRide = async (driverId, rideId) => {
     ride.driverEarning = driverEarning;
     await ride.save();
     closeOffers(ride, driverId);
+    sendLater(() => releaseOtherOffers(driverId, ride._id));
 
     // Notify passenger
     const driver = await User.findById(driverId).select("firstName lastName phone");
@@ -455,17 +505,13 @@ const acceptRide = async (driverId, rideId) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const declineRide = async (driverId, rideId) => {
-    const ride = await Ride.findById(rideId);
-    if (!ride) throw new Error("Ride not found.");
-    if (!ride.notifiedDrivers.some(id => id.toString() === driverId.toString())) {
-        throw new Error("You were not notified for this ride.");
-    }
-
-    ride.declinedDrivers.push(driverId);
-    await ride.save();
+    // Atomic, so drivers declining at the same moment are all recorded.
+    const ride = await Ride.findOneAndUpdate({ _id: rideId, notifiedDrivers: driverId }, { $addToSet: { declinedDrivers: driverId } }, { returnDocument: "after" });
+    if (!ride) throw new Error(await Ride.exists({ _id: rideId }) ? "You were not notified for this ride." : "Ride not found.");
 
     // Keep the request open for other drivers and caller-support assignment.
-    if (ride.declinedDrivers.length >= ride.notifiedDrivers.length) {
+    if (ride.rideStatus === "searching" && everyoneDeclined(ride)) {
+        sendLater(() => dispatchRide(ride));
         const passenger = await User.findById(ride.passengerId).select("phone email firstName");
         if (passenger) {
             await notifyUser(passenger, "Still finding a driver", "The first nearby drivers declined, but your request remains active and support can assign another driver.", "rideStillSearching", { rideId: ride._id, rideStatus: ride.rideStatus });
@@ -502,14 +548,18 @@ const driverArrived = async (driverId, rideId) => {
 };
 
 const getDriverRequests = async (driverId) => {
+    const [driver, busy] = await Promise.all([User.findById(driverId).select("lastLocation"), Ride.exists({ driverId, rideStatus: { $in: DRIVER_ACTIVE } })]);
+    if (busy) return [];
     const rides = await Ride.find({
         rideStatus: "searching",
         notifiedDrivers: driverId,
         declinedDrivers: { $ne: driverId },
-    }).select("pickup destination offeredFare estimatedDistanceKm estimatedDurationMin passengers scheduledDate scheduledTime requestedAt").sort({ requestedAt: -1 }).lean();
-    return Promise.all(rides.map(async ride => {
-        const earning = await walletService.calculateCommission(ride.offeredFare);
-        return { ...ride, driverEarning: earning.driverEarning, commissionAmount: earning.commission, commissionRate: earning.commissionRate };
+    }).select("rideType vehicleType parcel.size parcel.description paymentMethod fare maximumFare counterOffers pickup destination offeredFare estimatedDistanceKm estimatedDurationMin passengers scheduledDate scheduledTime requestedAt").sort({ requestedAt: -1 }).lean();
+    return Promise.all(rides.map(async ({ counterOffers, ...ride }) => {
+        const earning = await walletService.calculateCommission(ride.fare ?? ride.offeredFare);
+        const offer = await offerPayload(ride, driver);
+        const mine = (counterOffers || []).find((o) => o.status === "pending" && String(o.driverId) === String(driverId));
+        return { ...ride, ...offer, pickup: { ...ride.pickup, ...offer.pickup }, destination: { ...ride.destination, ...offer.destination }, ...(mine ? { counterSent: mine.amount } : {}), driverEarning: earning.driverEarning, commissionAmount: earning.commission, commissionRate: earning.commissionRate };
     }));
 };
 
@@ -1041,10 +1091,23 @@ function closeOffers(ride, exceptDriverId) {
  * then expire requests nobody accepted within RIDE_SEARCH_TIMEOUT_MINUTES.
  */
 const expireStaleRequests = async (now = new Date()) => {
+    if (expiring) return 0;
+    expiring = true;
+    try { return await runExpiry(now); } finally { expiring = false; }
+};
+let expiring = false;
+
+const runExpiry = async (now) => {
     const ttlMs = Number(process.env.RIDE_REQUEST_TTL_SECONDS || 60) * 1000;
     const stale = await Ride.find({ rideStatus: "searching", $or: [{ lastDispatchAt: { $lte: new Date(now - ttlMs) } }, { lastDispatchAt: null, requestedAt: { $lte: new Date(now - ttlMs) } }] }).limit(100);
-    for (const ride of stale) {
-        try { await dispatchRide(ride); } catch (error) { console.error("Re-dispatch failed:", error.message); }
+    for (let i = 0; i < stale.length; i += 10) {
+        await Promise.all(stale.slice(i, i + 10).map(async (ride) => {
+            try {
+                // Claimed first: another server instance may be running this job too.
+                const claim = await Ride.updateOne({ _id: ride._id, rideStatus: "searching", lastDispatchAt: ride.lastDispatchAt ?? null }, { $set: { lastDispatchAt: now } });
+                if (claim.modifiedCount === 1) await dispatchRide(ride);
+            } catch (error) { console.error("Re-dispatch failed:", error.message); }
+        }));
     }
     const timeout = new Date(now - Number(process.env.RIDE_SEARCH_TIMEOUT_MINUTES || 10) * 60000);
     let expired = 0;
@@ -1076,6 +1139,9 @@ module.exports = {
     dispatchRide,
     sendOffer,
     closeOffers,
+    claimForDriver,
+    releaseOtherOffers,
+    sendLater,
     notifyUser,
     normalizeVehicleType,
     hashPin,

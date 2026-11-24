@@ -172,6 +172,9 @@ rideSchema.index({ rideStatus: 1, createdAt: -1 });
 rideSchema.index({ "pickup.latitude": 1, "pickup.longitude": 1 });
 rideSchema.index({ shareToken: 1 }, { unique: true, sparse: true });
 rideSchema.index({ rideStatus: 1, lastDispatchAt: 1 });
+rideSchema.index({ notifiedDrivers: 1, rideStatus: 1 });
+rideSchema.index({ driverId: 1, rideStatus: 1 });
+rideSchema.index({ passengerId: 1, rideStatus: 1 });
 
 const Ride = mongoose.model("Ride", rideSchema);
 

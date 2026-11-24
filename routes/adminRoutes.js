@@ -384,6 +384,11 @@ router.get("/support-cases/:id", authorize("support:view"), adminController.getS
 router.patch("/support-cases/:id", authorize("support:update"), adminController.updateSupportCase);
 router.delete("/support-cases/:id", authorize("support:update"), adminController.deleteSupportCase);
 router.get("/support-operations", authorize("support:view"), adminController.getSupportOperations);
+// Which email routes the running server can reach (sends nothing, shows no credentials).
+router.get("/email/status", authorize("notification:send"), async (_req, res) => {
+    try { res.json({ data: await require("../services/emailService").checkEmail() }); }
+    catch (error) { res.status(500).json({ message: error.message }); }
+});
 router.post("/drivers/:id/sms", authorize("notification:send"), adminController.smsDriver);
 router.post("/support-cases/:id/contact", authorize("call_log:create"), adminController.logSupportContact);
 router.post("/support-cases/:id/notify-passenger", authorize("notification:send"), adminController.notifySupportPassenger);

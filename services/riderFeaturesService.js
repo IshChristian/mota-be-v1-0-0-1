@@ -144,7 +144,7 @@ async function raiseOffer(passengerId, rideId, amount) {
     ride.declinedDrivers = []; // a better price is worth re-offering
     await ride.save();
     const known = await User.find({ _id: { $in: ride.notifiedDrivers } }).select("_id phone email lastLocation");
-    for (const driver of known) await engine.sendOffer(ride, driver).catch(() => {});
+    await Promise.allSettled(known.map((driver) => engine.sendOffer(ride, driver)));
     const result = await engine.dispatchRide(ride);
     return { rideId: ride._id, fare: ride.fare, notifiedDrivers: known.length + (result.nearbyDrivers?.length || 0) };
 }
@@ -185,16 +185,15 @@ async function acceptCounterOffer(passengerId, rideId, offerId) {
     const offer = ride?.counterOffers.id(offerId);
     if (!offer || offer.status !== "pending") throw httpError(409, "This price offer is no longer available.");
     await checkWallet(ride, passengerId, offer.amount);
-    const busy = await Ride.exists({ driverId: offer.driverId, rideStatus: { $in: engine.DRIVER_ACTIVE } });
-    if (busy) throw httpError(409, "That driver just took another ride.");
     const { commission, driverEarning } = await walletService.calculateCommission(offer.amount);
-    const assigned = await Ride.findOneAndUpdate(
+    const assigned = await engine.claimForDriver(offer.driverId, rideId, () => Ride.findOneAndUpdate(
         { _id: rideId, rideStatus: "searching", driverId: null, counterOffers: { $elemMatch: { _id: offerId, status: "pending" } } },
         { $set: { driverId: offer.driverId, fare: offer.amount, offeredFare: offer.amount, rideStatus: "approaching", acceptedAt: new Date(), commissionAmount: commission, driverEarning, "counterOffers.$.status": "accepted" } },
         { returnDocument: "after" }
-    );
+    )).catch((error) => { throw error.code === "DRIVER_BUSY" ? httpError(409, "That driver just took another ride.") : error; });
     if (!assigned) throw httpError(409, "This ride was already assigned.");
     engine.closeOffers(assigned, offer.driverId);
+    engine.sendLater(() => engine.releaseOtherOffers(offer.driverId, assigned._id));
     const driver = await User.findById(offer.driverId).select("phone email firstName");
     await engine.notifyUser(driver, "Your price was accepted", `The passenger accepted ${offer.amount} RWF. Head to the pickup.`, "rideAssigned", { rideId: assigned._id, rideStatus: assigned.rideStatus });
     return assigned;
