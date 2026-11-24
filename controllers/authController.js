@@ -235,7 +235,8 @@ const verifyEmail = async (req, res) => {
             return res.status(400).json({ message: "userId (or email) and otp are required" });
         }
 
-        const query = userId ? { _id: userId } : { email };
+        const typed = String(email || "").trim();
+        const query = userId ? { _id: userId } : { email: { $in: [typed, typed.toLowerCase()] } };
         const user = await User.findOne(query);
 
         if (!user || !user.emailOtpToken) {
@@ -263,7 +264,7 @@ const resendEmailOTP = async (req, res) => {
         const email = String(req.body.email || "").trim();
         if (!email) return res.status(400).json({ message: "Email is required." });
 
-        const user = await User.findOne({ email });
+        const user = await User.findOne({ email: { $in: [email, email.toLowerCase()] } });
         if (!user) return res.status(404).json({ message: "User not found." });
         if (user.isEmailVerified) return res.status(400).json({ message: "Email is already verified." });
 

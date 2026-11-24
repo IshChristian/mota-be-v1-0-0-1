@@ -9,7 +9,6 @@ const { seedDefaults } = require("./services/systemSettingService");
 const { startScheduler } = require("./utils/scheduler");
 const { initCron } = require("./services/cronService");
 const { initSocket } = require("./services/socketService");
-const { expireStaleRequests } = require("./services/rideEngineService");
 const app = require("./app");
 
 const server = http.createServer(app);
@@ -26,10 +25,10 @@ connectDB().then(async () => {
     startScheduler();
     // Initialize Daily Tasks Cron (Fuel vouchers etc)
     initCron();
-    // Preserve expired requests as history records and notify passengers.
-    setInterval(() => {
-      expireStaleRequests().catch((error) => console.error("Ride expiry job failed:", error.message));
-    }, 30 * 1000).unref();
+    // Says in the logs which email routes this server can reach.
+    require("./services/emailService").checkEmail().then((results) => {
+      for (const r of results) console.log(`Email route ${r.route}: ${r.ok ? "ready" : `unavailable (${r.error})`}`);
+    }).catch((error) => console.error("Email check failed:", error.message));
   } catch (err) {
     console.error("Failed to seed defaults:", err.message);
   }

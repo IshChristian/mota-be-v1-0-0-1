@@ -134,6 +134,8 @@ const userSchema = new mongoose.Schema({
     }],
     // ── Driver Availability & Location ──────────────────────────────
     isOnline: { type: Boolean, default: false },
+    // Held while a ride is being requested or accepted (services/rideLock.js).
+    rideLock: { type: new mongoose.Schema({ token: String, until: Date }, { _id: false }), select: false },
     availabilityManuallyOffline: { type: Boolean, default: false },
     lastLocation: {
         latitude: { type: Number },
@@ -153,6 +155,7 @@ const userSchema = new mongoose.Schema({
 // Convert empty strings to undefined for sparse-unique fields.
 // MongoDB sparse indexes only skip null/undefined — NOT empty strings.
 // Without this, two users with email: "" would throw a duplicate key error.
+userSchema.index({ role: 1, isOnline: 1, lastLocationAt: -1 });
 userSchema.pre("validate", function () {
     if (this.email === "") this.email = undefined;
     if (this.nationalId === "") this.nationalId = undefined;

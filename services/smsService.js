@@ -51,6 +51,7 @@ const sendSMS = async (phone, message, type = "system_alert") => {
                 "Content-Type": "application/json",
             },
             body: JSON.stringify({ to, text: message, sender: process.env.SMS_SENDER_ID?.trim() || "MOTA" }),
+            signal: AbortSignal.timeout(10000),
         });
 
         if (!response.ok) {

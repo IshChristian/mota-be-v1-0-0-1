@@ -1,61 +1,6 @@
-const nodemailer = require("nodemailer");
+const { sendEmail } = require("./emailService");
 const Notification = require("../models/Notification");
 const User = require("../models/User");
-
-// Create standard SMTP transporter
-const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST || "smtp.gmail.com",
-    port: process.env.SMTP_PORT || 587,
-    secure: process.env.SMTP_SECURE === "true" || false,
-    auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-    },
-    // Fail well inside the app's 30 s request timeout (nodemailer waits 2 minutes by default).
-    connectionTimeout: 8000,
-    greetingTimeout: 8000,
-    socketTimeout: 12000,
-    dnsTimeout: 5000,
-});
-
-const fromAddress = () => process.env.SMTP_FROM_EMAIL || "no-reply@mota.rw";
-
-/** Brevo's HTTPS API, for hosts that block SMTP ports (Render's free web services do). */
-const sendViaBrevo = async (to, subject, text, html) => {
-    const from = fromAddress().match(/^\s*"?(.*?)"?\s*<(.+)>\s*$/);
-    const sender = from ? { name: from[1] || "MOTA", email: from[2] } : { name: "MOTA", email: fromAddress() };
-    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
-        method: "POST",
-        headers: { "api-key": process.env.BREVO_API_KEY, "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ sender, to: [{ email: to }], subject, ...(html ? { htmlContent: html } : { textContent: text }) }),
-        signal: AbortSignal.timeout(12000),
-    });
-    if (!response.ok) throw new Error(`Brevo refused the email (${response.status}): ${await response.text()}`);
-};
-
-/**
- * Send an email over Brevo when BREVO_API_KEY is set, otherwise SMTP.
- * Never throws: returns false when it was not sent.
- */
-const sendEmail = async (to, subject, text, html) => {
-    try {
-        if (process.env.BREVO_API_KEY) {
-            await sendViaBrevo(to, subject, text, html);
-            return true;
-        }
-        await transporter.sendMail({
-            from: fromAddress(),
-            to,
-            subject,
-            text,
-            html,
-        });
-        return true;
-    } catch (error) {
-        console.error("Email not sent:", error.code || "", error.message);
-        return false;
-    }
-};
 
 /**
  * Create In-App Notification
@@ -98,6 +43,7 @@ const sendPushNotification = async (userId, title, body, data = {}) => {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify(messages),
+        signal: AbortSignal.timeout(10000),
     });
     if (!response.ok) throw new Error(`Expo push request failed (${response.status})`);
     const result = await response.json();

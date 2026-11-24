@@ -43,11 +43,15 @@ app.use(express.json({
   },
 }));
 if (process.env.NODE_ENV !== "test") app.use(morgan("dev"));
-app.use("/api", rateLimit({ windowMs: 60 * 1000, limit: Number(process.env.API_RATE_LIMIT_PER_MINUTE) || 120, standardHeaders: "draft-8", legacyHeaders: false }));
+// Signed-in people are counted one by one; anonymous traffic by address.
+const { ipKey, userKey, accountKey } = require("./middleware/rateLimitKeys");
+app.use("/api", rateLimit({ windowMs: 60 * 1000, keyGenerator: (req) => userKey(req) || ipKey(req), limit: (req) => userKey(req) ? Number(process.env.USER_RATE_LIMIT_PER_MINUTE) || 240 : Number(process.env.API_RATE_LIMIT_PER_MINUTE) || 300, standardHeaders: "draft-8", legacyHeaders: false }));
 // The WhatsApp status poll has its own limit (routes/authRoutes.js): counting it here would lock
 // the waiting user (and everyone behind the same carrier NAT) out of verify-otp and login.
 const isWhatsappStatusPoll = (req) => req.method === "GET" && req.path === "/whatsapp/status";
-app.use("/api/auth", rateLimit({ windowMs: 15 * 60 * 1000, limit: Number(process.env.AUTH_RATE_LIMIT_PER_15_MIN) || 30, standardHeaders: "draft-8", legacyHeaders: false, skip: isWhatsappStatusPoll }));
+app.use("/api/auth", rateLimit({ windowMs: 15 * 60 * 1000, keyGenerator: accountKey, limit: Number(process.env.AUTH_RATE_LIMIT_PER_15_MIN) || 30, standardHeaders: "draft-8", legacyHeaders: false, skip: isWhatsappStatusPoll }));
+// Total per address, so one machine cannot try many accounts.
+app.use("/api/auth", rateLimit({ windowMs: 15 * 60 * 1000, keyGenerator: (req) => userKey(req) || ipKey(req), limit: Number(process.env.AUTH_IP_RATE_LIMIT_PER_15_MIN) || 200, standardHeaders: "draft-8", legacyHeaders: false, skip: isWhatsappStatusPoll }));
 
 // ─── Swagger Documentation ─────────────────────────────
 app.use(
