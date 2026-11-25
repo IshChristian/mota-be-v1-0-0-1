@@ -49,3 +49,15 @@ test("other ride updates keep the normal ride channel and default sound, without
     assert.equal(sent[0].sound, "default");
     assert.equal(sent[0].ttl, undefined);
 });
+
+test("a push Expo refuses (e.g. missing FCM key) is logged and not counted as sent", async (t) => {
+    const passenger = await makePassenger();
+    await User.updateOne({ _id: passenger.user._id }, { $set: { pushTokens: [{ token: "ExponentPushToken[p]", platform: "android" }] } });
+    const errors = [];
+    t.mock.method(console, "error", (...args) => errors.push(args.join(" ")));
+    t.mock.method(global, "fetch", async () => ({ ok: true, json: async () => ({ data: [{ status: "error", message: "Unable to retrieve the FCM server key", details: { error: "InvalidCredentials" } }] }) }));
+    const result = await load("services/notificationService.js").sendPushNotification(passenger.user._id, "Hi", "Hello", {});
+    assert.equal(result.sent, 0);
+    assert.ok(errors.some((e) => e.includes("InvalidCredentials")), errors.join());
+    assert.equal((await User.findById(passenger.user._id).select("+pushTokens")).pushTokens.length, 1, "the token is kept");
+});

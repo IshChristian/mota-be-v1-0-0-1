@@ -15,7 +15,8 @@ Object.assign(process.env, {
     NODE_ENV: "test",
     JWT_SECRET: "test-secret",
     PUBLIC_BASE_URL: "https://mota.test",
-    PINDO_API_TOKEN: "",
+    AT_API_KEY: "",
+    AT_USERNAME: "",
     PAYPACK_CLIENT_ID: "test-client-id", // the SDK refuses empty keys at load; tests never call Paypack
     PAYPACK_CLIENT_SECRET: "test-client-secret",
     SMTP_USER: "",

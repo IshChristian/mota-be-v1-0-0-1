@@ -50,7 +50,10 @@ const sendPushNotification = async (userId, title, body, data = {}) => {
     // Drop tokens Expo says are dead (app uninstalled / logged out elsewhere) so they stop failing.
     const dead = (result?.data || []).map((ticket, i) => (ticket?.details?.error === "DeviceNotRegistered" ? tokens[i] : null)).filter(Boolean);
     if (dead.length) await User.updateOne({ _id: userId }, { $pull: { pushTokens: { token: { $in: dead } } } }).catch(() => {});
-    return { sent: tokens.length - dead.length, removed: dead.length, response: result };
+    // Anything else refused (e.g. InvalidCredentials: no FCM key on the Expo project) must be visible in the logs.
+    const refused = (result?.data || []).filter((ticket) => ticket?.status === "error");
+    for (const ticket of refused) if (ticket.details?.error !== "DeviceNotRegistered") console.error(`Push refused: ${ticket.details?.error || "unknown"}: ${ticket.message}`);
+    return { sent: tokens.length - refused.length, removed: dead.length, response: result };
 };
 
 const getUserNotifications = async (userId, unreadOnly = false, page = 1, limit = 20) => {

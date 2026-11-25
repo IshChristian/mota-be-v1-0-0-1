@@ -60,14 +60,14 @@ test("staff SMS a driver from the live map", async () => {
     assert.equal((await request(app).post(url).set(admin.auth).send({ message: " " })).status, 400);
     const passenger = await makePassenger();
     assert.equal((await request(app).post(url).set(passenger.auth).send({ message: "Hello" })).status, 403);
-    // No SMS token in tests: the failure must be reported.
+    // No SMS API key in tests: the failure must be reported.
     assert.equal((await request(app).post(url).set(admin.auth).send({ message: "Hello" })).status, 502);
-    process.env.PINDO_API_TOKEN = "t"; const real = global.fetch; let sent;
-    global.fetch = async (_u, o) => { sent = JSON.parse(o.body); return { ok: true, json: async () => ({}) }; };
+    process.env.AT_API_KEY = "t"; process.env.AT_USERNAME = "mota"; const real = global.fetch; let sent;
+    global.fetch = async (_u, o) => { sent = JSON.parse(o.body); return { ok: true, status: 201, json: async () => ({ SMSMessageData: { Recipients: [{ statusCode: 101, status: "Success" }] } }) }; };
     try {
         const ok = await request(app).post(url).set(admin.auth).send({ message: "Hello" });
         assert.equal(ok.status, 200, JSON.stringify(ok.body));
-        assert.equal(sent.to, d.user.phone); assert.equal(sent.text, "Hello");
+        assert.deepEqual(sent.phoneNumbers, [d.user.phone]); assert.equal(sent.message, "Hello");
         assert.equal(await AuditLog.countDocuments({ action: "driver_sms_sent", targetId: d.user._id }), 2);
-    } finally { global.fetch = real; process.env.PINDO_API_TOKEN = ""; }
+    } finally { global.fetch = real; process.env.AT_API_KEY = ""; process.env.AT_USERNAME = ""; }
 });

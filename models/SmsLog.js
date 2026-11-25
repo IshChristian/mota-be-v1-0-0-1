@@ -25,7 +25,7 @@ const smsLogSchema = new mongoose.Schema({
         enum: ["sent", "failed", "pending"],
         default: "pending",
     },
-    // Provider's refusal reason (e.g. "409: Unknown sender id MOTA"); empty when sent.
+    // Provider's refusal reason (e.g. "402: InvalidSenderId"); empty when sent.
     error: { type: String },
     sentAt: { type: Date, default: Date.now },
 });
