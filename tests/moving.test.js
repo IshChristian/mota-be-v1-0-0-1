@@ -1,4 +1,4 @@
-// MOTA Kwimuka (house moving): booking, estimates, customer actions and the staff workflow.
+// MOTA HomeMove (house moving): booking, estimates, customer actions and the staff workflow.
 const { test, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const request = require("supertest");
@@ -71,7 +71,7 @@ test("customer books, staff is alerted, customer sees it", async () => {
     const support = await staff("caller_support");
     const res = await request(app).post("/api/moves").set(bearer(user)).send(booking({ source: "app", campaign: "fb-nov" })).expect(201);
     const move = res.body.data;
-    assert.match(move.ref, /^KW-[0-9A-F]{6}$/);
+    assert.match(move.ref, /^HM-[0-9A-F]{6}$/);
     assert.equal(move.status, "requested");
     assert.equal(move.estimate.min, 125000);
     assert.equal(move.campaign, "fb-nov");

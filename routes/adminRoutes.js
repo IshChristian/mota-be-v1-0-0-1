@@ -23,7 +23,7 @@ router.patch("/rides/:id/payment", authorize("ride:manage"), async (req, res) =>
     catch (error) { res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : "Unable to update the payment status" }); }
 });
 
-// MOTA Kwimuka (house moving): the team quotes, schedules visits and assigns partner trucks.
+// MOTA HomeMove (house moving): the team quotes, schedules visits and assigns partner trucks.
 {
     const moving = require("../services/movingService");
     const send = (fn, fallback) => async (req, res) => {

@@ -2,7 +2,7 @@ const express = require("express");
 const { protect } = require("../middleware/authMiddleware");
 const moving = require("../services/movingService");
 
-// MOTA Kwimuka (house moving). Catalog is public so the landing page and signed-out app can show it.
+// MOTA HomeMove (house moving). Catalog is public so the landing page and signed-out app can show it.
 const router = express.Router();
 
 const handle = (fn, fallback) => async (req, res) => {
@@ -18,7 +18,7 @@ const handle = (fn, fallback) => async (req, res) => {
  * @swagger
  * tags:
  *   name: Moving
- *   description: MOTA Kwimuka — house moving with partner trucks
+ *   description: MOTA HomeMove — house moving with partner trucks
  */
 
 /**

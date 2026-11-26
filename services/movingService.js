@@ -7,7 +7,7 @@ const User = require("../models/User");
 const Notification = require("../models/Notification");
 const { effectivePermissions } = require("./reportAccess");
 
-// MOTA Kwimuka — house moving with partner trucks. Customers book, the team quotes (after a
+// MOTA HomeMove — house moving with partner trucks. Customers book, the team quotes (after a
 // free home visit when asked), the customer accepts, the team assigns a partner truck.
 // Prices here are starting assumptions for the owner to confirm; staff edit them in admin.
 
@@ -174,7 +174,7 @@ async function estimate(input) {
 
 async function newRef() {
     for (let i = 0; i < 5; i++) {
-        const ref = `KW-${crypto.randomBytes(4).toString("hex").slice(0, 6).toUpperCase()}`;
+        const ref = `HM-${crypto.randomBytes(4).toString("hex").slice(0, 6).toUpperCase()}`;
         if (!(await MoveRequest.exists({ ref }))) return ref;
     }
     throw bad("Please try again.", 503);
@@ -207,7 +207,7 @@ async function notifyStaff(move, title, message) {
         const staff = await User.find({ role: { $in: ["superadmin", "admin", "caller_support", "manager", "agent", "financial"] }, isActive: { $ne: false } }).select("role roleId reportPermissions permissionGrants permissionRevokes").populate("roleId", "permissions").lean();
         const recipients = staff.filter((u) => { const p = effectivePermissions(u); return p.includes("admin:access") && p.includes("support:view"); });
         await Notification.insertMany(recipients.map((u) => ({ userId: u._id, title, message, type: "in_app", metadata: { category: "moving", moveId: String(move._id), audience: "staff" } })));
-        if (process.env.MOVING_OPS_PHONE) require("./smsService").sendSMS(process.env.MOVING_OPS_PHONE, `MOTA Kwimuka: ${message}`, "moving_new_request").catch(() => {});
+        if (process.env.MOVING_OPS_PHONE) require("./smsService").sendSMS(process.env.MOVING_OPS_PHONE, `MOTA HomeMove: ${message}`, "moving_new_request").catch(() => {});
     } catch (error) {
         console.error("Moving staff alert failed:", error.message);
     }

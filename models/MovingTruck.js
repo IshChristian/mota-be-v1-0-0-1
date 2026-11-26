@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 
-// MOTA Kwimuka truck catalog: the truck sizes customers choose from. Prices are ranges
+// MOTA HomeMove truck catalog: the truck sizes customers choose from. Prices are ranges
 // because the final price is quoted by the team after checking the job.
 const movingTruckSchema = new mongoose.Schema(
     {

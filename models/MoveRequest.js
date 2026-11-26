@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 
-// One MOTA Kwimuka (house moving) request. Partner-first: the team quotes, then assigns a
+// One MOTA HomeMove (house moving) request. Partner-first: the team quotes, then assigns a
 // partner truck. No money moves through this record yet.
 const STATUSES = ["requested", "visit_scheduled", "visited", "quoted", "accepted", "confirmed", "in_progress", "completed", "cancelled"];
 const PLACE_TYPES = ["apartment", "house", "office", "shop", "other"];
