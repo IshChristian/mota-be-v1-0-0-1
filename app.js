@@ -131,6 +131,7 @@ app.use("/api/ussd", ussdRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/payment", paymentRoutes);
 app.use("/api/promos", require("./routes/promoRoutes"));
+app.use("/api/moves", require("./routes/movingRoutes"));
 app.use("/api/system-settings", systemSettingRoutes);
 app.use("/api/loans", financialWriteGuard, loanRoutes);
 app.use("/api/lookup", lookupRoutes);

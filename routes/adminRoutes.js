@@ -23,6 +23,24 @@ router.patch("/rides/:id/payment", authorize("ride:manage"), async (req, res) =>
     catch (error) { res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : "Unable to update the payment status" }); }
 });
 
+// MOTA HomeMove (house moving): the team quotes, schedules visits and assigns partner trucks.
+{
+    const moving = require("../services/movingService");
+    const send = (fn, fallback) => async (req, res) => {
+        try { res.json({ data: await fn(req) }); }
+        catch (error) { if (!error.status) console.error(fallback, error); res.status(error.status || 500).json({ message: error.status ? error.message : fallback }); }
+    };
+    router.get("/moves", authorize("support:view"), send((req) => moving.adminList(req.query), "Unable to load moves"));
+    router.get("/moves/trucks", authorize("support:view"), send(() => moving.adminTrucks(), "Unable to load trucks"));
+    router.patch("/moves/trucks/:key", authorize("settings:general"), send(async (req) => {
+        const truck = await moving.adminUpdateTruck(req.params.key, req.body);
+        await require("../services/auditService").log({ actorId: req.user._id, actorRole: req.user.role, action: "moving_truck_updated", targetType: "MovingTruck", targetId: truck._id, metadata: { key: truck.key, changes: Object.keys(req.body || {}) }, ipAddress: req.ip }).catch(() => {});
+        return truck;
+    }, "Unable to update this truck"));
+    router.get("/moves/:id", authorize("support:view"), send((req) => moving.adminGet(req.params.id), "Unable to load this move"));
+    router.patch("/moves/:id", authorize("support:update"), send((req) => moving.adminUpdate(req.user, req.params.id, req.body), "Unable to update this move"));
+}
+
 // Promo codes: create, edit, switch off, delete (archive when used) and monitor.
 const adminPromos = require("../controllers/adminPromoController");
 router.get("/promos", authorize("promo:view"), adminPromos.list);
