@@ -9,7 +9,7 @@ const SMS_TYPES = new Set(SmsLog.schema.path("type").enumValues);
 const logSms = (entry) => SmsLog.create({ ...entry, type: SMS_TYPES.has(entry.type) ? entry.type : "system_alert" })
     .catch((error) => console.error("SMS log write failed:", error.message));
 
-/** Pindo only accepts international form: 0791234567 / 250791234567 / 791234567 -> +250791234567. */
+/** The provider only accepts international form: 0791234567 / 250791234567 / 791234567 -> +250791234567. */
 const normalizeRwPhone = (phone) => {
     const raw = String(phone || "").replace(/[\s()-]/g, "");
     if (raw.startsWith("+")) return raw;
@@ -19,56 +19,45 @@ const normalizeRwPhone = (phone) => {
     return raw;
 };
 
-const providerError = (status, text) => {
-    try {
-        const body = JSON.parse(text);
-        return `${status}: ${body.error || body.message || text}`;
-    } catch {
-        return `${status}: ${String(text).slice(0, 300)}`;
-    }
-};
+const SMS_URL = "https://api.africastalking.com/version1/messaging/bulk";
+const ACCEPTED = new Set([100, 101, 102]); // processed, sent, queued
 
 /**
- * Send an SMS via Pindo and log it (with Pindo's reason when it fails).
- * @returns {Promise<boolean>} whether Pindo accepted the message
+ * Send an SMS via Africa's Talking and log it (with the provider's reason when it fails).
+ * @returns {Promise<boolean>} whether the provider accepted the message
  */
 const sendSMS = async (phone, message, type = "system_alert") => {
-    const url = "https://api.pindo.io/v1/sms/";
-    const token = process.env.PINDO_API_TOKEN?.trim();
     const to = normalizeRwPhone(phone);
-
-    if (!token) {
-        console.error("Missing PINDO_API_TOKEN");
-        await logSms({ phone: to, message, type, status: "failed", error: "PINDO_API_TOKEN is not set" });
+    const fail = async (error) => {
+        console.error(`SMS failed: ${error}`);
+        await logSms({ phone: to, message, type, status: "failed", error });
         return false;
-    }
+    };
+
+    const apiKey = process.env.AT_API_KEY?.trim();
+    const username = process.env.AT_USERNAME?.trim();
+    if (!apiKey) return fail("AT_API_KEY is not set");
+    if (!username) return fail("AT_USERNAME is not set");
 
     try {
-        const response = await fetch(url, {
+        const response = await fetch(SMS_URL, {
             method: "POST",
-            headers: {
-                Authorization: `Bearer ${token}`,
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ to, text: message, sender: process.env.SMS_SENDER_ID?.trim() || "MOTA" }),
+            headers: { apiKey, Accept: "application/json", "Content-Type": "application/json" },
+            body: JSON.stringify({ username, message, senderId: process.env.SMS_SENDER_ID?.trim() || "MOTA", phoneNumbers: [to] }),
             signal: AbortSignal.timeout(10000),
         });
+        if (!response.ok) return fail(`${response.status}: ${(await response.text()).slice(0, 300)}`);
 
-        if (!response.ok) {
-            const error = providerError(response.status, await response.text());
-            console.error(`SMS failed: ${error}`);
-            await logSms({ phone: to, message, type, status: "failed", error });
-            return false;
-        }
-
-        await response.json().catch(() => null);
-        await logSms({ phone: to, message, type, status: "sent" });
-        return true;
+        // A refused recipient (bad sender ID, no balance...) still comes back as HTTP 201.
+        const data = (await response.json())?.SMSMessageData;
+        const recipient = data?.Recipients?.[0];
+        if (!recipient) return fail(`${response.status}: ${data?.Message || "no recipient in the provider's answer"}`);
+        if (!ACCEPTED.has(Number(recipient.statusCode))) return fail(`${recipient.statusCode}: ${recipient.status}`);
     } catch (error) {
-        console.error("Error sending SMS:", error.message);
-        await logSms({ phone: to, message, type, status: "failed", error: `network: ${error.message}` });
-        return false;
+        return fail(`network: ${error.message}`);
     }
+    await logSms({ phone: to, message, type, status: "sent" });
+    return true;
 };
 
 module.exports = { sendSMS, normalizeRwPhone };
